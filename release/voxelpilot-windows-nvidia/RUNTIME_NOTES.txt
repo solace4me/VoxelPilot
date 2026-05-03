@@ -1,0 +1,47 @@
+VoxelPilot Runtime Notes
+===========================
+
+What this app needs
+-------------------
+- Windows
+- An NVIDIA GPU
+- A working NVIDIA graphics driver
+- OpenGL support on the active display adapter
+
+What to launch
+--------------
+- Use: Run_VoxelPilot.bat
+- First startup guide: FIRST_RUN_CHECKLIST.md
+- Guided demo flow: SAMPLE_WORKFLOW.md
+
+What the launcher does
+----------------------
+- Confirms the app exe exists
+- Checks whether nvidia-smi is available
+- Adds the CUDA toolkit bin folder to PATH if it is installed in the default location
+- Starts the standalone app
+- Prints a simple checklist if startup fails
+
+Important behavior
+------------------
+- This app can compile on systems without an NVIDIA GPU, but it cannot run there.
+- If CUDA is unavailable, startup should fail quickly with a clear CUDA runtime message.
+
+Recommended laptop checks
+-------------------------
+1. Open Command Prompt.
+2. Run: nvidia-smi
+3. Confirm the NVIDIA GPU and driver are listed.
+4. Launch Run_VoxelPilot.bat
+
+If startup fails on the NVIDIA laptop
+-------------------------------------
+1. Update or reinstall the NVIDIA driver.
+2. Make sure the app is using the NVIDIA GPU, not an integrated-only path.
+3. Confirm OpenGL works correctly on that machine.
+4. If CUDA toolkit is installed, keep the default installation path or update the launcher.
+
+Volume data expectations
+------------------------
+- Raw float volume files are supported by the current loader flow.
+- The in-app dimension selector should match the actual dataset size.

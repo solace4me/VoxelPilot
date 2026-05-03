@@ -1,0 +1,25 @@
+# Build artifacts
+build/
+*.obj
+*.o
+
+# Local runtime outputs
+imgui.ini
+
+# Root-level compiled binaries
+/*.exe
+
+# Common editor / OS noise
+.DS_Store
+Thumbs.db
+.vs/
+*.user
+*.suo
+
+# Keep the packaged demo binary in the release folder
+!release/voxelpilot-windows-nvidia/volume_renderer_standalone.exe
+
+# Optional packaged launchers/docs should stay tracked
+!release/voxelpilot-windows-nvidia/*.bat
+!release/voxelpilot-windows-nvidia/*.md
+!release/voxelpilot-windows-nvidia/*.txt
