@@ -5,9 +5,19 @@ set "ROOT=%~dp0"
 cd /d "%ROOT%"
 
 set "APP=volume_renderer_standalone.exe"
-set "CUDA_BIN=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.2\bin"
+set "CUDA_BIN="
 
-if exist "%CUDA_BIN%" (
+if defined CUDA_PATH if exist "%CUDA_PATH%\bin" (
+    set "CUDA_BIN=%CUDA_PATH%\bin"
+)
+
+if not defined CUDA_BIN (
+    for /d %%D in ("C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v*") do (
+        if exist "%%~fD\bin" set "CUDA_BIN=%%~fD\bin"
+    )
+)
+
+if defined CUDA_BIN (
     set "PATH=%CUDA_BIN%;%PATH%"
 )
 

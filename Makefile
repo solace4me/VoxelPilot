@@ -62,6 +62,7 @@ STANDALONE_OBJS = \
     $(BUILD_STANDALONE)/raymarch_kernel.$(OBJ_EXT) \
     $(BUILD_STANDALONE)/volume_textures.$(OBJ_EXT) \
     $(BUILD_STANDALONE)/standalone_main.$(OBJ_EXT) \
+    $(BUILD_STANDALONE)/volume_import.$(OBJ_EXT) \
     $(BUILD_STANDALONE)/glew.$(OBJ_EXT) \
     $(BUILD_STANDALONE)/imgui.$(OBJ_EXT) \
     $(BUILD_STANDALONE)/imgui_draw.$(OBJ_EXT) \
@@ -91,9 +92,9 @@ ifeq ($(OS),Windows_NT)
     .SHELLFLAGS := /C
     OBJ_EXT        := obj
     CUDART_MODE    := -cudart hybrid
-    CUDA_HOME      := C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.2
-    VS_DEV_CMD     := call "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat" -arch=amd64 >nul
-    NVCC           := $(VS_DEV_CMD) && "$(CUDA_HOME)/bin/nvcc.exe"
+    CUDA_HOME      := C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.3
+    VS_DEV_CMD     := call "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\Tools\VsDevCmd.bat" -arch=amd64 >nul
+    NVCC           := $(VS_DEV_CMD) && "$(CUDA_HOME)\bin\nvcc.exe"
     CXX            := $(VS_DEV_CMD) && cl
     GLFW_LIB       := imgui/examples/libs/glfw/lib-vc2010-64/glfw3.lib
     CXX_FLAGS      := /nologo /TP /EHsc /std:c++17 /O2 /D_CRT_SECURE_NO_WARNINGS /DGLEW_STATIC /DGLFW_HAS_PER_MONITOR_DPI=0 /DGLFW_HAS_GAMEPAD_API=0 /DGLFW_HAS_GETERROR=0 /I$(COMMON_DIR) /I$(IMGUI_DIR) /I$(IMGUI_BACKEND) /I$(TINY_DIR) /I$(GLEW_INC) /Iglfw/include
@@ -177,7 +178,11 @@ standalone: $(STANDALONE_BIN)
 app: standalone
 
 $(STANDALONE_BIN): $(STANDALONE_OBJS)
+ifeq ($(OS),Windows_NT)
+	$(NVCC) -rdc=true $(CUDART_MODE) -arch=$(CUDA_ARCH) "$(BUILD_STANDALONE)/renderer.$(OBJ_EXT)" "$(BUILD_STANDALONE)/raymarch_kernel.$(OBJ_EXT)" "$(BUILD_STANDALONE)/volume_textures.$(OBJ_EXT)" "$(BUILD_STANDALONE)/standalone_main.$(OBJ_EXT)" "$(BUILD_STANDALONE)/volume_import.$(OBJ_EXT)" "$(BUILD_STANDALONE)/glew.$(OBJ_EXT)" "$(BUILD_STANDALONE)/imgui.$(OBJ_EXT)" "$(BUILD_STANDALONE)/imgui_draw.$(OBJ_EXT)" "$(BUILD_STANDALONE)/imgui_tables.$(OBJ_EXT)" "$(BUILD_STANDALONE)/imgui_widgets.$(OBJ_EXT)" "$(BUILD_STANDALONE)/imgui_impl_glfw.$(OBJ_EXT)" "$(BUILD_STANDALONE)/imgui_impl_opengl3.$(OBJ_EXT)" "$(BUILD_STANDALONE)/tinyfiledialogs.$(OBJ_EXT)" -o "$(STANDALONE_BIN)" $(STANDALONE_LDFLAGS)
+else
 	$(NVCC) -rdc=true $(CUDART_MODE) -arch=$(CUDA_ARCH) $(STANDALONE_OBJS) -o $@ $(STANDALONE_LDFLAGS)
+endif
 	@echo ""
 	@echo "=== Standalone built: $(STANDALONE_BIN) ==="
 	@echo ""
@@ -186,25 +191,35 @@ $(BUILD_STANDALONE)/renderer.$(OBJ_EXT): \
     $(RENDERER_DIR)/renderer.cu \
     $(COMMON_DIR)/volume_structs.h \
     $(COMMON_DIR)/math_utils.h | $(BUILD_STANDALONE)
-	$(NVCC) $(STANDALONE_NVCC_FLAGS) -c $< -o $@
+	$(NVCC) $(STANDALONE_NVCC_FLAGS) -c "$<" -o "$@"
 
 $(BUILD_STANDALONE)/raymarch_kernel.$(OBJ_EXT): \
     $(RENDERER_DIR)/raymarch_kernel.cu \
     $(COMMON_DIR)/volume_structs.h \
     $(COMMON_DIR)/math_utils.h | $(BUILD_STANDALONE)
-	$(NVCC) $(STANDALONE_NVCC_FLAGS) -c $< -o $@
+	$(NVCC) $(STANDALONE_NVCC_FLAGS) -c "$<" -o "$@"
 
 $(BUILD_STANDALONE)/volume_textures.$(OBJ_EXT): \
     $(RENDERER_DIR)/volume_textures.cu \
     $(COMMON_DIR)/volume_structs.h | $(BUILD_STANDALONE)
-	$(NVCC) $(STANDALONE_NVCC_FLAGS) -c $< -o $@
+	$(NVCC) $(STANDALONE_NVCC_FLAGS) -c "$<" -o "$@"
 
 $(BUILD_STANDALONE)/standalone_main.$(OBJ_EXT): \
     standalone_main.cu \
     $(COMMON_DIR)/volume_structs.h \
     $(COMMON_DIR)/math_utils.h \
+    $(COMMON_DIR)/volume_import.h \
     $(GLEW_DIR)/include/GL/glew.h | $(BUILD_STANDALONE)
-	$(NVCC) $(STANDALONE_NVCC_FLAGS) -c $< -o $@
+	$(NVCC) $(STANDALONE_NVCC_FLAGS) -c "$<" -o "$@"
+
+$(BUILD_STANDALONE)/volume_import.$(OBJ_EXT): \
+    $(COMMON_DIR)/volume_import.cpp \
+    $(COMMON_DIR)/volume_import.h | $(BUILD_STANDALONE)
+ifeq ($(OS),Windows_NT)
+	$(CXX) /nologo /EHsc /std:c++17 /O2 /I$(COMMON_DIR) /Fo$@ /c $(COMMON_DIR)/volume_import.cpp
+else
+	$(CXX) -O2 -std=c++17 -I$(COMMON_DIR) -c $< -o $@
+endif
 
 $(BUILD_STANDALONE)/glew.$(OBJ_EXT): \
     $(GLEW_SRC) \
@@ -217,31 +232,31 @@ endif
 
 $(BUILD_STANDALONE)/imgui.$(OBJ_EXT): \
     $(IMGUI_DIR)/imgui.cpp | $(BUILD_STANDALONE)
-	$(NVCC) $(STANDALONE_NVCC_FLAGS) -x cu -c $< -o $@
+	$(NVCC) $(STANDALONE_NVCC_FLAGS) -x cu -c "$<" -o "$@"
 
 $(BUILD_STANDALONE)/imgui_draw.$(OBJ_EXT): \
     $(IMGUI_DIR)/imgui_draw.cpp | $(BUILD_STANDALONE)
-	$(NVCC) $(STANDALONE_NVCC_FLAGS) -x cu -c $< -o $@
+	$(NVCC) $(STANDALONE_NVCC_FLAGS) -x cu -c "$<" -o "$@"
 
 $(BUILD_STANDALONE)/imgui_tables.$(OBJ_EXT): \
     $(IMGUI_DIR)/imgui_tables.cpp | $(BUILD_STANDALONE)
-	$(NVCC) $(STANDALONE_NVCC_FLAGS) -x cu -c $< -o $@
+	$(NVCC) $(STANDALONE_NVCC_FLAGS) -x cu -c "$<" -o "$@"
 
 $(BUILD_STANDALONE)/imgui_widgets.$(OBJ_EXT): \
     $(IMGUI_DIR)/imgui_widgets.cpp | $(BUILD_STANDALONE)
-	$(NVCC) $(STANDALONE_NVCC_FLAGS) -x cu -c $< -o $@
+	$(NVCC) $(STANDALONE_NVCC_FLAGS) -x cu -c "$<" -o "$@"
 
 $(BUILD_STANDALONE)/imgui_impl_glfw.$(OBJ_EXT): \
     $(IMGUI_BACKEND)/imgui_impl_glfw.cpp | $(BUILD_STANDALONE)
-	$(NVCC) $(STANDALONE_NVCC_FLAGS) -x cu -c $< -o $@
+	$(NVCC) $(STANDALONE_NVCC_FLAGS) -x cu -c "$<" -o "$@"
 
 $(BUILD_STANDALONE)/imgui_impl_opengl3.$(OBJ_EXT): \
     $(IMGUI_BACKEND)/imgui_impl_opengl3.cpp | $(BUILD_STANDALONE)
-	$(NVCC) $(STANDALONE_NVCC_FLAGS) -x cu -c $< -o $@
+	$(NVCC) $(STANDALONE_NVCC_FLAGS) -x cu -c "$<" -o "$@"
 
 $(BUILD_STANDALONE)/tinyfiledialogs.$(OBJ_EXT): \
     $(TINY_DIR)/tinyfiledialogs.c | $(BUILD_STANDALONE)
-	$(NVCC) $(STANDALONE_NVCC_FLAGS) -x cu -c $< -o $@
+	$(NVCC) $(STANDALONE_NVCC_FLAGS) -x cu -c "$<" -o "$@"
 
 
 # ============================================================

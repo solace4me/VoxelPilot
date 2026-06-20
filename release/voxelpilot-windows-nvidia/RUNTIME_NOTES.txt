@@ -18,7 +18,7 @@ What the launcher does
 ----------------------
 - Confirms the app exe exists
 - Checks whether nvidia-smi is available
-- Adds the CUDA toolkit bin folder to PATH if it is installed in the default location
+- Adds the CUDA toolkit bin folder to PATH from CUDA_PATH or the newest default CUDA install folder
 - Starts the standalone app
 - Prints a simple checklist if startup fails
 
@@ -39,9 +39,12 @@ If startup fails on the NVIDIA laptop
 1. Update or reinstall the NVIDIA driver.
 2. Make sure the app is using the NVIDIA GPU, not an integrated-only path.
 3. Confirm OpenGL works correctly on that machine.
-4. If CUDA toolkit is installed, keep the default installation path or update the launcher.
+4. If CUDA toolkit is installed, confirm CUDA_PATH is set or keep the default NVIDIA toolkit install location.
 
 Volume data expectations
 ------------------------
-- Raw float volume files are supported by the current loader flow.
-- The in-app dimension selector should match the actual dataset size.
+- Headerless raw volume files are supported.
+- Supported voxel types: uint8, uint16, float32.
+- The import controls now use Width, Height, Depth, and Data Type.
+- The selected dataset size must exactly match width x height x depth x bytes_per_voxel.
+- Filenames like foot_256x256x256_uint8.raw can be auto-detected by the importer.

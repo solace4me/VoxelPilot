@@ -71,7 +71,9 @@ typedef struct {
 void renderer_state_init(
     RendererState *st,
     const char    *volume_path,
-    int            dim,
+    int            width,
+    int            height,
+    int            depth,
     int            brick_dim);
 
 void renderer_state_cleanup(RendererState *st);
@@ -85,6 +87,8 @@ void apply_render_command(
 int reload_volume(
     RendererState *st,
     const float   *new_data,
-    int            new_dim);
+    int            width,
+    int            height,
+    int            depth);
 
 #endif /* RENDERER_API_H */

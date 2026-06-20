@@ -68,12 +68,56 @@ static void check_cuda(cudaError_t err, const char *msg)
     }
 }
 
+static void warn_cuda_nonfatal(cudaError_t err, const char *msg)
+{
+    const char *err_name = cudaGetErrorName(err);
+    const char *err_text = cudaGetErrorString(err);
+    if (!err_name) err_name = "unknown";
+    if (!err_text) err_text = "no error string available";
+    fprintf(stderr,
+            "Warning: CUDA optimization skipped at %s: [%d] %s - %s\n",
+            msg, (int)err, err_name, err_text);
+    cudaGetLastError();
+}
+
 static cudaMemLocation make_device_location(int device)
 {
     cudaMemLocation location;
     location.type = cudaMemLocationTypeDevice;
     location.id = device;
     return location;
+}
+
+static void apply_managed_memory_hints(
+    float *volume_data,
+    size_t volume_bytes,
+    int device,
+    const char *stage)
+{
+    cudaMemLocation device_location;
+    cudaError_t err;
+    char advise_label[64];
+    char prefetch_label[64];
+
+    device_location = make_device_location(device);
+
+    snprintf(advise_label, sizeof(advise_label),
+             "cudaMemAdvise(%s)", stage);
+    err = cudaMemAdvise(
+        volume_data, volume_bytes,
+        cudaMemAdviseSetPreferredLocation, device_location);
+    if (err != cudaSuccess) {
+        warn_cuda_nonfatal(err, advise_label);
+        return;
+    }
+
+    snprintf(prefetch_label, sizeof(prefetch_label),
+             "cudaMemPrefetchAsync(%s)", stage);
+    err = cudaMemPrefetchAsync(
+        volume_data, volume_bytes, device_location, 0, NULL);
+    if (err != cudaSuccess) {
+        warn_cuda_nonfatal(err, prefetch_label);
+    }
 }
 
 
@@ -393,10 +437,11 @@ void apply_render_command(
 int reload_volume(
     RendererState *st,
     const float   *new_data,
-    int            new_dim)
+    int            width,
+    int            height,
+    int            depth)
 {
     cudaTextureObject_t zeroTex;
-    cudaMemLocation device_location;
 
     /* Free old textures */
     zeroTex = 0;
@@ -415,18 +460,18 @@ int reload_volume(
     }
 
     /* Update dimensions */
-    st->W = new_dim;
-    st->H = new_dim;
-    st->D = new_dim;
+    st->W = width;
+    st->H = height;
+    st->D = depth;
 
-    st->vol_bytes = (size_t)new_dim
-                  * (size_t)new_dim
-                  * (size_t)new_dim
+    st->vol_bytes = (size_t)width
+                  * (size_t)height
+                  * (size_t)depth
                   * sizeof(float);
 
-    st->vparams.width  = new_dim;
-    st->vparams.height = new_dim;
-    st->vparams.depth  = new_dim;
+    st->vparams.width  = width;
+    st->vparams.height = height;
+    st->vparams.depth  = depth;
 
     /* Allocate new managed memory */
     check_cuda(
@@ -447,18 +492,9 @@ int reload_volume(
     set_device_texture_objects(
         st->volRes.volTex, st->volRes.gradTex);
 
-    /* GPU memory advise */
-    device_location = make_device_location(0);
-    check_cuda(
-        cudaMemAdvise(
-            st->volume_data, st->vol_bytes,
-            cudaMemAdviseSetPreferredLocation, device_location),
-        "cudaMemAdvise(reload)");
-
-    check_cuda(
-        cudaMemPrefetchAsync(
-            st->volume_data, st->vol_bytes, device_location, 0, NULL),
-        "cudaMemPrefetchAsync(reload)");
+    /* Unified memory hints are optional on some Windows driver setups. */
+    apply_managed_memory_hints(
+        st->volume_data, st->vol_bytes, 0, "reload");
 
     /* Rebuild bricks */
     build_brick_grid(st);
@@ -478,25 +514,24 @@ int reload_volume(
 void renderer_state_init(
     RendererState  *st,
     const char     *volume_path,
-    int             dim,
+    int             width,
+    int             height,
+    int             depth,
     int             brick_dim)
 {
-    int device;
-    cudaMemLocation device_location;
-
     memset(st, 0, sizeof(RendererState));
 
-    st->W = dim;
-    st->H = dim;
-    st->D = dim;
+    st->W = width;
+    st->H = height;
+    st->D = depth;
     st->brick_dim = brick_dim;
 
-    st->vol_bytes = (size_t)dim * (size_t)dim * (size_t)dim * sizeof(float);
+    st->vol_bytes = (size_t)width * (size_t)height * (size_t)depth * sizeof(float);
 
     /* Default rendering params */
-    st->vparams.width                = dim;
-    st->vparams.height               = dim;
-    st->vparams.depth                = dim;
+    st->vparams.width                = width;
+    st->vparams.height               = height;
+    st->vparams.depth                = depth;
     st->vparams.step_size            = 0.0025f;
     st->vparams.threshold            = 0.95f;
     st->vparams.empty_space_skip_mult = 2.0f;
@@ -554,17 +589,9 @@ void renderer_state_init(
         st->volume_data, st->W, st->H, st->D, &st->volRes);
     set_device_texture_objects(st->volRes.volTex, st->volRes.gradTex);
 
-    /* Set GPU preferred location for managed memory */
-    device = 0;
-    device_location = make_device_location(device);
-    check_cuda(
-        cudaMemAdvise(st->volume_data, st->vol_bytes,
-                      cudaMemAdviseSetPreferredLocation, device_location),
-        "cudaMemAdvise");
-    check_cuda(
-        cudaMemPrefetchAsync(
-            st->volume_data, st->vol_bytes, device_location, 0, NULL),
-        "cudaMemPrefetchAsync");
+    /* Unified memory hints are optional on some Windows driver setups. */
+    apply_managed_memory_hints(
+        st->volume_data, st->vol_bytes, 0, "init");
 
     /* Build bricks */
     build_brick_grid(st);

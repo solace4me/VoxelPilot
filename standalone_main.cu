@@ -7,10 +7,13 @@
    Usage:
      ./volume_renderer_standalone
      ./volume_renderer_standalone --volume brain.raw --dim 256
+     ./volume_renderer_standalone --volume foot_256x256x256_uint8.raw
+     ./volume_renderer_standalone --volume head.raw --width 512 --height 512 --depth 256 --type uint16
    ============================================================ */
 
 #include <cuda_runtime.h>
 #include <float.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -31,6 +34,8 @@
 #include "common/volume_structs.h"
 #include "common/math_utils.h"
 #include "common/renderer_api.h"
+#include "common/ui_state_helpers.h"
+#include "common/volume_import.h"
 
 /* ============================================================
    Constants
@@ -93,7 +98,13 @@ typedef struct {
 
     /* Volume upload */
     char          upload_path[1024];
-    int           upload_dim;
+    int           upload_width;
+    int           upload_height;
+    int           upload_depth;
+    int           upload_data_type;
+    size_t        upload_file_size_bytes;
+    int           upload_file_size_known;
+    char          upload_hint_status[256];
     char          upload_status[256];
     char          screenshot_status[256];
     char          screenshot_path[MAX_PATH_BUF];
@@ -132,6 +143,8 @@ typedef struct {
     float         pending_scroll;
     int           orbit_drag_active;
     int           dock_layout_ready;
+    float         dock_layout_viewport_w;
+    float         dock_layout_viewport_h;
     int           demo_mode_enabled;
     int           walkthrough_visible;
     int           walkthrough_step;
@@ -160,6 +173,12 @@ static const char *k_tf_palette_labels[] = {
     "Cool"
 };
 
+static const char *k_volume_data_type_labels[] = {
+    "uint8",
+    "uint16",
+    "float32"
+};
+
 static const char *k_walkthrough_titles[] = {
     "1. Launch And Readiness",
     "2. Volume Import",
@@ -171,7 +190,7 @@ static const char *k_walkthrough_titles[] = {
 
 static const char *k_walkthrough_bodies[] = {
     "Confirm the demo is running on the NVIDIA laptop, the main panels are visible, and the renderer is updating smoothly.",
-    "Use Browse, match the dataset dimension, and click Load Volume. Watch the dataset status text and metadata update.",
+    "Use Browse, confirm width, height, depth, and data type, then click Load Volume. Watch the dataset status text and metadata update.",
     "Use Front or Isometric, then orbit in the viewport and zoom with the mouse wheel to frame the anatomy clearly.",
     "Move Sagittal X, Coronal Y, and Axial Z in Insights to explain how the orthogonal slices complement the 3D view.",
     "Set Point A and Point B from the current slice position to show a quick distance readout in voxels and world units.",
@@ -245,6 +264,7 @@ static void apply_demo_theme(void)
 
 static void sync_orbit_from_camera(StandaloneApp *app);
 static void sync_resolution_selection(StandaloneApp *app);
+static void refresh_upload_file_details(StandaloneApp *app);
 
 static int detect_cuda_runtime(char *message, size_t message_size)
 {
@@ -484,13 +504,7 @@ static float measurement_distance_world(const StandaloneApp *app)
 
 static int clipping_is_active(const StandaloneApp *app)
 {
-    int i;
-    for (i = 0; i < 3; ++i) {
-        if (app->clip_min[i] > 0.0f || app->clip_max[i] < 1.0f) {
-            return 1;
-        }
-    }
-    return 0;
+    return voxelpilot_clip_is_active(app->clip_min, app->clip_max);
 }
 
 static void set_camera_preset(
@@ -586,12 +600,7 @@ static void reset_workspace(StandaloneApp *app)
     app->tf_opacity_scale = 1.0f;
     app->tf_palette = 0;
     app->tf_invert = 0;
-    app->clip_min[0] = 0.0f;
-    app->clip_min[1] = 0.0f;
-    app->clip_min[2] = 0.0f;
-    app->clip_max[0] = 1.0f;
-    app->clip_max[1] = 1.0f;
-    app->clip_max[2] = 1.0f;
+    voxelpilot_set_default_clip_bounds(app->clip_min, app->clip_max);
     app->slice_x = 0.5f;
     app->slice_y = 0.5f;
     app->slice_z = 0.5f;
@@ -670,6 +679,127 @@ static void sync_resolution_selection(StandaloneApp *app)
     }
 
     app->selected_resolution = -1;
+}
+
+static int clamp_import_dimension(int value)
+{
+    if (value < 1) return 1;
+    if (value > 4096) return 4096;
+    return value;
+}
+
+static int query_file_size_bytes(const char *path, size_t *out_size)
+{
+    FILE *fp;
+    __int64 size_64;
+
+    if (!path || !path[0] || !out_size) {
+        return -1;
+    }
+
+    fp = fopen(path, "rb");
+    if (!fp) {
+        return -1;
+    }
+
+#if defined(_WIN32)
+    if (_fseeki64(fp, 0, SEEK_END) != 0) {
+        fclose(fp);
+        return -1;
+    }
+#else
+    if (fseek(fp, 0, SEEK_END) != 0) {
+        fclose(fp);
+        return -1;
+    }
+#endif
+
+#if defined(_WIN32)
+    size_64 = _ftelli64(fp);
+#else
+    size_64 = ftell(fp);
+#endif
+    fclose(fp);
+    if (size_64 < 0) {
+        return -1;
+    }
+
+    *out_size = (size_t)size_64;
+    return 0;
+}
+
+static int parse_cli_int(const char *text, int *out_value)
+{
+    char *end = NULL;
+    long value;
+
+    if (!text || !out_value) {
+        return -1;
+    }
+
+    value = strtol(text, &end, 10);
+    if (end == text || (end && *end != '\0')) {
+        return -1;
+    }
+
+    if (value < 1 || value > 4096) {
+        return -1;
+    }
+
+    *out_value = (int)value;
+    return 0;
+}
+
+static int parse_cli_data_type(const char *text, int *out_data_type)
+{
+    VolumeDataType data_type;
+
+    if (!text || !out_data_type) {
+        return -1;
+    }
+
+    if (volume_import_parse_data_type(text, &data_type) != 0) {
+        return -1;
+    }
+
+    *out_data_type = (int)data_type;
+    return 0;
+}
+
+static void refresh_upload_file_details(StandaloneApp *app)
+{
+    VolumeImportSpec inferred_spec;
+
+    app->upload_file_size_known = 0;
+    app->upload_file_size_bytes = 0;
+
+    if (!app->upload_path[0]) {
+        strcpy(app->upload_hint_status, "No file selected.");
+        return;
+    }
+
+    if (query_file_size_bytes(app->upload_path, &app->upload_file_size_bytes) == 0) {
+        app->upload_file_size_known = 1;
+    }
+
+    if (volume_import_infer_from_filename(app->upload_path, &inferred_spec) == 0) {
+        app->upload_width = (int)inferred_spec.width;
+        app->upload_height = (int)inferred_spec.height;
+        app->upload_depth = (int)inferred_spec.depth;
+        app->upload_data_type = (int)inferred_spec.data_type;
+        snprintf(
+            app->upload_hint_status,
+            sizeof(app->upload_hint_status),
+            "Detected %ux%ux%u %s from filename.",
+            inferred_spec.width,
+            inferred_spec.height,
+            inferred_spec.depth,
+            volume_import_data_type_label(inferred_spec.data_type));
+    } else {
+        strcpy(
+            app->upload_hint_status,
+            "No size/data-type pattern detected in filename. Enter the settings manually.");
+    }
 }
 
 static int write_png_file(
@@ -1048,7 +1178,7 @@ static void draw_fullscreen_quad(StandaloneApp *app)
 static void draw_dockspace(void)
 {
 #ifdef IMGUI_HAS_DOCK
-    ImGuiDockNodeFlags dockspace_flags = ImGuiDockNodeFlags_None;
+    ImGuiDockNodeFlags dockspace_flags = ImGuiDockNodeFlags_PassthruCentralNode;
     ImGuiWindowFlags window_flags =
         ImGuiWindowFlags_NoDocking |
         ImGuiWindowFlags_NoTitleBar |
@@ -1058,6 +1188,10 @@ static void draw_dockspace(void)
         ImGuiWindowFlags_NoBringToFrontOnFocus |
         ImGuiWindowFlags_NoNavFocus;
     const ImGuiViewport *viewport = ImGui::GetMainViewport();
+
+    if (dockspace_flags & ImGuiDockNodeFlags_PassthruCentralNode) {
+        window_flags |= ImGuiWindowFlags_NoBackground;
+    }
 
     ImGui::SetNextWindowPos(viewport->Pos);
     ImGui::SetNextWindowSize(viewport->Size);
@@ -1082,15 +1216,28 @@ static void ensure_default_dock_layout(StandaloneApp *app)
     ImGuiID dock_bottom_id;
     ImGuiID dock_right_mid_id;
     ImGuiID dock_right_bottom_id;
+    const ImGuiViewport *viewport = ImGui::GetMainViewport();
 
-    if (app->dock_layout_ready) {
+    dockspace_id = ImGui::GetID("VoxelPilotDockspace");
+
+    if (app->dock_layout_ready &&
+        !voxelpilot_should_rebuild_dock_layout(
+            app->dock_layout_viewport_w,
+            app->dock_layout_viewport_h,
+            viewport->Size.x,
+            viewport->Size.y)) {
         return;
     }
 
-    dockspace_id = ImGui::GetID("VoxelPilotDockspace");
+    app->dock_layout_viewport_w = viewport->Size.x;
+    app->dock_layout_viewport_h = viewport->Size.y;
+
     ImGui::DockBuilderRemoveNode(dockspace_id);
-    ImGui::DockBuilderAddNode(dockspace_id, ImGuiDockNodeFlags_DockSpace);
-    ImGui::DockBuilderSetNodeSize(dockspace_id, ImGui::GetMainViewport()->Size);
+    ImGui::DockBuilderAddNode(
+        dockspace_id,
+        ImGuiDockNodeFlags_DockSpace |
+        ImGuiDockNodeFlags_PassthruCentralNode);
+    ImGui::DockBuilderSetNodeSize(dockspace_id, viewport->Size);
 
     dock_main_id = dockspace_id;
     dock_left_id = ImGui::DockBuilderSplitNode(dock_main_id, ImGuiDir_Left, 0.28f, NULL, &dock_main_id);
@@ -1119,6 +1266,7 @@ static void set_default_window_layout(
 {
 #ifndef IMGUI_HAS_DOCK
     const ImGuiViewport *viewport = ImGui::GetMainViewport();
+    ImGuiCond layout_cond = ImGuiCond_Always;
     float left_width;
     float right_width;
     float bottom_height;
@@ -1140,52 +1288,58 @@ static void set_default_window_layout(
     right_bottom_height = main_height - right_top_height - right_mid_height - right_low_height;
 
     if (strcmp(name, "Controls") == 0) {
+        ImGui::SetNextWindowCollapsed(false, layout_cond);
         ImGui::SetNextWindowPos(
             ImVec2(viewport->Pos.x, viewport->Pos.y),
-            ImGuiCond_FirstUseEver);
+            layout_cond);
         ImGui::SetNextWindowSize(
             ImVec2(left_width, main_height),
-            ImGuiCond_FirstUseEver);
+            layout_cond);
     } else if (strcmp(name, "Insights") == 0) {
+        ImGui::SetNextWindowCollapsed(false, layout_cond);
         ImGui::SetNextWindowPos(
             ImVec2(viewport->Pos.x + viewport->Size.x - right_width,
                    viewport->Pos.y),
-            ImGuiCond_FirstUseEver);
+            layout_cond);
         ImGui::SetNextWindowSize(
             ImVec2(right_width, right_top_height),
-            ImGuiCond_FirstUseEver);
+            layout_cond);
     } else if (strcmp(name, "Metadata") == 0) {
+        ImGui::SetNextWindowCollapsed(false, layout_cond);
         ImGui::SetNextWindowPos(
             ImVec2(viewport->Pos.x + viewport->Size.x - right_width,
                    viewport->Pos.y + right_top_height),
-            ImGuiCond_FirstUseEver);
+            layout_cond);
         ImGui::SetNextWindowSize(
             ImVec2(right_width, right_mid_height),
-            ImGuiCond_FirstUseEver);
+            layout_cond);
     } else if (strcmp(name, "Help") == 0) {
+        ImGui::SetNextWindowCollapsed(false, layout_cond);
         ImGui::SetNextWindowPos(
             ImVec2(viewport->Pos.x + viewport->Size.x - right_width,
                    viewport->Pos.y + right_top_height + right_mid_height),
-            ImGuiCond_FirstUseEver);
+            layout_cond);
         ImGui::SetNextWindowSize(
             ImVec2(right_width, right_low_height),
-            ImGuiCond_FirstUseEver);
+            layout_cond);
     } else if (strcmp(name, "About") == 0) {
+        ImGui::SetNextWindowCollapsed(false, layout_cond);
         ImGui::SetNextWindowPos(
             ImVec2(viewport->Pos.x + viewport->Size.x - right_width,
                    viewport->Pos.y + right_top_height + right_mid_height + right_low_height),
-            ImGuiCond_FirstUseEver);
+            layout_cond);
         ImGui::SetNextWindowSize(
             ImVec2(right_width, right_bottom_height),
-            ImGuiCond_FirstUseEver);
+            layout_cond);
     } else if (strcmp(name, "Status") == 0) {
+        ImGui::SetNextWindowCollapsed(false, layout_cond);
         ImGui::SetNextWindowPos(
             ImVec2(viewport->Pos.x,
                    viewport->Pos.y + viewport->Size.y - bottom_height),
-            ImGuiCond_FirstUseEver);
+            layout_cond);
         ImGui::SetNextWindowSize(
             ImVec2(viewport->Size.x, bottom_height),
-            ImGuiCond_FirstUseEver);
+            layout_cond);
     }
 #else
     (void)app;
@@ -1446,34 +1600,48 @@ static void draw_controls_panel(StandaloneApp *app)
     /* ---- Volume Upload (direct, no network) ---- */
     ImGui::Text("Volume Import");
 
-    /* Dimension selector */
+    if (ImGui::InputInt("Width", &app->upload_width)) {
+        app->upload_width = clamp_import_dimension(app->upload_width);
+    }
+    if (ImGui::InputInt("Height", &app->upload_height)) {
+        app->upload_height = clamp_import_dimension(app->upload_height);
+    }
+    if (ImGui::InputInt("Depth", &app->upload_depth)) {
+        app->upload_depth = clamp_import_dimension(app->upload_depth);
+    }
+    ImGui::Combo("Data Type",
+                 &app->upload_data_type,
+                 k_volume_data_type_labels, 3);
+
     {
-        const char *dim_labels[] = {"128","256","384","512"};
-        int dim_values[]         = { 128,  256,  384,  512 };
-        int current_idx = 1;
-        for (int i = 0; i < 4; i++) {
-            if (dim_values[i] == app->upload_dim) {
-                current_idx = i;
-                break;
+        VolumeImportSpec spec = {
+            (uint32_t)app->upload_width,
+            (uint32_t)app->upload_height,
+            (uint32_t)app->upload_depth,
+            (VolumeDataType)app->upload_data_type
+        };
+        size_t expected = 0;
+
+        if (volume_import_expected_bytes(&spec, &expected) == 0) {
+            ImGui::Text("Expected dataset size: %.1f MB",
+                        (double)expected / (1024.0 * 1024.0));
+            if (app->upload_file_size_known) {
+                ImGui::Text("Selected file size: %.1f MB",
+                            (double)app->upload_file_size_bytes / (1024.0 * 1024.0));
+                if (app->upload_file_size_bytes == expected) {
+                    ImGui::TextColored(
+                        ImVec4(0.40f, 0.88f, 0.78f, 1.0f),
+                        "Current settings match the selected file.");
+                } else {
+                    ImGui::TextColored(
+                        ImVec4(0.94f, 0.66f, 0.36f, 1.0f),
+                        "Current settings do not match the selected file size.");
+                }
             }
-        }
-        if (ImGui::Combo("Volume Dim",
-                         &current_idx,
-                         dim_labels, 4)) {
-            app->upload_dim = dim_values[current_idx];
         }
     }
 
-    /* Expected file size */
-    {
-        size_t expected =
-            (size_t)app->upload_dim *
-            (size_t)app->upload_dim *
-            (size_t)app->upload_dim *
-            sizeof(float);
-        ImGui::Text("Expected dataset size: %.1f MB",
-                    (double)expected / (1024.0*1024.0));
-    }
+    ImGui::TextWrapped("Import hint: %s", app->upload_hint_status);
 
     /* Browse button - opens native file dialog */
     if (ImGui::Button("Browse..."))
@@ -1494,6 +1662,9 @@ static void draw_controls_panel(StandaloneApp *app)
                     sizeof(app->upload_path) - 1);
             app->upload_path[
                 sizeof(app->upload_path)-1] = '\0';
+            refresh_upload_file_details(app);
+            strcpy(app->upload_status,
+                   "File selected. Review the import settings, then click Load Volume.");
         }
     }
 
@@ -1507,51 +1678,55 @@ static void draw_controls_panel(StandaloneApp *app)
     /* Load button - loads DIRECTLY to GPU, no network */
     if (ImGui::Button("Load Volume"))
     {
-        FILE   *fp;
-        uint32_t dim      = (uint32_t)app->upload_dim;
-        size_t   expected = (size_t)dim * dim * dim
-                          * sizeof(float);
+        VolumeImportSpec spec = {
+            (uint32_t)clamp_import_dimension(app->upload_width),
+            (uint32_t)clamp_import_dimension(app->upload_height),
+            (uint32_t)clamp_import_dimension(app->upload_depth),
+            (VolumeDataType)app->upload_data_type
+        };
+        float *temp = NULL;
+        size_t voxel_count = 0;
+        char error[256];
+        size_t expected = 0;
 
-        fp = fopen(app->upload_path, "rb");
-        if (!fp) {
+        app->upload_width = (int)spec.width;
+        app->upload_height = (int)spec.height;
+        app->upload_depth = (int)spec.depth;
+
+        if (!app->upload_path[0]) {
+            strcpy(app->upload_status,
+                   "Select a raw volume file before loading.");
+        } else if (volume_import_load(
+                       app->upload_path,
+                       &spec,
+                       &temp,
+                       &voxel_count,
+                       error,
+                       sizeof(error)) != 0) {
             snprintf(app->upload_status,
                      sizeof(app->upload_status),
-                     "Cannot open file: %s",
-                     app->upload_path);
+                     "%s",
+                     error);
         } else {
-            float *temp = (float *)malloc(expected);
-            if (!temp) {
-                strcpy(app->upload_status,
-                       "Memory alloc failed");
-                fclose(fp);
-            } else {
-                size_t n = fread(temp, 1, expected, fp);
-                fclose(fp);
-
-                if (n != expected) {
-                    snprintf(app->upload_status,
-                             sizeof(app->upload_status),
-                             "Read error: %zu / %zu bytes",
-                             n, expected);
-                    free(temp);
-                } else {
-                    /* Load DIRECTLY into GPU - no TCP! */
-                    strcpy(app->upload_status,
-                           "Loading to GPU...");
-                    reload_volume(
-                        &app->renderer,
-                        temp,
-                        (int)dim);
-                    update_histogram(app);
-                    snprintf(app->upload_status,
-                             sizeof(app->upload_status),
-                             "Loaded: %dx%dx%d (%.1f MB)",
-                             (int)dim, (int)dim, (int)dim,
-                             (double)expected
-                             / (1024.0*1024.0));
-                    free(temp);
-                }
-            }
+            volume_import_expected_bytes(&spec, &expected);
+            strcpy(app->upload_status,
+                   "Loading to GPU...");
+            reload_volume(
+                &app->renderer,
+                temp,
+                (int)spec.width,
+                (int)spec.height,
+                (int)spec.depth);
+            update_histogram(app);
+            snprintf(app->upload_status,
+                     sizeof(app->upload_status),
+                     "Loaded: %ux%ux%u %s (%zu voxels, %.1f MB)",
+                     spec.width, spec.height, spec.depth,
+                     volume_import_data_type_label(spec.data_type),
+                     voxel_count,
+                     (double)expected / (1024.0 * 1024.0));
+            volume_import_free(temp);
+            temp = NULL;
         }
     }
 
@@ -1665,7 +1840,7 @@ static void draw_help_panel(StandaloneApp *app)
     ImGui::Spacing();
     ImGui::Text("Quick Demo Flow");
     ImGui::Separator();
-    ImGui::BulletText("Use `Browse...`, set `Volume Dim`, and click `Load Volume`.");
+    ImGui::BulletText("Use `Browse...`, confirm `Width`, `Height`, `Depth`, and `Data Type`, then click `Load Volume`.");
     ImGui::BulletText("Try `Front` and `Isometric`, then orbit and zoom in the main viewport.");
     ImGui::BulletText("Adjust `Sagittal X`, `Coronal Y`, and `Axial Z` in Insights for slice review.");
     ImGui::BulletText("Use `Set A From Slices` and `Set B From Slices` for a quick measurement pass.");
@@ -2001,9 +2176,22 @@ int main(int argc, char **argv)
 {
     StandaloneApp app;
     const char   *volume_path = NULL;
-    int           dim         = 256;
+    int           startup_width = 256;
+    int           startup_height = 256;
+    int           startup_depth = 256;
+    int           startup_data_type = VOLUME_DATA_FLOAT32;
+    int           startup_width_set = 0;
+    int           startup_height_set = 0;
+    int           startup_depth_set = 0;
+    int           startup_type_set = 0;
     int           brick_dim   = 64;
     char          cuda_status[256];
+    char          startup_error[256];
+    size_t        startup_voxel_count = 0;
+    float        *startup_volume_data = NULL;
+    VolumeImportSpec startup_spec;
+    VolumeImportSpec inferred_spec;
+    int           inferred_spec_valid = 0;
 
     /* Parse args */
     for (int i = 1; i < argc; i++) {
@@ -2012,7 +2200,107 @@ int main(int argc, char **argv)
             volume_path = argv[++i];
         } else if (strcmp(argv[i], "--dim") == 0 &&
                    i+1 < argc) {
-            dim = atoi(argv[++i]);
+            if (parse_cli_int(argv[++i], &startup_width) != 0) {
+                fprintf(stderr, "Invalid value for --dim: %s\n", argv[i]);
+                return -1;
+            }
+            startup_height = startup_width;
+            startup_depth = startup_width;
+            startup_width_set = 1;
+            startup_height_set = 1;
+            startup_depth_set = 1;
+        } else if (strcmp(argv[i], "--width") == 0 &&
+                   i+1 < argc) {
+            if (parse_cli_int(argv[++i], &startup_width) != 0) {
+                fprintf(stderr, "Invalid value for --width: %s\n", argv[i]);
+                return -1;
+            }
+            startup_width_set = 1;
+        } else if (strcmp(argv[i], "--height") == 0 &&
+                   i+1 < argc) {
+            if (parse_cli_int(argv[++i], &startup_height) != 0) {
+                fprintf(stderr, "Invalid value for --height: %s\n", argv[i]);
+                return -1;
+            }
+            startup_height_set = 1;
+        } else if (strcmp(argv[i], "--depth") == 0 &&
+                   i+1 < argc) {
+            if (parse_cli_int(argv[++i], &startup_depth) != 0) {
+                fprintf(stderr, "Invalid value for --depth: %s\n", argv[i]);
+                return -1;
+            }
+            startup_depth_set = 1;
+        } else if (strcmp(argv[i], "--type") == 0 &&
+                   i+1 < argc) {
+            if (parse_cli_data_type(argv[++i], &startup_data_type) != 0) {
+                fprintf(stderr,
+                        "Invalid value for --type: %s (use uint8, uint16, or float32)\n",
+                        argv[i]);
+                return -1;
+            }
+            startup_type_set = 1;
+        } else if (strcmp(argv[i], "--dim") == 0 &&
+                   i+1 >= argc) {
+            fprintf(stderr, "Missing value for --dim\n");
+            return -1;
+        } else if ((strcmp(argv[i], "--width") == 0 ||
+                    strcmp(argv[i], "--height") == 0 ||
+                    strcmp(argv[i], "--depth") == 0 ||
+                    strcmp(argv[i], "--type") == 0 ||
+                    strcmp(argv[i], "--volume") == 0) &&
+                   i+1 >= argc) {
+            fprintf(stderr, "Missing value for %s\n", argv[i]);
+            return -1;
+        } else {
+            fprintf(stderr, "Unknown argument: %s\n", argv[i]);
+            fprintf(stderr,
+                    "Usage: %s [--volume file.raw] [--dim N | --width W --height H --depth D] [--type uint8|uint16|float32]\n",
+                    argv[0]);
+            return -1;
+        }
+    }
+
+    memset(&startup_spec, 0, sizeof(startup_spec));
+    memset(&inferred_spec, 0, sizeof(inferred_spec));
+    memset(startup_error, 0, sizeof(startup_error));
+
+    if (volume_path) {
+        if (volume_import_infer_from_filename(volume_path, &inferred_spec) == 0) {
+            inferred_spec_valid = 1;
+            if (!startup_width_set) {
+                startup_width = (int)inferred_spec.width;
+            }
+            if (!startup_height_set) {
+                startup_height = (int)inferred_spec.height;
+            }
+            if (!startup_depth_set) {
+                startup_depth = (int)inferred_spec.depth;
+            }
+            if (!startup_type_set) {
+                startup_data_type = (int)inferred_spec.data_type;
+            }
+        }
+
+        startup_spec.width = (uint32_t)clamp_import_dimension(startup_width);
+        startup_spec.height = (uint32_t)clamp_import_dimension(startup_height);
+        startup_spec.depth = (uint32_t)clamp_import_dimension(startup_depth);
+        startup_spec.data_type = (VolumeDataType)startup_data_type;
+
+        if (volume_import_load(
+                volume_path,
+                &startup_spec,
+                &startup_volume_data,
+                &startup_voxel_count,
+                startup_error,
+                sizeof(startup_error)) != 0) {
+            fprintf(stderr, "Startup import failed: %s\n", startup_error);
+        } else {
+            printf("Startup import prepared: %ux%ux%u %s (%zu voxels)\n",
+                   startup_spec.width,
+                   startup_spec.height,
+                   startup_spec.depth,
+                   volume_import_data_type_label(startup_spec.data_type),
+                   startup_voxel_count);
         }
     }
 
@@ -2050,6 +2338,7 @@ int main(int argc, char **argv)
     app.tf_opacity_scale = 1.0f;
     app.tf_palette = 0;
     app.tf_invert = 0;
+    voxelpilot_set_default_clip_bounds(app.clip_min, app.clip_max);
     app.slice_x = 0.5f;
     app.slice_y = 0.5f;
     app.slice_z = 0.5f;
@@ -2068,7 +2357,33 @@ int main(int argc, char **argv)
     app.splash_status_index = 0;
 
     /* Upload defaults */
-    app.upload_dim = dim;
+    app.upload_width = clamp_import_dimension(startup_width);
+    app.upload_height = clamp_import_dimension(startup_height);
+    app.upload_depth = clamp_import_dimension(startup_depth);
+    app.upload_data_type = startup_data_type;
+    app.upload_file_size_bytes = 0;
+    app.upload_file_size_known = 0;
+    if (volume_path) {
+        strncpy(app.upload_path, volume_path, sizeof(app.upload_path) - 1);
+        app.upload_path[sizeof(app.upload_path) - 1] = '\0';
+        if (query_file_size_bytes(app.upload_path, &app.upload_file_size_bytes) == 0) {
+            app.upload_file_size_known = 1;
+        }
+        if (inferred_spec_valid) {
+            snprintf(app.upload_hint_status,
+                     sizeof(app.upload_hint_status),
+                     "Detected %ux%ux%u %s from filename.",
+                     inferred_spec.width,
+                     inferred_spec.height,
+                     inferred_spec.depth,
+                     volume_import_data_type_label(inferred_spec.data_type));
+        } else {
+            strcpy(app.upload_hint_status,
+                   "No size/data-type pattern detected in filename. Using the current import settings.");
+        }
+    } else {
+        strcpy(app.upload_hint_status, "No file selected.");
+    }
     strcpy(app.upload_status, "No volume loaded");
     strcpy(app.screenshot_status, "No snapshot saved");
     strcpy(app.screenshot_path, "volume_snapshot.png");
@@ -2081,16 +2396,49 @@ int main(int argc, char **argv)
         fprintf(stderr, "%s\n", cuda_status);
         strncpy(app.upload_status, cuda_status, sizeof(app.upload_status) - 1);
         app.upload_status[sizeof(app.upload_status) - 1] = '\0';
+        if (startup_volume_data) {
+            volume_import_free(startup_volume_data);
+            startup_volume_data = NULL;
+        }
         return -1;
     }
 
     /* Init CUDA renderer directly */
     renderer_state_init(
         &app.renderer,
-        volume_path,
-        dim,
+        NULL,
+        app.upload_width,
+        app.upload_height,
+        app.upload_depth,
         brick_dim);
-    update_histogram(&app);
+    if (startup_volume_data) {
+        strcpy(app.upload_status, "Loading startup volume to GPU...");
+        reload_volume(
+            &app.renderer,
+            startup_volume_data,
+            (int)startup_spec.width,
+            (int)startup_spec.height,
+            (int)startup_spec.depth);
+        update_histogram(&app);
+        snprintf(app.upload_status,
+                 sizeof(app.upload_status),
+                 "Loaded on startup: %ux%ux%u %s (%zu voxels)",
+                 startup_spec.width,
+                 startup_spec.height,
+                 startup_spec.depth,
+                 volume_import_data_type_label(startup_spec.data_type),
+                 startup_voxel_count);
+        volume_import_free(startup_volume_data);
+        startup_volume_data = NULL;
+    } else {
+        update_histogram(&app);
+        if (volume_path && startup_error[0]) {
+            snprintf(app.upload_status,
+                     sizeof(app.upload_status),
+                     "Startup import failed: %s. Synthetic volume loaded instead.",
+                     startup_error);
+        }
+    }
 
     /* GLFW */
     if (!glfwInit()) {
@@ -2130,6 +2478,7 @@ int main(int argc, char **argv)
     ImGui::CreateContext();
     {
         ImGuiIO *io = &ImGui::GetIO();
+        io->IniFilename = NULL;
 #ifdef IMGUI_HAS_DOCK
         io->ConfigFlags |= ImGuiConfigFlags_DockingEnable;
 #endif

@@ -10,9 +10,9 @@ Load a volume, inspect it from multiple views, place a simple measurement, and s
 
 1. Launch the app with `Run_VoxelPilot.bat`.
 2. In `Controls`, click `Browse...` and choose a raw volume file.
-3. Set `Volume Dim` to match the dataset.
+3. Confirm `Width`, `Height`, `Depth`, and `Data Type`.
 4. Click `Load Volume`.
-5. Wait for the `Load Status` text to confirm the volume was loaded.
+5. Wait for the import status text to confirm the volume was loaded.
 
 ## View Adjustment
 
