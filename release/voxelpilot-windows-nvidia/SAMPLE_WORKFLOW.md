@@ -48,4 +48,4 @@ Load a volume, inspect it from multiple views, place a simple measurement, and s
 
 1. Click `Save Preset`.
 2. Save a `.vpilot` workspace file.
-3. Reopen it with `Load Preset` to confirm the session restores correctly.
+3. Reopen it with `Load Preset` to confirm the session restores correctly
