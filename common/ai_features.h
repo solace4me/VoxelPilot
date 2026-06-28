@@ -677,7 +677,7 @@ static inline int voxelpilot_flood_fill_label_region(
 {
     size_t voxel_count;
     size_t seed_index;
-    unsigned int *queue;
+    size_t *queue;
     size_t read_index = 0;
     size_t write_index = 0;
     float seed_value;
@@ -706,20 +706,21 @@ static inline int voxelpilot_flood_fill_label_region(
     max_value = seed_value;
     tolerance = fabsf(tolerance);
 
-    queue = (unsigned int *)malloc(voxel_count * sizeof(unsigned int));
+    queue = (size_t *)malloc(voxel_count * sizeof(size_t));
     if (!queue) {
         return 0;
     }
 
     label_mask[seed_index] = label_id;
-    queue[write_index++] = (unsigned int)seed_index;
+    queue[write_index++] = seed_index;
 
     while (read_index < write_index) {
-        unsigned int packed = queue[read_index++];
-        int z = (int)(packed / ((unsigned int)width * (unsigned int)height));
-        int rem = (int)(packed - (unsigned int)z * (unsigned int)width * (unsigned int)height);
-        int y = rem / width;
-        int x = rem - y * width;
+        size_t packed = queue[read_index++];
+        size_t wh     = (size_t)width * (size_t)height;
+        int z = (int)(packed / wh);
+        size_t rem = packed - (size_t)z * wh;
+        int y = (int)(rem / (size_t)width);
+        int x = (int)(rem - (size_t)y * (size_t)width);
         float value = volume_data[packed];
         int neighbor_index;
 
@@ -755,7 +756,7 @@ static inline int voxelpilot_flood_fill_label_region(
             }
 
             label_mask[next_index] = label_id;
-            queue[write_index++] = (unsigned int)next_index;
+            queue[write_index++] = next_index;
         }
     }
 

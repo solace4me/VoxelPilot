@@ -83,6 +83,7 @@ typedef struct {
 
     /* GL */
     GLuint        prog;
+    GLint         tex_uniform_loc;
     GLuint        vao, vbo, ebo;
     GLuint        gl_tex;
     int           tex_w, tex_h;
@@ -218,6 +219,12 @@ typedef struct {
     int            slice_buf_W;
     int            slice_buf_H;
     int            slice_buf_D;
+
+    /* Dirty tracking for slice preview — skip CPU recompute when positions unchanged */
+    float          slice_prev_x;
+    float          slice_prev_y;
+    float          slice_prev_z;
+    int            slice_preview_dirty;
 
 } StandaloneApp;
 
@@ -438,6 +445,7 @@ static int setup_gl_resources(StandaloneApp *app)
     glLinkProgram(app->prog);
     glDeleteShader(vs);
     glDeleteShader(fs);
+    app->tex_uniform_loc = glGetUniformLocation(app->prog, "tex");
 
     float quadVerts[] = {
         -1,-1, 0,0,
@@ -1060,7 +1068,21 @@ static void update_slice_previews(StandaloneApp *app)
         app->slice_buf_W = W;
         app->slice_buf_H = H;
         app->slice_buf_D = D;
+        /* Force recompute on dimension change */
+        app->slice_preview_dirty = 1;
     }
+
+    /* Skip CPU recompute when slice positions and dirty flag are unchanged */
+    if (!app->slice_preview_dirty &&
+        app->slice_x == app->slice_prev_x &&
+        app->slice_y == app->slice_prev_y &&
+        app->slice_z == app->slice_prev_z) {
+        return;
+    }
+    app->slice_prev_x        = app->slice_x;
+    app->slice_prev_y        = app->slice_y;
+    app->slice_prev_z        = app->slice_z;
+    app->slice_preview_dirty = 0;
 
     axial_z    = (int)(app->slice_z * (float)(D - 1));
     coronal_y  = (int)(app->slice_y * (float)(H - 1));
@@ -1383,8 +1405,16 @@ static void export_annotation_mask(StandaloneApp *app)
                  "Could not write annotation mask.");
         return;
     }
-    fwrite(app->label_mask, 1, voxel_count, fp);
-    fclose(fp);
+    {
+        size_t written = fwrite(app->label_mask, 1, voxel_count, fp);
+        fclose(fp);
+        if (written != voxel_count) {
+            snprintf(app->annotation_status, sizeof(app->annotation_status),
+                     "Export failed: disk write incomplete (%zu of %zu bytes).",
+                     written, voxel_count);
+            return;
+        }
+    }
 
     snprintf(json_path, sizeof(json_path), "%s.json", selected);
     meta = fopen(json_path, "w");
@@ -1736,7 +1766,7 @@ static void render_frame_standalone(StandaloneApp *app)
         cmd.labels.width = app->label_mask_W;
         cmd.labels.height = app->label_mask_H;
         cmd.labels.depth = app->label_mask_D;
-        cmd.labels.label_count = MAX_ANNOTATIONS;
+        cmd.labels.label_count = app->annotation_count;
         cmd.labels.alpha = app->label_overlay_alpha;
         cmd.labels.revision = app->label_mask_revision;
 
@@ -1782,8 +1812,7 @@ static void draw_fullscreen_quad(StandaloneApp *app)
     glUseProgram(app->prog);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, app->gl_tex);
-    glUniform1i(
-        glGetUniformLocation(app->prog, "tex"), 0);
+    glUniform1i(app->tex_uniform_loc, 0);
     glBindVertexArray(app->vao);
     glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
     glBindVertexArray(0);
@@ -2362,6 +2391,7 @@ static void draw_controls_panel(StandaloneApp *app)
                 (int)spec.depth);
             update_histogram(app);
             apply_auto_enhance_on_load_if_safe(app, "Loaded volume");
+            app->slice_preview_dirty = 1;
             free(app->label_mask);
             app->label_mask = NULL;
             app->label_mask_W = 0;
@@ -3797,6 +3827,10 @@ int main(int argc, char **argv)
     app.annotation_color[2] = 0.16f;
     app.label_overlay_visible = 1;
     app.label_overlay_alpha = 0.55f;
+    app.slice_preview_dirty = 1;
+    app.slice_prev_x = -1.0f;
+    app.slice_prev_y = -1.0f;
+    app.slice_prev_z = -1.0f;
     app.selected_annotation = -1;
     strcpy(app.annotation_status, "No annotation regions yet.");
     strcpy(app.hover_description, "Hover over a slice preview for context.");
@@ -3853,6 +3887,7 @@ int main(int argc, char **argv)
             (int)startup_spec.depth);
         update_histogram(&app);
         apply_auto_enhance_on_load_if_safe(&app, "Startup volume");
+        app.slice_preview_dirty = 1;
         free(app.label_mask);
         app.label_mask = NULL;
         app.label_mask_W = 0;

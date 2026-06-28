@@ -189,7 +189,13 @@ __global__ void volume_render_kernel(
     float tan_fov = tanf(0.5f * cam.fov_y);
 
     float3 w = f3_normalize(cam.view_dir);
-    float3 u_cam = f3_normalize(f3_cross(w, cam.up));
+    /* If view direction is nearly parallel to up, fall back to world X axis
+       to avoid a zero cross product that would produce NaN basis vectors. */
+    float3 cross_test = f3_cross(w, cam.up);
+    float3 ref_up = (f3_dot(cross_test, cross_test) < 1e-6f)
+        ? f3_make(1.0f, 0.0f, 0.0f)
+        : cam.up;
+    float3 u_cam = f3_normalize(f3_cross(w, ref_up));
     float3 v_cam = f3_cross(u_cam, w);
 
     float3 ray_dir = f3_normalize(
