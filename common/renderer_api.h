@@ -3,6 +3,19 @@
 
 #include "volume_structs.h"
 
+#define RENDERER_MAX_LABELS 8
+
+typedef struct {
+    int      enabled;
+    int      width;
+    int      height;
+    int      depth;
+    int      label_count;
+    float    alpha;
+    uint32_t revision;
+    float    colors[RENDERER_MAX_LABELS * 3];
+} RendererLabelParams;
+
 typedef struct {
     float    cam_pos[3];
     float    cam_dir[3];
@@ -24,6 +37,9 @@ typedef struct {
 
     uint32_t img_width;
     uint32_t img_height;
+
+    const unsigned char *label_mask;
+    RendererLabelParams labels;
 } RendererInput;
 
 typedef struct {
@@ -47,13 +63,25 @@ typedef struct {
     /* Texture resources */
     VolumeResources volRes;
 
-    /* Device output buffer (grayscale) */
-    unsigned char  *d_out;
+    /* Device output buffer (RGBA) */
+    uchar4         *d_out;
     int             img_w;
     int             img_h;
+    int             out_w;
+    int             out_h;
 
-    /* Host output buffer (pinned) */
-    unsigned char  *h_out;
+    /* Host output buffer (pinned, RGBA) */
+    uchar4         *h_out;
+
+    /* Optional label-mask overlay */
+    unsigned char  *d_label_mask;
+    size_t          label_mask_bytes;
+    uint32_t        label_revision;
+    RendererLabelParams labels;
+
+    /* Cached CUDA timing events (created once, reused every frame) */
+    cudaEvent_t     start_event;
+    cudaEvent_t     stop_event;
 
     /* Camera */
     CameraParams    cam;

@@ -5,6 +5,7 @@
 #include <stdlib.h>
 
 #include "../common/volume_structs.h"
+#include "../common/renderer_api.h"
 #include "../common/math_utils.h"
 
 #ifndef NO_CUDA
@@ -100,19 +101,78 @@ __device__ static float3 sample_gradient_tex(
     return f3_normalize(out);
 }
 
+__device__ static unsigned char sample_label_mask(
+    const unsigned char *label_mask,
+    RendererLabelParams labels,
+    float3 posTex)
+{
+    int x;
+    int y;
+    int z;
+    size_t idx;
+
+    if (!label_mask ||
+        !labels.enabled ||
+        labels.width < 1 ||
+        labels.height < 1 ||
+        labels.depth < 1) {
+        return 0;
+    }
+
+    x = (int)(fminf(fmaxf(posTex.x, 0.0f), 1.0f) * (float)(labels.width - 1) + 0.5f);
+    y = (int)(fminf(fmaxf(posTex.y, 0.0f), 1.0f) * (float)(labels.height - 1) + 0.5f);
+    z = (int)(fminf(fmaxf(posTex.z, 0.0f), 1.0f) * (float)(labels.depth - 1) + 0.5f);
+
+    idx =
+        (size_t)z * (size_t)labels.width * (size_t)labels.height +
+        (size_t)y * (size_t)labels.width +
+        (size_t)x;
+
+    return label_mask[idx];
+}
+
+__device__ static void apply_label_overlay(
+    RendererLabelParams labels,
+    unsigned char label_id,
+    float *r,
+    float *g,
+    float *b,
+    float *a)
+{
+    int color_index;
+    float alpha;
+
+    if (!labels.enabled ||
+        label_id == 0 ||
+        label_id > labels.label_count ||
+        label_id > RENDERER_MAX_LABELS ||
+        !r || !g || !b || !a) {
+        return;
+    }
+
+    alpha = fminf(fmaxf(labels.alpha, 0.0f), 1.0f);
+    color_index = ((int)label_id - 1) * 3;
+
+    *r = *r * (1.0f - alpha) + labels.colors[color_index + 0] * alpha;
+    *g = *g * (1.0f - alpha) + labels.colors[color_index + 1] * alpha;
+    *b = *b * (1.0f - alpha) + labels.colors[color_index + 2] * alpha;
+    *a = fmaxf(*a, 0.18f + alpha * 0.18f);
+}
 
 /* ============================================================
    Main Volume Raymarch Kernel
    ============================================================ */
 
 __global__ void volume_render_kernel(
-    unsigned char   *output,
+    uchar4          *output,
     const float     *volume,
     VolumeParams     vparams,
     const BrickInfo *bricks,
     const BrickGrid *grid,
     CameraParams     cam,
     float3           lightPos,
+    const unsigned char *label_mask,
+    RendererLabelParams labels,
     int              img_w,
     int              img_h)
 {
@@ -143,12 +203,18 @@ __global__ void volume_render_kernel(
     float t_max = 2.0f;
 
     float accumulated_alpha = 0.0f;
-    float accumulated_color = 0.0f;
+    float accumulated_r     = 0.0f;
+    float accumulated_g     = 0.0f;
+    float accumulated_b     = 0.0f;
 
     unsigned int active_mask = __activemask();
 
     int step;
-    for (step = 0; step < 512 && t < t_max; ++step)
+    int max_steps = (int)(t_max / fmaxf(vparams.step_size, 1e-5f)) + 2;
+    if (max_steps < 512) max_steps = 512;
+    if (max_steps > 4096) max_steps = 4096;
+
+    for (step = 0; step < max_steps && t < t_max; ++step)
     {
         int still_active =
             (accumulated_alpha < vparams.threshold) &&
@@ -212,7 +278,10 @@ __global__ void volume_render_kernel(
         if (val > 0.01f)
         {
             float r, g, b, a;
+            unsigned char label_id;
             tf_lookup(vparams, val, &r, &g, &b, &a);
+            label_id = sample_label_mask(label_mask, labels, pos_tex);
+            apply_label_overlay(labels, label_id, &r, &g, &b, &a);
 
             float3 grad =
                 sample_gradient_tex(fx, fy, fz);
@@ -231,14 +300,12 @@ __global__ void volume_render_kernel(
                 apply_phong(base, grad, L, V,
                             0.1f, 0.7f, 0.2f, 16.0f);
 
-            float lum =
-                (lit.x + lit.y + lit.z) / 3.0f;
-
             float one_minus_a =
                 1.0f - accumulated_alpha;
 
-            accumulated_color +=
-                one_minus_a * lum * a;
+            accumulated_r += one_minus_a * lit.x * a;
+            accumulated_g += one_minus_a * lit.y * a;
+            accumulated_b += one_minus_a * lit.z * a;
 
             accumulated_alpha +=
                 one_minus_a * a;
@@ -247,10 +314,11 @@ __global__ void volume_render_kernel(
         t += vparams.step_size;
     }
 
-    output[y * img_w + x] =
-        (unsigned char)(
-            fminf(fmaxf(accumulated_color, 0.0f), 1.0f)
-            * 255.0f);
+    output[y * img_w + x] = make_uchar4(
+        (unsigned char)(fminf(fmaxf(accumulated_r, 0.0f), 1.0f) * 255.0f),
+        (unsigned char)(fminf(fmaxf(accumulated_g, 0.0f), 1.0f) * 255.0f),
+        (unsigned char)(fminf(fmaxf(accumulated_b, 0.0f), 1.0f) * 255.0f),
+        255);
 }
 
 

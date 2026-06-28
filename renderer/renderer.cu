@@ -25,13 +25,15 @@
 
 /* From raymarch_kernel.cu */
 __global__ void volume_render_kernel(
-    unsigned char   *output,
+    uchar4          *output,
     const float     *volume,
     VolumeParams     vparams,
     const BrickInfo *bricks,
     const BrickGrid *grid,
     CameraParams     cam,
     float3           lightPos,
+    const unsigned char *label_mask,
+    RendererLabelParams labels,
     int              img_w,
     int              img_h);
 
@@ -78,6 +80,135 @@ static void warn_cuda_nonfatal(cudaError_t err, const char *msg)
             "Warning: CUDA optimization skipped at %s: [%d] %s - %s\n",
             msg, (int)err, err_name, err_text);
     cudaGetLastError();
+}
+
+static void resize_output_buffers(RendererState *st)
+{
+    size_t output_bytes;
+
+    if (!st) {
+        return;
+    }
+
+    if (st->d_out &&
+        st->h_out &&
+        st->out_w == st->img_w &&
+        st->out_h == st->img_h) {
+        return;
+    }
+
+    if (st->stream) {
+        check_cuda(cudaStreamSynchronize(st->stream),
+                   "cudaStreamSynchronize before output resize");
+    }
+
+    if (st->d_out) {
+        cudaFree(st->d_out);
+        st->d_out = NULL;
+    }
+    if (st->h_out) {
+        cudaFreeHost(st->h_out);
+        st->h_out = NULL;
+    }
+
+    output_bytes = (size_t)st->img_w * (size_t)st->img_h * sizeof(uchar4);
+
+    check_cuda(
+        cudaMalloc((void **)&st->d_out, output_bytes),
+        "cudaMalloc(d_out resize)");
+    check_cuda(
+        cudaMallocHost((void **)&st->h_out, output_bytes),
+        "cudaMallocHost(h_out resize)");
+
+    st->out_w = st->img_w;
+    st->out_h = st->img_h;
+}
+
+static void clear_label_overlay(RendererState *st)
+{
+    if (!st) {
+        return;
+    }
+
+    st->labels.enabled = 0;
+    st->labels.label_count = 0;
+    st->labels.revision = 0;
+}
+
+static void free_label_mask(RendererState *st)
+{
+    if (!st) {
+        return;
+    }
+
+    if (st->d_label_mask) {
+        cudaFree(st->d_label_mask);
+        st->d_label_mask = NULL;
+    }
+    st->label_mask_bytes = 0;
+    st->label_revision = 0;
+    clear_label_overlay(st);
+}
+
+static void sync_label_overlay(RendererState *st, const RendererInput *cmd)
+{
+    size_t bytes;
+
+    if (!st || !cmd) {
+        return;
+    }
+
+    clear_label_overlay(st);
+
+    if (!cmd->labels.enabled ||
+        !cmd->label_mask ||
+        cmd->labels.width != st->W ||
+        cmd->labels.height != st->H ||
+        cmd->labels.depth != st->D ||
+        cmd->labels.label_count < 1) {
+        return;
+    }
+
+    bytes =
+        (size_t)cmd->labels.width *
+        (size_t)cmd->labels.height *
+        (size_t)cmd->labels.depth;
+
+    if (bytes == 0) {
+        return;
+    }
+
+    if (!st->d_label_mask || st->label_mask_bytes != bytes) {
+        if (st->d_label_mask) {
+            cudaFree(st->d_label_mask);
+            st->d_label_mask = NULL;
+        }
+        check_cuda(
+            cudaMalloc((void **)&st->d_label_mask, bytes),
+            "cudaMalloc(d_label_mask)");
+        st->label_mask_bytes = bytes;
+        st->label_revision = 0;
+    }
+
+    if (st->label_revision != cmd->labels.revision) {
+        check_cuda(
+            cudaMemcpy(
+                st->d_label_mask,
+                cmd->label_mask,
+                bytes,
+                cudaMemcpyHostToDevice),
+            "cudaMemcpy(label_mask)");
+        st->label_revision = cmd->labels.revision;
+    }
+
+    st->labels = cmd->labels;
+    st->labels.enabled = 1;
+    st->labels.alpha =
+        st->labels.alpha < 0.0f ? 0.0f :
+        (st->labels.alpha > 1.0f ? 1.0f : st->labels.alpha);
+    if (st->labels.label_count > RENDERER_MAX_LABELS) {
+        st->labels.label_count = RENDERER_MAX_LABELS;
+    }
 }
 
 static cudaMemLocation make_device_location(int device)
@@ -231,13 +362,17 @@ static void build_brick_grid(RendererState *st)
                 b->by = by;
                 b->bz = bz;
 
-                b->sizeX = brickSizeX;
-                b->sizeY = brickSizeY;
-                b->sizeZ = brickSizeZ;
-
                 b->offsetX = bx * brickSizeX;
                 b->offsetY = by * brickSizeY;
                 b->offsetZ = bz * brickSizeZ;
+
+                /* Last brick on each axis absorbs any remainder voxels */
+                b->sizeX = (bx < st->h_grid.bricksX - 1)
+                    ? brickSizeX : (st->W - b->offsetX);
+                b->sizeY = (by < st->h_grid.bricksY - 1)
+                    ? brickSizeY : (st->H - b->offsetY);
+                b->sizeZ = (bz < st->h_grid.bricksZ - 1)
+                    ? brickSizeZ : (st->D - b->offsetZ);
 
                 b->isEmpty = 0;
 
@@ -329,19 +464,17 @@ static void upload_bricks(RendererState *st)
 
 float render_frame_gpu(RendererState *st)
 {
-    cudaEvent_t startEvt, stopEvt;
     float ms;
     dim3 block, grid;
+
+    resize_output_buffers(st);
 
     block.x = 16; block.y = 16; block.z = 1;
     grid.x = (st->img_w + block.x - 1) / block.x;
     grid.y = (st->img_h + block.y - 1) / block.y;
     grid.z = 1;
 
-    check_cuda(cudaEventCreate(&startEvt), "cudaEventCreate(start)");
-    check_cuda(cudaEventCreate(&stopEvt),  "cudaEventCreate(stop)");
-
-    check_cuda(cudaEventRecord(startEvt, st->stream),
+    check_cuda(cudaEventRecord(st->start_event, st->stream),
                "cudaEventRecord(start)");
 
     volume_render_kernel<<<grid, block, 0, st->stream>>>(
@@ -352,33 +485,32 @@ float render_frame_gpu(RendererState *st)
         st->d_grid,
         st->cam,
         st->lightPos,
+        st->d_label_mask,
+        st->labels,
         st->img_w,
         st->img_h);
 
     check_cuda(cudaGetLastError(), "volume_render_kernel launch");
 
-    check_cuda(cudaEventRecord(stopEvt, st->stream),
+    check_cuda(cudaEventRecord(st->stop_event, st->stream),
                "cudaEventRecord(stop)");
 
-    check_cuda(cudaEventSynchronize(stopEvt),
+    check_cuda(cudaEventSynchronize(st->stop_event),
                "cudaEventSynchronize(stop)");
 
-    check_cuda(cudaEventElapsedTime(&ms, startEvt, stopEvt),
+    check_cuda(cudaEventElapsedTime(&ms, st->start_event, st->stop_event),
                "cudaEventElapsedTime");
 
     /* Copy result to pinned host buffer */
     check_cuda(
         cudaMemcpyAsync(st->h_out, st->d_out,
-                        (size_t)st->img_w * (size_t)st->img_h,
+                        (size_t)st->img_w * (size_t)st->img_h * sizeof(uchar4),
                         cudaMemcpyDeviceToHost,
                         st->stream),
         "cudaMemcpyAsync(d_out -> h_out)");
 
     check_cuda(cudaStreamSynchronize(st->stream),
                "cudaStreamSynchronize after memcpy");
-
-    cudaEventDestroy(startEvt);
-    cudaEventDestroy(stopEvt);
 
     return ms;
 }
@@ -416,6 +548,7 @@ void apply_render_command(
     st->vparams.tf_invert            = cmd->tf_invert;
     memcpy(st->vparams.clip_min, cmd->clip_min, sizeof(st->vparams.clip_min));
     memcpy(st->vparams.clip_max, cmd->clip_max, sizeof(st->vparams.clip_max));
+    sync_label_overlay(st, cmd);
 
     /* Clamp requested resolution */
     st->img_w = (int)cmd->img_width;
@@ -425,6 +558,8 @@ void apply_render_command(
     if (st->img_h < 1)   st->img_h = 1;
     if (st->img_w > 4096) st->img_w = 4096;
     if (st->img_h > 4096) st->img_h = 4096;
+
+    resize_output_buffers(st);
 }
 
 /* ============================================================
@@ -452,6 +587,7 @@ int reload_volume(
     if (st->d_bricks) { cudaFree(st->d_bricks); st->d_bricks = NULL; }
     if (st->d_grid)   { cudaFree(st->d_grid);   st->d_grid   = NULL; }
     if (st->h_bricks) { free(st->h_bricks);     st->h_bricks = NULL; }
+    free_label_mask(st);
 
     /* Free old volume */
     if (st->volume_data) {
@@ -598,20 +734,28 @@ void renderer_state_init(
     mark_empty_bricks(st, 0.01f);
     upload_bricks(st);
 
-    /* Allocate output buffers */
+    /* Allocate output buffers (RGBA) */
     check_cuda(
         cudaMalloc((void **)&st->d_out,
-                   (size_t)st->img_w * (size_t)st->img_h),
+                   (size_t)st->img_w * (size_t)st->img_h * sizeof(uchar4)),
         "cudaMalloc(d_out)");
     check_cuda(
         cudaMallocHost((void **)&st->h_out,
-                       (size_t)st->img_w * (size_t)st->img_h),
+                       (size_t)st->img_w * (size_t)st->img_h * sizeof(uchar4)),
         "cudaMallocHost(h_out)");
 
     /* Create CUDA stream */
     check_cuda(
         cudaStreamCreate(&st->stream),
         "cudaStreamCreate");
+
+    /* Create timing events once; reused every frame */
+    check_cuda(
+        cudaEventCreate(&st->start_event),
+        "cudaEventCreate(start)");
+    check_cuda(
+        cudaEventCreate(&st->stop_event),
+        "cudaEventCreate(stop)");
 
     st->frame_id = 0;
 
@@ -636,8 +780,18 @@ void renderer_state_cleanup(RendererState *st)
         st->stream = NULL;
     }
 
+    if (st->start_event) {
+        cudaEventDestroy(st->start_event);
+        st->start_event = NULL;
+    }
+    if (st->stop_event) {
+        cudaEventDestroy(st->stop_event);
+        st->stop_event = NULL;
+    }
+
     if (st->d_out)  { cudaFree(st->d_out);  st->d_out = NULL; }
     if (st->h_out)  { cudaFreeHost(st->h_out); st->h_out = NULL; }
+    free_label_mask(st);
 
     if (st->d_bricks) { cudaFree(st->d_bricks); st->d_bricks = NULL; }
     if (st->d_grid)   { cudaFree(st->d_grid);   st->d_grid = NULL; }
@@ -654,5 +808,4 @@ void renderer_state_cleanup(RendererState *st)
 
     printf("Renderer cleaned up.\n");
 }
-
 
