@@ -1095,6 +1095,70 @@ static int test_asd_ranks_regions_and_reports_relationships(void)
         "ASD should identify adjacent bounding boxes");
 }
 
+
+static int test_asd_correction_memory_confirms_matching_region(void)
+{
+    VoxelPilotSemanticRegion region;
+    VoxelPilotSemanticRegion candidate;
+    VoxelPilotSemanticCorrection correction;
+    int applied = 0;
+
+    memset(&region, 0, sizeof(region));
+    region.label_id = 1;
+    snprintf(region.name, sizeof(region.name), "dense rod-like structure");
+    snprintf(region.archetype, sizeof(region.archetype), "rod");
+    region.density_class = VOXELPILOT_ASD_DENSITY_HIGH;
+    region.mean_intensity = 0.90f;
+    region.min_intensity = 0.85f;
+    region.max_intensity = 0.96f;
+    region.compactness = 0.80f;
+    region.elongation = 3.50f;
+    region.voxel_count = 12;
+
+    memset(&correction, 0, sizeof(correction));
+    voxelpilot_asd_capture_correction(&region, 1000, "Confirmed tibia-like demo region", 1, 0, &correction);
+
+    candidate = region;
+    candidate.label_id = 2;
+    candidate.user_confirmed = 0;
+    candidate.source = VOXELPILOT_SEMANTIC_SOURCE_HEURISTIC;
+    snprintf(candidate.name, sizeof(candidate.name), "dense rod-like structure");
+
+    applied = voxelpilot_asd_apply_corrections(&candidate, 1, 1000, &correction, 1);
+
+    if (!expect_true(applied == 1, "ASD correction should apply to matching region")) return 0;
+    if (!expect_true(candidate.user_confirmed == 1, "ASD correction should mark region confirmed")) return 0;
+    if (!expect_true(candidate.source == VOXELPILOT_SEMANTIC_SOURCE_USER_CONFIRMED, "ASD correction should set user-confirmed provenance")) return 0;
+    return expect_true(strcmp(candidate.name, "Confirmed tibia-like demo region") == 0, "ASD correction should rename matching region");
+}
+
+static int test_asd_correction_memory_rejects_matching_region(void)
+{
+    VoxelPilotSemanticRegion region;
+    VoxelPilotSemanticCorrection correction;
+    int applied = 0;
+
+    memset(&region, 0, sizeof(region));
+    region.label_id = 3;
+    snprintf(region.name, sizeof(region.name), "dense cluster-like structure");
+    snprintf(region.archetype, sizeof(region.archetype), "cluster");
+    region.density_class = VOXELPILOT_ASD_DENSITY_HIGH;
+    region.mean_intensity = 0.72f;
+    region.min_intensity = 0.68f;
+    region.max_intensity = 0.88f;
+    region.compactness = 0.33f;
+    region.elongation = 1.80f;
+    region.voxel_count = 30;
+
+    memset(&correction, 0, sizeof(correction));
+    voxelpilot_asd_capture_correction(&region, 1000, "Rejected artifact", 0, 1, &correction);
+    applied = voxelpilot_asd_apply_corrections(&region, 1, 1000, &correction, 1);
+
+    if (!expect_true(applied == 1, "ASD rejection should apply to matching region")) return 0;
+    if (!expect_true(region.rejected == 1, "ASD rejection should mark region rejected")) return 0;
+    return expect_true(strstr(region.description, "rejected") != NULL, "ASD rejection should explain provenance");
+}
+
 int main(void)
 {
     int passed = 1;
@@ -1133,6 +1197,8 @@ int main(void)
     passed &= test_asd_discovers_high_density_connected_region();
     passed &= test_asd_assigns_archetype_stability_and_importance();
     passed &= test_asd_ranks_regions_and_reports_relationships();
+    passed &= test_asd_correction_memory_confirms_matching_region();
+    passed &= test_asd_correction_memory_rejects_matching_region();
 
     if (!passed) {
         return 1;

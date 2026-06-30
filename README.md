@@ -88,7 +88,7 @@ Generate an opt-in Cinematic Lite snapshot without changing the default renderer
 - Click `Analyze Loaded Volume` in `AI Assist` to generate a local material/object summary.
 - Click `Refresh Quant Metrics`, then `Export Insight Report` to save a lightweight HTML review report.
 - Use `AI Assist` prompts such as `show high-density shell` or `hide below 0.3 intensity`.
-- Click `Discover Regions` in `AI Assist` to run ASD-Lite, then hover over slices or the 3D render for cautious region descriptions, stability, importance, and relationship notes.
+- Click `Discover Regions` in `AI Assist` to run ASD-Lite, then hover over slices or the 3D render for cautious region descriptions, stability, importance, and relationship notes. Select a discovered region to confirm, rename, reject, save, or reload correction memory.
 - Enable `Slice Click Labels`, keep `Show Labels in 3D Render` on, click a slice, then export the label mask for downstream analysis.
 - Use `Set A From Slices` and `Set B From Slices` for a quick measurement pass.
 - Click `Save Snapshot` to export a PNG still.
@@ -143,6 +143,8 @@ Useful docs inside it:
 VoxelPilot v2 can run ASD-Lite from `AI Assist` to discover candidate regions in arbitrary imported volumes. ASD-Lite is local and explainable: it groups connected intensity regions, computes shape archetypes such as `rod`, `plate`, `shell`, `blob`, and `cluster`, estimates stability and importance, detects simple region relationships, and exports the provenance beside the label mask.
 
 ASD-Lite deliberately uses cautious names such as `dense rod-like structure` instead of claiming exact anatomy or diagnosis. This keeps the laptop demo honest for unknown medical, industrial, or synthetic datasets while creating a clean bridge to future model-backed recognition. The CUDA renderer remains the main visual engine; ASD reuses the existing label-mask overlay path rather than adding a heavy render pass.
+
+Phase 2C adds human-in-the-loop correction memory. Users can select a discovered region, rename or confirm it, reject false positives, and save/load `voxelpilot_asd_memory.json`. Future ASD passes cautiously reapply those corrections by matching archetype, density class, intensity profile, compactness, elongation, and size ratio, with provenance shown as user-confirmed or rejected rather than hidden model output.
 
 ## AI Concept Note
 

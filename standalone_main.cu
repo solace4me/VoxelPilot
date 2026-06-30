@@ -183,6 +183,11 @@ typedef struct {
     float         semantic_sensitivity;
     int           semantic_cinematic_emphasis;
     char          semantic_status[512];
+    VoxelPilotSemanticCorrection semantic_corrections[VOXELPILOT_ASD_MAX_CORRECTIONS];
+    int           semantic_correction_count;
+    char          semantic_edit_name[VOXELPILOT_ASD_NAME_MAX];
+    char          semantic_memory_status[512];
+    char          semantic_memory_path[MAX_PATH_BUF];
     char          annotation_status[256];
     char          hover_description[256];
     int           main_hover_active;
@@ -376,6 +381,9 @@ static const char *semantic_relationship_note(
     StandaloneApp *app,
     unsigned char  label_id);
 static void run_adaptive_semantic_discovery(StandaloneApp *app);
+static void refresh_semantic_annotation_overlays(StandaloneApp *app);
+static int save_semantic_memory(StandaloneApp *app, const char *path);
+static int load_semantic_memory(StandaloneApp *app, const char *path);
 static void create_annotation_region_at_point(
     StandaloneApp *app,
     const float    point[3]);
@@ -1415,6 +1423,213 @@ static void clear_label_from_mask(
     }
 }
 
+static size_t semantic_total_voxels(StandaloneApp *app)
+{
+    if (!app || app->renderer.W < 1 || app->renderer.H < 1 || app->renderer.D < 1) return 0;
+    return (size_t)app->renderer.W * (size_t)app->renderer.H * (size_t)app->renderer.D;
+}
+
+static void refresh_semantic_annotation_overlays(StandaloneApp *app)
+{
+    int i;
+    int overlay_count = 0;
+
+    if (!app) return;
+    memset(app->annotations, 0, sizeof(app->annotations));
+    app->annotation_count = 0;
+    app->selected_annotation = -1;
+
+    for (i = 0; i < app->semantic_region_count; ++i) {
+        VoxelPilotSemanticRegion *semantic = &app->semantic_regions[i];
+        AnnotationRegion *region;
+        if (semantic->rejected) {
+            clear_label_from_mask(app, semantic->label_id);
+            continue;
+        }
+        if (overlay_count >= MAX_ANNOTATIONS) continue;
+        region = &app->annotations[overlay_count];
+        memset(region, 0, sizeof(*region));
+        region->active = 1;
+        region->label_id = semantic->label_id;
+        snprintf(region->name, sizeof(region->name), "%s", semantic->name);
+        region->color[0] = semantic->color[0];
+        region->color[1] = semantic->color[1];
+        region->color[2] = semantic->color[2];
+        region->seed[0] = semantic->centroid[0] / fmaxf((float)(app->renderer.W - 1), 1.0f);
+        region->seed[1] = semantic->centroid[1] / fmaxf((float)(app->renderer.H - 1), 1.0f);
+        region->seed[2] = semantic->centroid[2] / fmaxf((float)(app->renderer.D - 1), 1.0f);
+        region->seed_intensity = semantic->mean_intensity;
+        region->tolerance = app->semantic_sensitivity;
+        region->voxel_count = semantic->voxel_count;
+        region->min_intensity = semantic->min_intensity;
+        region->max_intensity = semantic->max_intensity;
+        if (i == app->semantic_selected_region) app->selected_annotation = overlay_count;
+        overlay_count++;
+    }
+
+    app->annotation_count = overlay_count;
+    if (app->selected_annotation < 0 && overlay_count > 0) app->selected_annotation = 0;
+    app->label_mask_revision++;
+    snprintf(app->annotation_status, sizeof(app->annotation_status),
+             "Semantic overlays ready: %d ASD region(s).", overlay_count);
+}
+
+static int upsert_semantic_correction(
+    StandaloneApp *app,
+    const VoxelPilotSemanticRegion *region,
+    int confirmed,
+    int rejected)
+{
+    VoxelPilotSemanticCorrection correction;
+    size_t total_voxels;
+    int i;
+
+    if (!app || !region) return 0;
+    total_voxels = semantic_total_voxels(app);
+    if (!voxelpilot_asd_capture_correction(region, total_voxels, app->semantic_edit_name, confirmed, rejected, &correction)) return 0;
+
+    for (i = 0; i < app->semantic_correction_count; ++i) {
+        if (voxelpilot_asd_region_matches_correction(region, total_voxels, &app->semantic_corrections[i])) {
+            app->semantic_corrections[i] = correction;
+            return 1;
+        }
+    }
+
+    if (app->semantic_correction_count >= VOXELPILOT_ASD_MAX_CORRECTIONS) {
+        snprintf(app->semantic_memory_status, sizeof(app->semantic_memory_status),
+                 "ASD memory is full; save or prune before adding more corrections.");
+        return 0;
+    }
+    app->semantic_corrections[app->semantic_correction_count++] = correction;
+    return 1;
+}
+
+static const char *json_field_value(const char *line, const char *field)
+{
+    static char pattern[80];
+    snprintf(pattern, sizeof(pattern), "\"%s\":", field);
+    return strstr(line, pattern);
+}
+
+static int json_extract_string_field(const char *line, const char *field, char *out, size_t out_size)
+{
+    const char *cursor = json_field_value(line, field);
+    const char *end;
+    size_t length;
+    if (!cursor || !out || out_size == 0) return 0;
+    cursor = strchr(cursor, ':');
+    if (!cursor) return 0;
+    cursor = strchr(cursor, '"');
+    if (!cursor) return 0;
+    cursor++;
+    end = cursor;
+    while (*end && !(*end == '"' && end[-1] != '\\')) end++;
+    if (*end != '"') return 0;
+    length = (size_t)(end - cursor);
+    if (length >= out_size) length = out_size - 1;
+    memcpy(out, cursor, length);
+    out[length] = '\0';
+    return 1;
+}
+
+static int json_extract_int_field(const char *line, const char *field, int *out)
+{
+    const char *cursor = json_field_value(line, field);
+    if (!cursor || !out) return 0;
+    cursor = strchr(cursor, ':');
+    if (!cursor) return 0;
+    return sscanf(cursor + 1, "%d", out) == 1;
+}
+
+static int json_extract_float_field(const char *line, const char *field, float *out)
+{
+    const char *cursor = json_field_value(line, field);
+    if (!cursor || !out) return 0;
+    cursor = strchr(cursor, ':');
+    if (!cursor) return 0;
+    return sscanf(cursor + 1, "%f", out) == 1;
+}
+
+static int save_semantic_memory(StandaloneApp *app, const char *path)
+{
+    FILE *fp;
+    int i;
+    if (!app || !path || !path[0]) return 0;
+    fp = fopen(path, "w");
+    if (!fp) {
+        snprintf(app->semantic_memory_status, sizeof(app->semantic_memory_status), "Could not save ASD memory: %s", path);
+        return 0;
+    }
+    fprintf(fp, "{\n  \"version\": 1,\n  \"corrections\": [\n");
+    for (i = 0; i < app->semantic_correction_count; ++i) {
+        VoxelPilotSemanticCorrection *correction = &app->semantic_corrections[i];
+        fprintf(fp, "    {\"name\": \"");
+        write_json_escaped(fp, correction->name);
+        fprintf(fp, "\", \"archetype\": \"");
+        write_json_escaped(fp, correction->archetype);
+        fprintf(fp, "\", \"densityClass\": %d, \"meanIntensity\": %.6f, \"minIntensity\": %.6f, \"maxIntensity\": %.6f, \"compactness\": %.6f, \"elongation\": %.6f, \"sizeRatio\": %.8f, \"confirmed\": %d, \"rejected\": %d}%s\n",
+                (int)correction->density_class,
+                correction->mean_intensity,
+                correction->min_intensity,
+                correction->max_intensity,
+                correction->compactness,
+                correction->elongation,
+                correction->size_ratio,
+                correction->confirmed,
+                correction->rejected,
+                (i + 1 < app->semantic_correction_count) ? "," : "");
+    }
+    fprintf(fp, "  ]\n}\n");
+    fclose(fp);
+    snprintf(app->semantic_memory_status, sizeof(app->semantic_memory_status),
+             "Saved %d ASD correction(s) to %s.", app->semantic_correction_count, path);
+    return 1;
+}
+
+static int load_semantic_memory(StandaloneApp *app, const char *path)
+{
+    FILE *fp;
+    char line[1024];
+    int loaded = 0;
+    if (!app || !path || !path[0]) return 0;
+    fp = fopen(path, "r");
+    if (!fp) {
+        snprintf(app->semantic_memory_status, sizeof(app->semantic_memory_status), "Could not load ASD memory: %s", path);
+        return 0;
+    }
+    memset(app->semantic_corrections, 0, sizeof(app->semantic_corrections));
+    app->semantic_correction_count = 0;
+    while (fgets(line, sizeof(line), fp) && loaded < VOXELPILOT_ASD_MAX_CORRECTIONS) {
+        VoxelPilotSemanticCorrection correction;
+        int density_class = 0;
+        if (!strstr(line, "\"name\"") || !strstr(line, "\"archetype\"")) continue;
+        memset(&correction, 0, sizeof(correction));
+        if (!json_extract_string_field(line, "name", correction.name, sizeof(correction.name))) continue;
+        json_extract_string_field(line, "archetype", correction.archetype, sizeof(correction.archetype));
+        json_extract_int_field(line, "densityClass", &density_class);
+        correction.density_class = (VoxelPilotDensityClass)density_class;
+        json_extract_float_field(line, "meanIntensity", &correction.mean_intensity);
+        json_extract_float_field(line, "minIntensity", &correction.min_intensity);
+        json_extract_float_field(line, "maxIntensity", &correction.max_intensity);
+        json_extract_float_field(line, "compactness", &correction.compactness);
+        json_extract_float_field(line, "elongation", &correction.elongation);
+        json_extract_float_field(line, "sizeRatio", &correction.size_ratio);
+        json_extract_int_field(line, "confirmed", &correction.confirmed);
+        json_extract_int_field(line, "rejected", &correction.rejected);
+        app->semantic_corrections[loaded++] = correction;
+    }
+    fclose(fp);
+    app->semantic_correction_count = loaded;
+    snprintf(app->semantic_memory_status, sizeof(app->semantic_memory_status),
+             "Loaded %d ASD correction(s) from %s.", loaded, path);
+    if (app->semantic_region_count > 0) {
+        voxelpilot_asd_apply_corrections(app->semantic_regions, app->semantic_region_count, semantic_total_voxels(app), app->semantic_corrections, app->semantic_correction_count);
+        refresh_semantic_annotation_overlays(app);
+    }
+    return 1;
+}
+
+
 static void create_annotation_region_at_point(
     StandaloneApp *app,
     const float    point[3])
@@ -1631,8 +1846,7 @@ static void export_annotation_mask(StandaloneApp *app)
 static void run_adaptive_semantic_discovery(StandaloneApp *app)
 {
     int discovered = 0;
-    int overlay_count = 0;
-    int i;
+    int applied_corrections = 0;
 
     if (!app || !app->renderer.volume_data ||
         app->renderer.W < 1 || app->renderer.H < 1 || app->renderer.D < 1) {
@@ -1691,46 +1905,33 @@ static void run_adaptive_semantic_discovery(StandaloneApp *app)
         VOXELPILOT_ASD_MAX_RELATIONS,
         &app->semantic_relation_count);
 
-    overlay_count = app->semantic_region_count;
-    if (overlay_count > MAX_ANNOTATIONS) overlay_count = MAX_ANNOTATIONS;
-    app->annotation_count = overlay_count;
-
-    for (i = 0; i < overlay_count; ++i) {
-        AnnotationRegion *region = &app->annotations[i];
-        VoxelPilotSemanticRegion *semantic = &app->semantic_regions[i];
-        memset(region, 0, sizeof(*region));
-        region->active = 1;
-        region->label_id = semantic->label_id;
-        snprintf(region->name, sizeof(region->name), "%s", semantic->name);
-        region->color[0] = semantic->color[0];
-        region->color[1] = semantic->color[1];
-        region->color[2] = semantic->color[2];
-        region->seed[0] = semantic->centroid[0] / fmaxf((float)(app->renderer.W - 1), 1.0f);
-        region->seed[1] = semantic->centroid[1] / fmaxf((float)(app->renderer.H - 1), 1.0f);
-        region->seed[2] = semantic->centroid[2] / fmaxf((float)(app->renderer.D - 1), 1.0f);
-        region->seed_intensity = semantic->mean_intensity;
-        region->tolerance = app->semantic_sensitivity;
-        region->voxel_count = semantic->voxel_count;
-        region->min_intensity = semantic->min_intensity;
-        region->max_intensity = semantic->max_intensity;
+    if (app->semantic_correction_count > 0) {
+        applied_corrections = voxelpilot_asd_apply_corrections(
+            app->semantic_regions,
+            app->semantic_region_count,
+            semantic_total_voxels(app),
+            app->semantic_corrections,
+            app->semantic_correction_count);
     }
 
-    app->selected_annotation = overlay_count > 0 ? 0 : -1;
-    app->semantic_selected_region = overlay_count > 0 ? 0 : -1;
+    app->semantic_selected_region = app->semantic_region_count > 0 ? 0 : -1;
     app->label_overlay_visible = 1;
     if (app->semantic_cinematic_emphasis) {
         app->cinematic_enabled = 1;
         if (app->label_overlay_alpha < 0.72f) app->label_overlay_alpha = 0.72f;
     }
-    app->label_mask_revision++;
+    refresh_semantic_annotation_overlays(app);
+
+    if (app->semantic_selected_region >= 0) {
+        snprintf(app->semantic_edit_name, sizeof(app->semantic_edit_name),
+                 "%s", app->semantic_regions[app->semantic_selected_region].name);
+    }
 
     snprintf(app->semantic_status, sizeof(app->semantic_status),
-             "ASD-Lite discovered %d region(s), ranked them, and found %d relationship(s).",
+             "ASD-Lite discovered %d region(s), %d relationship(s), and applied %d memory correction(s).",
              app->semantic_region_count,
-             app->semantic_relation_count);
-    snprintf(app->annotation_status, sizeof(app->annotation_status),
-             "Semantic overlays ready: %d ASD region(s).",
-             overlay_count);
+             app->semantic_relation_count,
+             applied_corrections);
 }
 
 static void draw_slice_card(
@@ -3339,8 +3540,10 @@ static void draw_ai_assist_panel(StandaloneApp *app)
                      semantic->importance_rank,
                      i);
             if (ImGui::Selectable(row_label, app->semantic_selected_region == i)) {
+                AnnotationRegion *overlay_region = find_annotation_by_label(app, semantic->label_id);
                 app->semantic_selected_region = i;
-                if (i < app->annotation_count) app->selected_annotation = i;
+                app->selected_annotation = overlay_region ? (int)(overlay_region - app->annotations) : -1;
+                snprintf(app->semantic_edit_name, sizeof(app->semantic_edit_name), "%s", semantic->name);
             }
             if (ImGui::IsItemHovered()) {
                 ImGui::BeginTooltip();
@@ -3355,6 +3558,57 @@ static void draw_ai_assist_panel(StandaloneApp *app)
                 ImGui::EndTooltip();
             }
         }
+        if (app->semantic_selected_region >= 0 &&
+            app->semantic_selected_region < app->semantic_region_count) {
+            VoxelPilotSemanticRegion *selected_semantic = &app->semantic_regions[app->semantic_selected_region];
+            ImGui::Spacing();
+            ImGui::Text("Selected Region Correction");
+            ImGui::InputText("Correction Name", app->semantic_edit_name, sizeof(app->semantic_edit_name));
+            if (ImGui::Button("Confirm / Rename")) {
+                if (upsert_semantic_correction(app, selected_semantic, 1, 0)) {
+                    int applied = voxelpilot_asd_apply_corrections(
+                        app->semantic_regions,
+                        app->semantic_region_count,
+                        semantic_total_voxels(app),
+                        app->semantic_corrections,
+                        app->semantic_correction_count);
+                    refresh_semantic_annotation_overlays(app);
+                    snprintf(app->semantic_memory_status, sizeof(app->semantic_memory_status),
+                             "Confirmed correction memory for region %u; applied %d correction(s).",
+                             (unsigned int)selected_semantic->label_id,
+                             applied);
+                }
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Reject")) {
+                if (!app->semantic_edit_name[0]) {
+                    snprintf(app->semantic_edit_name, sizeof(app->semantic_edit_name),
+                             "Rejected %s", selected_semantic->name);
+                }
+                if (upsert_semantic_correction(app, selected_semantic, 0, 1)) {
+                    int applied = voxelpilot_asd_apply_corrections(
+                        app->semantic_regions,
+                        app->semantic_region_count,
+                        semantic_total_voxels(app),
+                        app->semantic_corrections,
+                        app->semantic_correction_count);
+                    refresh_semantic_annotation_overlays(app);
+                    snprintf(app->semantic_memory_status, sizeof(app->semantic_memory_status),
+                             "Rejected region %u; applied %d correction(s) and hid rejected overlay.",
+                             (unsigned int)selected_semantic->label_id,
+                             applied);
+                }
+            }
+        }
+        ImGui::InputText("Memory File", app->semantic_memory_path, sizeof(app->semantic_memory_path));
+        if (ImGui::Button("Save Memory")) {
+            save_semantic_memory(app, app->semantic_memory_path);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Load Memory")) {
+            load_semantic_memory(app, app->semantic_memory_path);
+        }
+        ImGui::TextWrapped("Memory: %s", app->semantic_memory_status);
     }
 
     ImGui::Spacing();
@@ -4288,6 +4542,11 @@ int main(int argc, char **argv)
     app.semantic_min_region_voxels = 128;
     app.semantic_sensitivity = 0.55f;
     app.semantic_cinematic_emphasis = 1;
+    memset(app.semantic_corrections, 0, sizeof(app.semantic_corrections));
+    app.semantic_correction_count = 0;
+    strcpy(app.semantic_edit_name, "");
+    strcpy(app.semantic_memory_path, "voxelpilot_asd_memory.json");
+    strcpy(app.semantic_memory_status, "No ASD correction memory loaded yet.");
     reset_semantic_discovery(&app);
     app.slice_preview_dirty = 1;
     app.slice_prev_x = -1.0f;

@@ -14,6 +14,7 @@ extern "C" {
 
 #define VOXELPILOT_ASD_MAX_REGIONS 16
 #define VOXELPILOT_ASD_MAX_RELATIONS 64
+#define VOXELPILOT_ASD_MAX_CORRECTIONS 64
 #define VOXELPILOT_ASD_NAME_MAX 64
 #define VOXELPILOT_ASD_CATEGORY_MAX 64
 #define VOXELPILOT_ASD_ARCHETYPE_MAX 32
@@ -75,6 +76,21 @@ typedef struct {
     float confidence;
     char description[VOXELPILOT_ASD_RELATION_DESCRIPTION_MAX];
 } VoxelPilotRegionRelation;
+
+typedef struct {
+    char name[VOXELPILOT_ASD_NAME_MAX];
+    char archetype[VOXELPILOT_ASD_ARCHETYPE_MAX];
+    VoxelPilotDensityClass density_class;
+    float mean_intensity;
+    float min_intensity;
+    float max_intensity;
+    float compactness;
+    float elongation;
+    float size_ratio;
+    int confirmed;
+    int rejected;
+    unsigned int use_count;
+} VoxelPilotSemanticCorrection;
 
 static inline float voxelpilot_asd_clampf(float value, float min_value, float max_value)
 {
@@ -245,6 +261,124 @@ static inline void voxelpilot_asd_assign_name_and_description(VoxelPilotSemantic
 
     snprintf(region->description, sizeof(region->description),
         "ASD-Lite heuristic candidate grouped by connected voxels. It is described by density and shape only, not asserted as anatomy or diagnosis.");
+}
+
+static inline float voxelpilot_asd_size_ratio(
+    const VoxelPilotSemanticRegion *region,
+    size_t total_voxels)
+{
+    if (!region || total_voxels == 0) return 0.0f;
+    return voxelpilot_asd_clampf((float)region->voxel_count / (float)total_voxels, 0.0f, 1.0f);
+}
+
+static inline int voxelpilot_asd_capture_correction(
+    const VoxelPilotSemanticRegion *region,
+    size_t total_voxels,
+    const char *custom_name,
+    int confirmed,
+    int rejected,
+    VoxelPilotSemanticCorrection *out_correction)
+{
+    const char *name;
+
+    if (!region || !out_correction) return 0;
+
+    memset(out_correction, 0, sizeof(*out_correction));
+    name = (custom_name && custom_name[0]) ? custom_name : region->name;
+    snprintf(out_correction->name, sizeof(out_correction->name), "%s", name && name[0] ? name : "Confirmed region");
+    snprintf(out_correction->archetype, sizeof(out_correction->archetype), "%s", region->archetype);
+    out_correction->density_class = region->density_class;
+    out_correction->mean_intensity = region->mean_intensity;
+    out_correction->min_intensity = region->min_intensity;
+    out_correction->max_intensity = region->max_intensity;
+    out_correction->compactness = region->compactness;
+    out_correction->elongation = region->elongation;
+    out_correction->size_ratio = voxelpilot_asd_size_ratio(region, total_voxels);
+    out_correction->confirmed = confirmed ? 1 : 0;
+    out_correction->rejected = rejected ? 1 : 0;
+    out_correction->use_count = 0;
+    if (!out_correction->confirmed && !out_correction->rejected) {
+        out_correction->confirmed = 1;
+    }
+    return 1;
+}
+
+static inline int voxelpilot_asd_region_matches_correction(
+    const VoxelPilotSemanticRegion *region,
+    size_t total_voxels,
+    const VoxelPilotSemanticCorrection *correction)
+{
+    float region_size_ratio;
+    float size_tolerance;
+    float elongation_delta;
+
+    if (!region || !correction || !correction->name[0]) return 0;
+    if (correction->archetype[0] && strcmp(region->archetype, correction->archetype) != 0) return 0;
+    if (correction->density_class != 0 && region->density_class != correction->density_class) return 0;
+    if (fabsf(region->mean_intensity - correction->mean_intensity) > 0.12f) return 0;
+    if (fabsf(region->compactness - correction->compactness) > 0.35f) return 0;
+
+    elongation_delta = fabsf(region->elongation - correction->elongation);
+    if (elongation_delta > fmaxf(1.25f, correction->elongation * 0.45f)) return 0;
+
+    region_size_ratio = voxelpilot_asd_size_ratio(region, total_voxels);
+    size_tolerance = fmaxf(0.02f, correction->size_ratio * 1.50f);
+    if (fabsf(region_size_ratio - correction->size_ratio) > size_tolerance) return 0;
+
+    return 1;
+}
+
+static inline void voxelpilot_asd_apply_correction(
+    VoxelPilotSemanticRegion *region,
+    VoxelPilotSemanticCorrection *correction)
+{
+    if (!region || !correction) return;
+
+    if (correction->rejected) {
+        region->rejected = 1;
+        region->user_confirmed = 0;
+        region->source = VOXELPILOT_SEMANTIC_SOURCE_USER_CONFIRMED;
+        region->confidence = 0.0f;
+        snprintf(region->name, sizeof(region->name), "%s", correction->name[0] ? correction->name : "Rejected candidate region");
+        snprintf(region->description, sizeof(region->description),
+            "User rejected this ASD-Lite match from local correction memory; it is hidden from semantic overlays.");
+    } else {
+        region->rejected = 0;
+        region->user_confirmed = 1;
+        region->source = VOXELPILOT_SEMANTIC_SOURCE_USER_CONFIRMED;
+        if (region->confidence < 0.95f) region->confidence = 0.95f;
+        snprintf(region->name, sizeof(region->name), "%s", correction->name[0] ? correction->name : region->name);
+        snprintf(region->description, sizeof(region->description),
+            "User-confirmed ASD-Lite correction from local memory. Original match used density, archetype, intensity, compactness, elongation, and size ratio.");
+    }
+    correction->use_count++;
+}
+
+static inline int voxelpilot_asd_apply_corrections(
+    VoxelPilotSemanticRegion *regions,
+    int region_count,
+    size_t total_voxels,
+    VoxelPilotSemanticCorrection *corrections,
+    int correction_count)
+{
+    int applied = 0;
+    int i;
+
+    if (!regions || region_count < 1 || !corrections || correction_count < 1) return 0;
+    if (correction_count > VOXELPILOT_ASD_MAX_CORRECTIONS) correction_count = VOXELPILOT_ASD_MAX_CORRECTIONS;
+
+    for (i = 0; i < region_count; ++i) {
+        int j;
+        for (j = 0; j < correction_count; ++j) {
+            if (voxelpilot_asd_region_matches_correction(&regions[i], total_voxels, &corrections[j])) {
+                voxelpilot_asd_apply_correction(&regions[i], &corrections[j]);
+                applied++;
+                break;
+            }
+        }
+    }
+
+    return applied;
 }
 
 static inline void voxelpilot_asd_rank_regions(VoxelPilotSemanticRegion *regions, int region_count)
