@@ -66,6 +66,14 @@ Run the Phase 0 GPU render safety baseline with the canonical foot volume:
 
 The render baseline writes `build\foot_render_regression.png` and `build\foot_render_regression_metrics.json`, then fails if the snapshot is black, tiny, badly cropped, or unexpectedly slow.
 
+Run the tiny VTK headsq CT verification sample:
+
+```powershell
+.\run_headsq_verification_windows.bat
+```
+
+This writes `build\vtk_headsq_bone_snapshot.png` and checks CT-appropriate visibility thresholds for the `64 x 64 x 93` dataset.
+
 Generate an opt-in Cinematic Lite snapshot without changing the default renderer:
 
 ```powershell

@@ -1,0 +1,52 @@
+{
+  "name": "VTK headsq CT head sample",
+  "source_repository": "https://github.com/Kitware/VTK",
+  "source_path": "Examples/ImageProcessing/Cxx/Testing/Data/headsq",
+  "source_download": "https://data.kitware.com/api/v1/file/hashsum/sha512/<hash>/download",
+  "source_header": "quarter.nhdr",
+  "dimensions": [
+    64,
+    64,
+    93
+  ],
+  "spacing": [
+    3.2,
+    3.2,
+    1.5
+  ],
+  "source_type": "signed int16 little-endian NRRD raw slice stack",
+  "voxelpilot_type": "uint16",
+  "voxelpilot_file": "vtk_headsq_64x64x93_uint16.raw",
+  "signed_min": 0,
+  "signed_max": 3926,
+  "normalized_from_signed": true,
+  "voxel_count": 380928,
+  "byte_count": 761856,
+  "sha512": "b5ce2567098937ec8cfd3e3a234282cc7e39711c6ef9f4bd48c8c4a3d4ff9f25e223a3fffb137d4f1ffd72bdcbfc1da4b1e4b6b2b585967c2bc4c0228ca10ed8",
+  "source_min": 0,
+  "source_max": 3926,
+  "voxelpilot_scaling": "source signed-short values linearly scaled from source_min..source_max to 0..65535 for VoxelPilot visibility and ASD verification",
+  "alternate_uint8_file": "vtk_headsq_64x64x93_uint8.raw",
+  "alternate_uint8_sha512": "5e1b905cdfe0f8c5b4fd89e8c4cc5d563338cbb070a25a8c470b677ec623e03c4629daf63378fd8f4420e509c5f07f1a7cf31a80f72008cf9094881418d2869b",
+  "recommended_demo_file": "vtk_headsq_bone_64x64x93_uint8.raw",
+  "recommended_demo_type": "uint8",
+  "recommended_demo_window": "bone/high-density emphasis derived locally from the public VTK headsq CT stack",
+  "recommended_demo_sha512": "ea4468e04d6f69ccf45cb7e5e3c9c53bf40ce620f4e4aa1ebe80a99bb29bee52faedcd18421c9b08c288f0119e59fdd391b0f176afad3ddd6535455401ed1b57",
+  "files": {
+    "vtk_headsq_64x64x93_uint16.raw": {
+      "type": "uint16",
+      "byte_count": 761856,
+      "purpose": "full-range app-ready CT volume for quantitative and ASD tests"
+    },
+    "vtk_headsq_64x64x93_uint8.raw": {
+      "type": "uint8",
+      "byte_count": 380928,
+      "purpose": "compact full-range scaled CT copy"
+    },
+    "vtk_headsq_bone_64x64x93_uint8.raw": {
+      "type": "uint8",
+      "byte_count": 380928,
+      "purpose": "recommended high-density demo view for rendering, ASD, labels, and callouts"
+    }
+  }
+}
