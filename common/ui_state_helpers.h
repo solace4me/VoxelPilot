@@ -1,6 +1,8 @@
 #ifndef UI_STATE_HELPERS_H
 #define UI_STATE_HELPERS_H
 
+#include <math.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -321,6 +323,124 @@ static inline int voxelpilot_should_sync_render_target(
 
     return current_width != framebuffer_width ||
            current_height != framebuffer_height;
+}
+
+static inline float voxelpilot_dot3(const float a[3], const float b[3])
+{
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
+static inline void voxelpilot_cross3(const float a[3], const float b[3], float out[3])
+{
+    out[0] = a[1] * b[2] - a[2] * b[1];
+    out[1] = a[2] * b[0] - a[0] * b[2];
+    out[2] = a[0] * b[1] - a[1] * b[0];
+}
+
+static inline int voxelpilot_normalize3(float v[3])
+{
+    float length = sqrtf(voxelpilot_dot3(v, v));
+    if (length <= 0.000001f) {
+        return 0;
+    }
+    v[0] /= length;
+    v[1] /= length;
+    v[2] /= length;
+    return 1;
+}
+
+static inline int voxelpilot_project_point_to_screen(
+    const float point[3],
+    const float cam_pos[3],
+    const float cam_dir[3],
+    const float cam_up[3],
+    float       fov_y_deg,
+    float       viewport_width,
+    float       viewport_height,
+    float      *out_x,
+    float      *out_y,
+    float      *out_depth)
+{
+    float forward[3];
+    float up[3];
+    float right[3];
+    float true_up[3];
+    float to_point[3];
+    float view_x;
+    float view_y;
+    float view_z;
+    float tan_half_fov;
+    float aspect;
+    float ndc_x;
+    float ndc_y;
+
+    if (!point || !cam_pos || !cam_dir || !cam_up || !out_x || !out_y || !out_depth ||
+        viewport_width <= 1.0f || viewport_height <= 1.0f) {
+        return 0;
+    }
+
+    forward[0] = cam_dir[0];
+    forward[1] = cam_dir[1];
+    forward[2] = cam_dir[2];
+    up[0] = cam_up[0];
+    up[1] = cam_up[1];
+    up[2] = cam_up[2];
+    if (!voxelpilot_normalize3(forward) || !voxelpilot_normalize3(up)) {
+        return 0;
+    }
+
+    voxelpilot_cross3(forward, up, right);
+    if (!voxelpilot_normalize3(right)) {
+        return 0;
+    }
+    voxelpilot_cross3(right, forward, true_up);
+    if (!voxelpilot_normalize3(true_up)) {
+        return 0;
+    }
+
+    to_point[0] = point[0] - cam_pos[0];
+    to_point[1] = point[1] - cam_pos[1];
+    to_point[2] = point[2] - cam_pos[2];
+    view_z = voxelpilot_dot3(to_point, forward);
+    if (view_z <= 0.0001f) {
+        return 0;
+    }
+
+    if (fov_y_deg < 10.0f) fov_y_deg = 10.0f;
+    if (fov_y_deg > 120.0f) fov_y_deg = 120.0f;
+    tan_half_fov = tanf(fov_y_deg * 0.5f * 3.14159265f / 180.0f);
+    if (tan_half_fov <= 0.0001f) {
+        return 0;
+    }
+
+    aspect = viewport_width / viewport_height;
+    view_x = voxelpilot_dot3(to_point, right);
+    view_y = voxelpilot_dot3(to_point, true_up);
+    ndc_x = view_x / (view_z * tan_half_fov * aspect);
+    ndc_y = view_y / (view_z * tan_half_fov);
+
+    if (ndc_x < -1.25f || ndc_x > 1.25f || ndc_y < -1.25f || ndc_y > 1.25f) {
+        return 0;
+    }
+
+    *out_x = (ndc_x * 0.5f + 0.5f) * viewport_width;
+    *out_y = (0.5f - ndc_y * 0.5f) * viewport_height;
+    *out_depth = view_z;
+    return 1;
+}
+
+static inline int voxelpilot_callout_should_show_rank(
+    int rank,
+    int top_count,
+    int selected_only,
+    int is_selected)
+{
+    if (selected_only) {
+        return is_selected ? 1 : 0;
+    }
+    if (top_count < 1) top_count = 1;
+    if (rank < 1) return is_selected ? 1 : 0;
+    return rank <= top_count || is_selected;
 }
 
 #ifdef __cplusplus

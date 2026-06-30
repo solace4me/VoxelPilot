@@ -182,6 +182,10 @@ typedef struct {
     int           semantic_min_region_voxels;
     float         semantic_sensitivity;
     int           semantic_cinematic_emphasis;
+    int           semantic_callouts_enabled;
+    int           semantic_callout_top_regions;
+    int           semantic_callout_selected_only;
+    float         semantic_callout_opacity;
     char          semantic_status[512];
     VoxelPilotSemanticCorrection semantic_corrections[VOXELPILOT_ASD_MAX_CORRECTIONS];
     int           semantic_correction_count;
@@ -806,6 +810,10 @@ static void reset_workspace(StandaloneApp *app)
     app->semantic_min_region_voxels = 128;
     app->semantic_sensitivity = 0.55f;
     app->semantic_cinematic_emphasis = 1;
+    app->semantic_callouts_enabled = 1;
+    app->semantic_callout_top_regions = 3;
+    app->semantic_callout_selected_only = 0;
+    app->semantic_callout_opacity = 0.88f;
     reset_semantic_discovery(app);
     app->object_summary_ready = 0;
     snprintf(app->object_summary_status,
@@ -3521,6 +3529,20 @@ static void draw_ai_assist_panel(StandaloneApp *app)
             app->semantic_cinematic_emphasis = emphasis ? 1 : 0;
         }
     }
+    {
+        bool callouts = app->semantic_callouts_enabled != 0;
+        if (ImGui::Checkbox("Cinematic Callouts", &callouts)) {
+            app->semantic_callouts_enabled = callouts ? 1 : 0;
+        }
+    }
+    ImGui::SliderInt("Callout Top Regions", &app->semantic_callout_top_regions, 1, MAX_ANNOTATIONS);
+    {
+        bool selected_only = app->semantic_callout_selected_only != 0;
+        if (ImGui::Checkbox("Selected Region Only", &selected_only)) {
+            app->semantic_callout_selected_only = selected_only ? 1 : 0;
+        }
+    }
+    ImGui::SliderFloat("Callout Opacity", &app->semantic_callout_opacity, 0.35f, 1.0f);
     if (ImGui::Button("Discover Regions")) {
         run_adaptive_semantic_discovery(app);
     }
@@ -4198,6 +4220,136 @@ static void draw_status_bar(StandaloneApp *app)
     ImGui::End();
 }
 
+
+static void draw_cinematic_semantic_callouts(StandaloneApp *app)
+{
+    ImGuiViewport *viewport;
+    ImDrawList *draw_list;
+    float viewport_w;
+    float viewport_h;
+    int drawn = 0;
+    int i;
+
+    if (!app || !app->semantic_callouts_enabled || app->semantic_region_count < 1 ||
+        app->renderer.W < 1 || app->renderer.H < 1 || app->renderer.D < 1) {
+        return;
+    }
+
+    viewport = ImGui::GetMainViewport();
+    if (!viewport || viewport->Size.x <= 1.0f || viewport->Size.y <= 1.0f) {
+        return;
+    }
+
+    viewport_w = viewport->Size.x;
+    viewport_h = viewport->Size.y;
+    draw_list = ImGui::GetForegroundDrawList(viewport);
+
+    if (app->semantic_callout_top_regions < 1) app->semantic_callout_top_regions = 1;
+    if (app->semantic_callout_top_regions > MAX_ANNOTATIONS) app->semantic_callout_top_regions = MAX_ANNOTATIONS;
+    app->semantic_callout_opacity = voxelpilot_clampf(app->semantic_callout_opacity, 0.35f, 1.0f);
+
+    for (i = 0; i < app->semantic_region_count && drawn < MAX_ANNOTATIONS; ++i) {
+        VoxelPilotSemanticRegion *semantic = &app->semantic_regions[i];
+        int selected = (i == app->semantic_selected_region);
+        float point[3];
+        float local_x = 0.0f;
+        float local_y = 0.0f;
+        float depth = 0.0f;
+        float anchor_x;
+        float anchor_y;
+        float card_w = selected ? 260.0f : 230.0f;
+        float card_h = selected ? 86.0f : 74.0f;
+        float card_x;
+        float card_y;
+        float alpha = app->semantic_callout_opacity;
+        ImU32 region_color;
+        ImU32 line_color;
+        ImU32 fill_color;
+        ImU32 border_color;
+        char title[128];
+        char detail[192];
+        char source[96];
+
+        if (semantic->rejected || semantic->label_id == 0) {
+            continue;
+        }
+        if (!voxelpilot_callout_should_show_rank(
+                semantic->importance_rank,
+                app->semantic_callout_top_regions,
+                app->semantic_callout_selected_only,
+                selected)) {
+            continue;
+        }
+
+        point[0] = semantic->centroid[0] / fmaxf((float)(app->renderer.W - 1), 1.0f);
+        point[1] = semantic->centroid[1] / fmaxf((float)(app->renderer.H - 1), 1.0f);
+        point[2] = semantic->centroid[2] / fmaxf((float)(app->renderer.D - 1), 1.0f);
+        if (!voxelpilot_project_point_to_screen(
+                point,
+                app->cam_pos,
+                app->cam_dir,
+                app->cam_up,
+                app->fov_y_deg,
+                viewport_w,
+                viewport_h,
+                &local_x,
+                &local_y,
+                &depth)) {
+            continue;
+        }
+
+        anchor_x = viewport->Pos.x + local_x;
+        anchor_y = viewport->Pos.y + local_y;
+        card_x = anchor_x + ((local_x > viewport_w * 0.62f) ? -(card_w + 34.0f) : 34.0f);
+        card_y = anchor_y - card_h * 0.5f + (float)(drawn % 3) * 12.0f;
+        card_x = fmaxf(viewport->Pos.x + 12.0f, fminf(card_x, viewport->Pos.x + viewport_w - card_w - 12.0f));
+        card_y = fmaxf(viewport->Pos.y + 36.0f, fminf(card_y, viewport->Pos.y + viewport_h - card_h - 44.0f));
+
+        region_color = ImGui::ColorConvertFloat4ToU32(ImVec4(
+            semantic->color[0], semantic->color[1], semantic->color[2], alpha));
+        line_color = ImGui::ColorConvertFloat4ToU32(ImVec4(
+            semantic->color[0], semantic->color[1], semantic->color[2], 0.88f * alpha));
+        fill_color = ImGui::ColorConvertFloat4ToU32(ImVec4(0.035f, 0.055f, 0.070f, 0.84f * alpha));
+        border_color = ImGui::ColorConvertFloat4ToU32(ImVec4(
+            semantic->color[0], semantic->color[1], semantic->color[2], selected ? 1.0f : 0.70f));
+
+        snprintf(title, sizeof(title), "%s", semantic->name[0] ? semantic->name : "ASD candidate");
+        snprintf(detail, sizeof(detail), "%s | confidence %.0f%% | stability %.0f%%",
+                 semantic->archetype,
+                 semantic->confidence * 100.0f,
+                 semantic->stability_score * 100.0f);
+        snprintf(source, sizeof(source), "%s | rank %d",
+                 semantic->source == VOXELPILOT_SEMANTIC_SOURCE_USER_CONFIRMED
+                    ? "User-confirmed"
+                    : "ASD-Lite",
+                 semantic->importance_rank);
+
+        draw_list->AddCircleFilled(ImVec2(anchor_x, anchor_y), selected ? 8.0f : 6.0f, region_color, 24);
+        draw_list->AddCircle(ImVec2(anchor_x, anchor_y), selected ? 15.0f : 12.0f, line_color, 32, selected ? 2.4f : 1.8f);
+        draw_list->AddLine(
+            ImVec2(anchor_x, anchor_y),
+            ImVec2(card_x + (card_x > anchor_x ? 0.0f : card_w), card_y + card_h * 0.50f),
+            line_color,
+            selected ? 2.4f : 1.6f);
+        draw_list->AddRectFilled(
+            ImVec2(card_x, card_y),
+            ImVec2(card_x + card_w, card_y + card_h),
+            fill_color,
+            12.0f);
+        draw_list->AddRect(
+            ImVec2(card_x, card_y),
+            ImVec2(card_x + card_w, card_y + card_h),
+            border_color,
+            12.0f,
+            0,
+            selected ? 2.2f : 1.4f);
+        draw_list->AddText(ImVec2(card_x + 12.0f, card_y + 10.0f), region_color, title);
+        draw_list->AddText(ImVec2(card_x + 12.0f, card_y + 34.0f), IM_COL32(228, 236, 240, (int)(235.0f * alpha)), detail);
+        draw_list->AddText(ImVec2(card_x + 12.0f, card_y + 56.0f), IM_COL32(168, 218, 218, (int)(225.0f * alpha)), source);
+        drawn++;
+    }
+}
+
 static void draw_gui(StandaloneApp *app)
 {
     if (app->splash_visible) {
@@ -4217,6 +4369,7 @@ static void draw_gui(StandaloneApp *app)
     draw_status_bar(app);
     update_main_render_hover_pick(app);
     draw_main_render_hover_tooltip(app);
+    draw_cinematic_semantic_callouts(app);
     app->layout_refit_next_frame = 0;
 }
 
@@ -4542,6 +4695,10 @@ int main(int argc, char **argv)
     app.semantic_min_region_voxels = 128;
     app.semantic_sensitivity = 0.55f;
     app.semantic_cinematic_emphasis = 1;
+    app.semantic_callouts_enabled = 1;
+    app.semantic_callout_top_regions = 3;
+    app.semantic_callout_selected_only = 0;
+    app.semantic_callout_opacity = 0.88f;
     memset(app.semantic_corrections, 0, sizeof(app.semantic_corrections));
     app.semantic_correction_count = 0;
     strcpy(app.semantic_edit_name, "");

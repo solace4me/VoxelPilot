@@ -1159,6 +1159,89 @@ static int test_asd_correction_memory_rejects_matching_region(void)
     return expect_true(strstr(region.description, "rejected") != NULL, "ASD rejection should explain provenance");
 }
 
+
+static int test_callout_projection_centers_visible_point(void)
+{
+    float point[3] = { 0.5f, 0.5f, 0.5f };
+    float cam_pos[3] = { 0.5f, 0.5f, -1.0f };
+    float cam_dir[3] = { 0.0f, 0.0f, 1.0f };
+    float cam_up[3] = { 0.0f, 1.0f, 0.0f };
+    float screen_x = 0.0f;
+    float screen_y = 0.0f;
+    float depth = 0.0f;
+
+    if (!expect_true(
+            voxelpilot_project_point_to_screen(
+                point,
+                cam_pos,
+                cam_dir,
+                cam_up,
+                45.0f,
+                1000.0f,
+                800.0f,
+                &screen_x,
+                &screen_y,
+                &depth) == 1,
+            "callout projection should accept visible center point")) {
+        return 0;
+    }
+
+    if (!expect_float_close(screen_x, 500.0f, "callout center point should project to viewport center X")) {
+        return 0;
+    }
+    if (!expect_float_close(screen_y, 400.0f, "callout center point should project to viewport center Y")) {
+        return 0;
+    }
+    return expect_true(depth > 0.0f, "callout projection should report positive depth");
+}
+
+static int test_callout_projection_rejects_point_behind_camera(void)
+{
+    float point[3] = { 0.5f, 0.5f, -2.0f };
+    float cam_pos[3] = { 0.5f, 0.5f, -1.0f };
+    float cam_dir[3] = { 0.0f, 0.0f, 1.0f };
+    float cam_up[3] = { 0.0f, 1.0f, 0.0f };
+    float screen_x = 0.0f;
+    float screen_y = 0.0f;
+    float depth = 0.0f;
+
+    return expect_true(
+        voxelpilot_project_point_to_screen(
+            point,
+            cam_pos,
+            cam_dir,
+            cam_up,
+            45.0f,
+            1000.0f,
+            800.0f,
+            &screen_x,
+            &screen_y,
+            &depth) == 0,
+        "callout projection should reject point behind camera");
+}
+
+static int test_callout_visibility_respects_top_count_and_selection(void)
+{
+    if (!expect_true(
+            voxelpilot_callout_should_show_rank(2, 3, 0, 0) == 1,
+            "callout visibility should include top-ranked regions")) {
+        return 0;
+    }
+    if (!expect_true(
+            voxelpilot_callout_should_show_rank(5, 3, 0, 0) == 0,
+            "callout visibility should hide low-ranked unselected regions")) {
+        return 0;
+    }
+    if (!expect_true(
+            voxelpilot_callout_should_show_rank(5, 3, 0, 1) == 1,
+            "callout visibility should always include selected region")) {
+        return 0;
+    }
+    return expect_true(
+        voxelpilot_callout_should_show_rank(2, 3, 1, 0) == 0,
+        "selected-only callout mode should hide unselected regions");
+}
+
 int main(void)
 {
     int passed = 1;
@@ -1199,6 +1282,9 @@ int main(void)
     passed &= test_asd_ranks_regions_and_reports_relationships();
     passed &= test_asd_correction_memory_confirms_matching_region();
     passed &= test_asd_correction_memory_rejects_matching_region();
+    passed &= test_callout_projection_centers_visible_point();
+    passed &= test_callout_projection_rejects_point_behind_camera();
+    passed &= test_callout_visibility_respects_top_count_and_selection();
 
     if (!passed) {
         return 1;

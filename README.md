@@ -12,7 +12,7 @@
 - Transfer mapping, clipping, histogram, and metadata panels
 - Mouse orbit/zoom, preset camera views, and measurements
 - PNG snapshot export, lightweight HTML insight reports, and `.vpilot` workspace save/load
-- AI Assist prompts, Adaptive Semantic Discovery, local object identification, slice annotations, 3D label overlays, hover explanations, and brick-cache telemetry
+- AI Assist prompts, Adaptive Semantic Discovery, local object identification, slice annotations, cinematic callouts, 3D label overlays, hover explanations, and brick-cache telemetry
 - Demo splash, guided walkthrough, and About panel
 
 ## Quick Start
@@ -88,7 +88,7 @@ Generate an opt-in Cinematic Lite snapshot without changing the default renderer
 - Click `Analyze Loaded Volume` in `AI Assist` to generate a local material/object summary.
 - Click `Refresh Quant Metrics`, then `Export Insight Report` to save a lightweight HTML review report.
 - Use `AI Assist` prompts such as `show high-density shell` or `hide below 0.3 intensity`.
-- Click `Discover Regions` in `AI Assist` to run ASD-Lite, then hover over slices or the 3D render for cautious region descriptions, stability, importance, and relationship notes. Select a discovered region to confirm, rename, reject, save, or reload correction memory.
+- Click `Discover Regions` in `AI Assist` to run ASD-Lite, then keep or enable `Cinematic Callouts` for leader-line labels on the top or selected discovered regions. Hover over slices or the 3D render for cautious region descriptions, stability, importance, and relationship notes. Select a discovered region to confirm, rename, reject, save, or reload correction memory.
 - Enable `Slice Click Labels`, keep `Show Labels in 3D Render` on, click a slice, then export the label mask for downstream analysis.
 - Use `Set A From Slices` and `Set B From Slices` for a quick measurement pass.
 - Click `Save Snapshot` to export a PNG still.
@@ -135,6 +135,7 @@ Useful docs inside it:
 - `GPU Quality Preset` keeps the core CUDA renderer intact: `Balanced GPU` is the default, `Quality GPU` uses finer ray steps, and `Interactive GPU` is available for very heavy laptops/datasets.
 - `Auto Enhance View` only changes transfer-window and opacity parameters; it does not downsample the viewport or replace the CUDA renderer.
 - `Cinematic Mode` is off by default; when enabled, it uses a single CUDA raymarch styling branch with bounded rim, glow, and contrast controls.
+- `Cinematic Callouts` are an ImGui foreground overlay fed by ASD metadata; they add no CUDA kernels, model inference, or extra volume scan.
 - Report export writes a small HTML file and does not block rendering except during the save operation.
 - Sample datasets should stay modest for demo laptops; prefer `uint8` raw volumes around `64^3` to `256^3` unless true out-of-core paging is enabled.
 
@@ -145,6 +146,8 @@ VoxelPilot v2 can run ASD-Lite from `AI Assist` to discover candidate regions in
 ASD-Lite deliberately uses cautious names such as `dense rod-like structure` instead of claiming exact anatomy or diagnosis. This keeps the laptop demo honest for unknown medical, industrial, or synthetic datasets while creating a clean bridge to future model-backed recognition. The CUDA renderer remains the main visual engine; ASD reuses the existing label-mask overlay path rather than adding a heavy render pass.
 
 Phase 2C adds human-in-the-loop correction memory. Users can select a discovered region, rename or confirm it, reject false positives, and save/load `voxelpilot_asd_memory.json`. Future ASD passes cautiously reapply those corrections by matching archetype, density class, intensity profile, compactness, elongation, and size ratio, with provenance shown as user-confirmed or rejected rather than hidden model output.
+
+Phase 2D adds cinematic ASD callouts. The overlay projects selected/top region centroids into screen space and draws glow points, leader lines, and compact cards with cautious names, archetype, confidence, stability, and provenance. This improves interpretability for demos without changing the core CUDA renderer.
 
 ## AI Concept Note
 
