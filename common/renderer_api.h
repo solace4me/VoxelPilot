@@ -32,6 +32,10 @@ typedef struct {
     float    tf_opacity_scale;
     int      tf_palette;
     int      tf_invert;
+    int      cinematic_enabled;
+    float    cinematic_rim_strength;
+    float    cinematic_glow_strength;
+    float    cinematic_contrast;
     float    clip_min[3];
     float    clip_max[3];
 

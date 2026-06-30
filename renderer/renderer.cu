@@ -546,6 +546,10 @@ void apply_render_command(
     st->vparams.tf_opacity_scale     = cmd->tf_opacity_scale;
     st->vparams.tf_palette           = cmd->tf_palette;
     st->vparams.tf_invert            = cmd->tf_invert;
+    st->vparams.cinematic_enabled      = cmd->cinematic_enabled ? 1 : 0;
+    st->vparams.cinematic_rim_strength = cmd->cinematic_rim_strength;
+    st->vparams.cinematic_glow_strength = cmd->cinematic_glow_strength;
+    st->vparams.cinematic_contrast      = cmd->cinematic_contrast;
     memcpy(st->vparams.clip_min, cmd->clip_min, sizeof(st->vparams.clip_min));
     memcpy(st->vparams.clip_max, cmd->clip_max, sizeof(st->vparams.clip_max));
     sync_label_overlay(st, cmd);
@@ -676,6 +680,10 @@ void renderer_state_init(
     st->vparams.tf_opacity_scale     = 1.0f;
     st->vparams.tf_palette           = 0;
     st->vparams.tf_invert            = 0;
+    st->vparams.cinematic_enabled    = 0;
+    st->vparams.cinematic_rim_strength = 0.35f;
+    st->vparams.cinematic_glow_strength = 0.20f;
+    st->vparams.cinematic_contrast   = 1.10f;
     st->vparams.clip_min[0]          = 0.0f;
     st->vparams.clip_min[1]          = 0.0f;
     st->vparams.clip_min[2]          = 0.0f;

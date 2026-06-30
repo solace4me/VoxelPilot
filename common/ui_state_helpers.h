@@ -231,6 +231,48 @@ static inline int voxelpilot_clamp_render_extent(int value)
     return value;
 }
 
+typedef struct {
+    int   enabled;
+    float rim_strength;
+    float glow_strength;
+    float contrast;
+} VoxelPilotCinematicParams;
+
+static inline float voxelpilot_clampf(float value, float min_value, float max_value)
+{
+    if (value < min_value) {
+        return min_value;
+    }
+    if (value > max_value) {
+        return max_value;
+    }
+    return value;
+}
+
+static inline void voxelpilot_cinematic_defaults(VoxelPilotCinematicParams *params)
+{
+    if (!params) {
+        return;
+    }
+
+    params->enabled = 0;
+    params->rim_strength = 0.35f;
+    params->glow_strength = 0.20f;
+    params->contrast = 1.10f;
+}
+
+static inline void voxelpilot_cinematic_clamp(VoxelPilotCinematicParams *params)
+{
+    if (!params) {
+        return;
+    }
+
+    params->enabled = params->enabled ? 1 : 0;
+    params->rim_strength = voxelpilot_clampf(params->rim_strength, 0.0f, 1.0f);
+    params->glow_strength = voxelpilot_clampf(params->glow_strength, 0.0f, 1.0f);
+    params->contrast = voxelpilot_clampf(params->contrast, 0.8f, 1.6f);
+}
+
 static inline int voxelpilot_compute_raymarch_step_limit(
     float step_size,
     float t_max,

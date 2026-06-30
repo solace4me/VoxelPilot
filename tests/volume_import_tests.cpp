@@ -378,6 +378,32 @@ static int test_render_target_sync_respects_match_window_mode(void)
         "manual render mode should not sync framebuffer sizes");
 }
 
+static int test_cinematic_params_default_disabled(void)
+{
+    VoxelPilotCinematicParams params;
+    voxelpilot_cinematic_defaults(&params);
+
+    if (!expect_true(params.enabled == 0, "cinematic mode should be disabled by default")) return 0;
+    if (!expect_float_close(params.rim_strength, 0.35f, "cinematic default rim strength")) return 0;
+    if (!expect_float_close(params.glow_strength, 0.20f, "cinematic default glow strength")) return 0;
+    return expect_float_close(params.contrast, 1.10f, "cinematic default contrast");
+}
+
+static int test_cinematic_params_clamp_safe_ranges(void)
+{
+    VoxelPilotCinematicParams params;
+    params.enabled = 9;
+    params.rim_strength = -2.0f;
+    params.glow_strength = 9.0f;
+    params.contrast = 3.0f;
+    voxelpilot_cinematic_clamp(&params);
+
+    if (!expect_true(params.enabled == 1, "cinematic enabled should clamp to one")) return 0;
+    if (!expect_float_close(params.rim_strength, 0.0f, "cinematic rim should clamp low")) return 0;
+    if (!expect_float_close(params.glow_strength, 1.0f, "cinematic glow should clamp high")) return 0;
+    return expect_float_close(params.contrast, 1.6f, "cinematic contrast should clamp high");
+}
+
 static int test_prompt_parser_maps_density_commands_to_transfer_settings(void)
 {
     VoxelPilotPromptResult result;
@@ -878,6 +904,8 @@ int main(void)
     passed &= test_focus_slice_scout_selects_high_variance_axial_slice();
     passed &= test_render_extent_clamps_to_safe_range();
     passed &= test_render_target_sync_respects_match_window_mode();
+    passed &= test_cinematic_params_default_disabled();
+    passed &= test_cinematic_params_clamp_safe_ranges();
     passed &= test_raymarch_step_limit_reaches_full_volume_at_fine_steps();
     passed &= test_prompt_parser_maps_density_commands_to_transfer_settings();
     passed &= test_prompt_parser_recognizes_visibility_and_quality_intents();

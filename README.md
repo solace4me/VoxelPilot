@@ -1,10 +1,11 @@
-# VoxelPilot
+# VoxelPilot v2 — Cinematic AI Preview
 
-`VoxelPilot` is a standalone CUDA volume exploration workstation for local NVIDIA hardware. It combines real-time 3D rendering, orthogonal slice review, measurement tools, workspace presets, and demo-ready presentation flow in one desktop app.
+`VoxelPilot v2` is a standalone CUDA volume exploration workstation for local NVIDIA hardware. It combines real-time 3D rendering, orthogonal slice review, measurement tools, workspace presets, and demo-ready presentation flow in one desktop app.
 
 ## Highlights
 
 - Real-time CUDA volume rendering
+- V2 Cinematic Lite rendering track with GPU rim, glow, and contrast styling
 - Headerless raw volume import with arbitrary `width x height x depth`
 - Import support for `uint8`, `uint16`, and `float32` voxel data
 - Axial, coronal, and sagittal slice review
@@ -49,6 +50,27 @@ make clean
 Run the packaged Windows demo build:
 
 - `release/voxelpilot-windows-nvidia/Run_VoxelPilot.bat`
+
+Run fast unit/regression tests:
+
+```powershell
+.\run_tests_windows.bat
+```
+
+Run the Phase 0 GPU render safety baseline with the canonical foot volume:
+
+```powershell
+.\build_windows.ps1
+.\run_render_regression_windows.bat
+```
+
+The render baseline writes `build\foot_render_regression.png` and `build\foot_render_regression_metrics.json`, then fails if the snapshot is black, tiny, badly cropped, or unexpectedly slow.
+
+Generate an opt-in Cinematic Lite snapshot without changing the default renderer:
+
+```powershell
+.\volume_renderer_standalone.exe --volume .\sample-data\foot_256x256x256_uint8.raw --width 256 --height 256 --depth 256 --type uint8 --snapshot .\build\foot_cinematic_lite.png --cinematic-lite
+```
 
 ## Demo Launch Guide
 
@@ -102,7 +124,7 @@ Useful docs inside it:
 
 ## Pitch
 
-`VoxelPilot is a presentation-ready CUDA volume exploration workstation, not just a renderer.`
+`VoxelPilot v2 is a presentation-ready CUDA volume exploration workstation with a cinematic AI-assisted interpretation track, not just a renderer.`
 
 
 ## Laptop-Safe Performance Guardrails
@@ -111,6 +133,7 @@ Useful docs inside it:
 - Quantitative metrics reuse the existing histogram and annotation metadata, so they avoid extra volume-wide GPU passes.
 - `GPU Quality Preset` keeps the core CUDA renderer intact: `Balanced GPU` is the default, `Quality GPU` uses finer ray steps, and `Interactive GPU` is available for very heavy laptops/datasets.
 - `Auto Enhance View` only changes transfer-window and opacity parameters; it does not downsample the viewport or replace the CUDA renderer.
+- `Cinematic Mode` is off by default; when enabled, it uses a single CUDA raymarch styling branch with bounded rim, glow, and contrast controls.
 - Report export writes a small HTML file and does not block rendering except during the save operation.
 - Sample datasets should stay modest for demo laptops; prefer `uint8` raw volumes around `64^3` to `256^3` unless true out-of-core paging is enabled.
 

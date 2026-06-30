@@ -23,3 +23,6 @@ Thumbs.db
 !release/voxelpilot-windows-nvidia/*.bat
 !release/voxelpilot-windows-nvidia/*.md
 !release/voxelpilot-windows-nvidia/*.txt
+
+# Local Superpowers brainstorming artifacts
+.superpowers/

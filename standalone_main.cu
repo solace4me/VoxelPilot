@@ -46,8 +46,8 @@
 #define DEFAULT_RENDER_W 512
 #define DEFAULT_RENDER_H 512
 #define MAX_PATH_BUF     1024
-#define BRAND_TITLE      "VoxelPilot"
-#define BRAND_SUBTITLE   "NVIDIA Volume Explorer"
+#define BRAND_TITLE      "VoxelPilot v2"
+#define BRAND_SUBTITLE   "Cinematic AI Preview | NVIDIA Volume Explorer"
 #define HISTOGRAM_BINS   128
 #define MAX_ANNOTATIONS  8
 #define ANNOTATION_NAME_MAX 64
@@ -99,6 +99,12 @@ typedef struct {
 
     /* UI: Light */
     float         light_pos[3];
+
+    /* UI: Cinematic render style */
+    int           cinematic_enabled;
+    float         cinematic_rim_strength;
+    float         cinematic_glow_strength;
+    float         cinematic_contrast;
 
     /* UI: Render params */
     float         step_size;
@@ -254,6 +260,7 @@ static const char *k_render_quality_labels[] = {
 };
 
 static void apply_render_quality_preset(StandaloneApp *app, int quality_mode);
+static void clamp_cinematic_settings(StandaloneApp *app);
 static int apply_auto_enhance_transfer(StandaloneApp *app, const char *reason);
 static int apply_auto_enhance_on_load_if_safe(StandaloneApp *app, const char *reason);
 
@@ -677,6 +684,26 @@ static void sync_orbit_from_camera(StandaloneApp *app)
     app->orbit_yaw = atan2f(dx, -dz);
 }
 
+static void clamp_cinematic_settings(StandaloneApp *app)
+{
+    VoxelPilotCinematicParams cinematic;
+
+    if (!app) {
+        return;
+    }
+
+    cinematic.enabled = app->cinematic_enabled;
+    cinematic.rim_strength = app->cinematic_rim_strength;
+    cinematic.glow_strength = app->cinematic_glow_strength;
+    cinematic.contrast = app->cinematic_contrast;
+    voxelpilot_cinematic_clamp(&cinematic);
+
+    app->cinematic_enabled = cinematic.enabled;
+    app->cinematic_rim_strength = cinematic.rim_strength;
+    app->cinematic_glow_strength = cinematic.glow_strength;
+    app->cinematic_contrast = cinematic.contrast;
+}
+
 static void apply_render_quality_preset(StandaloneApp *app, int quality_mode)
 {
     if (!app) {
@@ -716,6 +743,14 @@ static void reset_workspace(StandaloneApp *app)
     app->light_pos[0] = 1.5f;
     app->light_pos[1] = 1.5f;
     app->light_pos[2] = -1.0f;
+    {
+        VoxelPilotCinematicParams cinematic;
+        voxelpilot_cinematic_defaults(&cinematic);
+        app->cinematic_enabled = cinematic.enabled;
+        app->cinematic_rim_strength = cinematic.rim_strength;
+        app->cinematic_glow_strength = cinematic.glow_strength;
+        app->cinematic_contrast = cinematic.contrast;
+    }
     app->tf_center = 0.45f;
     app->tf_width = 0.35f;
     app->tf_opacity_scale = 1.0f;
@@ -1555,6 +1590,10 @@ static int save_workspace_preset(StandaloneApp *app, const char *path)
     fprintf(fp, "tf_center %.9f\n", app->tf_center);
     fprintf(fp, "tf_width %.9f\n", app->tf_width);
     fprintf(fp, "tf_opacity_scale %.9f\n", app->tf_opacity_scale);
+    fprintf(fp, "cinematic_enabled %d\n", app->cinematic_enabled);
+    fprintf(fp, "cinematic_rim_strength %.9f\n", app->cinematic_rim_strength);
+    fprintf(fp, "cinematic_glow_strength %.9f\n", app->cinematic_glow_strength);
+    fprintf(fp, "cinematic_contrast %.9f\n", app->cinematic_contrast);
     fprintf(fp, "tf_palette %d\n", app->tf_palette);
     fprintf(fp, "tf_invert %d\n", app->tf_invert);
     fprintf(fp, "measurement_visible %d\n", app->measurement_visible);
@@ -1596,6 +1635,10 @@ static int load_workspace_preset(StandaloneApp *app, const char *path)
         else if (strcmp(key, "tf_center") == 0) fscanf(fp, "%f", &app->tf_center);
         else if (strcmp(key, "tf_width") == 0) fscanf(fp, "%f", &app->tf_width);
         else if (strcmp(key, "tf_opacity_scale") == 0) fscanf(fp, "%f", &app->tf_opacity_scale);
+        else if (strcmp(key, "cinematic_enabled") == 0) fscanf(fp, "%d", &app->cinematic_enabled);
+        else if (strcmp(key, "cinematic_rim_strength") == 0) fscanf(fp, "%f", &app->cinematic_rim_strength);
+        else if (strcmp(key, "cinematic_glow_strength") == 0) fscanf(fp, "%f", &app->cinematic_glow_strength);
+        else if (strcmp(key, "cinematic_contrast") == 0) fscanf(fp, "%f", &app->cinematic_contrast);
         else if (strcmp(key, "tf_palette") == 0) fscanf(fp, "%d", &app->tf_palette);
         else if (strcmp(key, "tf_invert") == 0) fscanf(fp, "%d", &app->tf_invert);
         else if (strcmp(key, "measurement_visible") == 0) fscanf(fp, "%d", &app->measurement_visible);
@@ -1615,6 +1658,7 @@ static int load_workspace_preset(StandaloneApp *app, const char *path)
     }
 
     fclose(fp);
+    clamp_cinematic_settings(app);
     sync_resolution_selection(app);
     return 0;
 }
@@ -1710,6 +1754,10 @@ static void render_frame_gpu_snapshot(StandaloneApp *app)
     cmd.tf_opacity_scale      = app->tf_opacity_scale;
     cmd.tf_palette            = app->tf_palette;
     cmd.tf_invert             = app->tf_invert;
+    cmd.cinematic_enabled       = app->cinematic_enabled;
+    cmd.cinematic_rim_strength  = app->cinematic_rim_strength;
+    cmd.cinematic_glow_strength = app->cinematic_glow_strength;
+    cmd.cinematic_contrast      = app->cinematic_contrast;
     memcpy(cmd.clip_min, app->clip_min, sizeof(cmd.clip_min));
     memcpy(cmd.clip_max, app->clip_max, sizeof(cmd.clip_max));
     cmd.img_width  = (uint32_t)app->render_w;
@@ -1749,6 +1797,10 @@ static void render_frame_standalone(StandaloneApp *app)
     cmd.tf_opacity_scale      = app->tf_opacity_scale;
     cmd.tf_palette            = app->tf_palette;
     cmd.tf_invert             = app->tf_invert;
+    cmd.cinematic_enabled       = app->cinematic_enabled;
+    cmd.cinematic_rim_strength  = app->cinematic_rim_strength;
+    cmd.cinematic_glow_strength = app->cinematic_glow_strength;
+    cmd.cinematic_contrast      = app->cinematic_contrast;
     memcpy(cmd.clip_min, app->clip_min, sizeof(cmd.clip_min));
     memcpy(cmd.clip_max, app->clip_max, sizeof(cmd.clip_max));
     cmd.img_width  = (uint32_t)app->render_w;
@@ -2256,6 +2308,20 @@ static void draw_controls_panel(StandaloneApp *app)
     ImGui::Text("Lighting");
     ImGui::SliderFloat3("Light Pos", app->light_pos,
                         -3.0f, 3.0f);
+    {
+        bool cinematic_enabled = (app->cinematic_enabled != 0);
+        if (ImGui::Checkbox("Cinematic Mode", &cinematic_enabled)) {
+            app->cinematic_enabled = cinematic_enabled ? 1 : 0;
+            clamp_cinematic_settings(app);
+        }
+    }
+    if (app->cinematic_enabled) {
+        ImGui::SliderFloat("Cinematic Rim", &app->cinematic_rim_strength, 0.0f, 1.0f);
+        ImGui::SliderFloat("Cinematic Glow", &app->cinematic_glow_strength, 0.0f, 1.0f);
+        ImGui::SliderFloat("Cinematic Contrast", &app->cinematic_contrast, 0.8f, 1.6f);
+        clamp_cinematic_settings(app);
+        ImGui::TextWrapped("Cinematic Lite is a GPU lighting style for demos; default rendering remains available by toggling this off.");
+    }
 
     ImGui::Separator();
 
@@ -3525,6 +3591,8 @@ static void draw_status_bar(StandaloneApp *app)
     ImGui::SameLine();
     ImGui::Text("| Clip: %s", clipping_is_active(app) ? "On" : "Off");
     ImGui::SameLine();
+    ImGui::Text("| Cinematic: %s", app->cinematic_enabled ? "On" : "Off");
+    ImGui::SameLine();
     ImGui::Text("| Measure: %.3f vox / %.3f u",
                 measurement_distance(app),
                 measurement_distance_world(app));
@@ -3574,6 +3642,13 @@ int main(int argc, char **argv)
     int           cli_tf_center_set = 0;
     int           cli_tf_width_set = 0;
     int           cli_tf_opacity_set = 0;
+    int           cli_cinematic_enabled = 0;
+    int           cli_cinematic_rim_set = 0;
+    int           cli_cinematic_glow_set = 0;
+    int           cli_cinematic_contrast_set = 0;
+    float         cli_cinematic_rim = 0.35f;
+    float         cli_cinematic_glow = 0.20f;
+    float         cli_cinematic_contrast = 1.10f;
     float         cli_tf_center = 0.45f;
     float         cli_tf_width = 0.35f;
     float         cli_tf_opacity = 1.0f;
@@ -3615,6 +3690,29 @@ int main(int argc, char **argv)
                 return -1;
             }
             cli_tf_opacity_set = 1;
+        } else if (strcmp(argv[i], "--cinematic-lite") == 0) {
+            cli_cinematic_enabled = 1;
+        } else if (strcmp(argv[i], "--cinematic-rim") == 0 &&
+                   i+1 < argc) {
+            if (parse_cli_float(argv[++i], 0.0f, 1.0f, &cli_cinematic_rim) != 0) {
+                fprintf(stderr, "Invalid value for --cinematic-rim: %s\n", argv[i]);
+                return -1;
+            }
+            cli_cinematic_rim_set = 1;
+        } else if (strcmp(argv[i], "--cinematic-glow") == 0 &&
+                   i+1 < argc) {
+            if (parse_cli_float(argv[++i], 0.0f, 1.0f, &cli_cinematic_glow) != 0) {
+                fprintf(stderr, "Invalid value for --cinematic-glow: %s\n", argv[i]);
+                return -1;
+            }
+            cli_cinematic_glow_set = 1;
+        } else if (strcmp(argv[i], "--cinematic-contrast") == 0 &&
+                   i+1 < argc) {
+            if (parse_cli_float(argv[++i], 0.8f, 1.6f, &cli_cinematic_contrast) != 0) {
+                fprintf(stderr, "Invalid value for --cinematic-contrast: %s\n", argv[i]);
+                return -1;
+            }
+            cli_cinematic_contrast_set = 1;
         } else if (strcmp(argv[i], "--dim") == 0 &&
                    i+1 < argc) {
             if (parse_cli_int(argv[++i], &startup_width) != 0) {
@@ -3668,14 +3766,17 @@ int main(int argc, char **argv)
                     strcmp(argv[i], "--snapshot") == 0 ||
                     strcmp(argv[i], "--tf-center") == 0 ||
                     strcmp(argv[i], "--tf-width") == 0 ||
-                    strcmp(argv[i], "--tf-opacity") == 0) &&
+                    strcmp(argv[i], "--tf-opacity") == 0 ||
+                    strcmp(argv[i], "--cinematic-rim") == 0 ||
+                    strcmp(argv[i], "--cinematic-glow") == 0 ||
+                    strcmp(argv[i], "--cinematic-contrast") == 0) &&
                    i+1 >= argc) {
             fprintf(stderr, "Missing value for %s\n", argv[i]);
             return -1;
         } else {
             fprintf(stderr, "Unknown argument: %s\n", argv[i]);
             fprintf(stderr,
-                    "Usage: %s [--volume file.raw] [--dim N | --width W --height H --depth D] [--type uint8|uint16|float32] [--snapshot path.png] [--tf-center C --tf-width W --tf-opacity O]\n",
+                    "Usage: %s [--volume file.raw] [--dim N | --width W --height H --depth D] [--type uint8|uint16|float32] [--snapshot path.png] [--tf-center C --tf-width W --tf-opacity O] [--cinematic-lite --cinematic-rim R --cinematic-glow G --cinematic-contrast C]\n",
                     argv[0]);
             return -1;
         }
@@ -3754,6 +3855,19 @@ int main(int argc, char **argv)
 
     /* Default render params */
     apply_render_quality_preset(&app, VOXELPILOT_RENDER_QUALITY_BALANCED);
+    {
+        VoxelPilotCinematicParams cinematic;
+        voxelpilot_cinematic_defaults(&cinematic);
+        app.cinematic_enabled = cinematic.enabled;
+        app.cinematic_rim_strength = cinematic.rim_strength;
+        app.cinematic_glow_strength = cinematic.glow_strength;
+        app.cinematic_contrast = cinematic.contrast;
+    }
+    if (cli_cinematic_enabled) app.cinematic_enabled = 1;
+    if (cli_cinematic_rim_set) app.cinematic_rim_strength = cli_cinematic_rim;
+    if (cli_cinematic_glow_set) app.cinematic_glow_strength = cli_cinematic_glow;
+    if (cli_cinematic_contrast_set) app.cinematic_contrast = cli_cinematic_contrast;
+    clamp_cinematic_settings(&app);
     app.paused     = 0;
     app.tf_center = 0.45f;
     app.tf_width = 0.35f;

@@ -54,4 +54,8 @@ if errorlevel 1 exit /b 1
 
 echo [test-run] %TEST_EXE%
 "%TEST_EXE%"
+if errorlevel 1 exit /b 1
+
+echo [test-run] tests\render_regression_tests.py
+python tests\render_regression_tests.py
 exit /b %ERRORLEVEL%

@@ -306,6 +306,19 @@ __global__ void volume_render_kernel(
                 apply_phong(base, grad, L, V,
                             0.1f, 0.7f, 0.2f, 16.0f);
 
+            if (vparams.cinematic_enabled) {
+                float rim_strength = fminf(fmaxf(vparams.cinematic_rim_strength, 0.0f), 1.0f);
+                float glow_strength = fminf(fmaxf(vparams.cinematic_glow_strength, 0.0f), 1.0f);
+                float rim = 1.0f - fabsf(f3_dot(grad, V));
+                float glow = a * glow_strength;
+
+                rim = rim * rim * rim_strength;
+
+                lit.x = fminf(1.0f, lit.x + rim * 0.72f + glow * 0.30f + val * 0.035f);
+                lit.y = fminf(1.0f, lit.y + rim * 0.55f + glow * 0.22f + val * 0.020f);
+                lit.z = fminf(1.0f, lit.z + rim * 0.32f + glow * 0.14f);
+            }
+
             float one_minus_a =
                 1.0f - accumulated_alpha;
 
@@ -318,6 +331,13 @@ __global__ void volume_render_kernel(
         }
 
         t += vparams.step_size;
+    }
+
+    if (vparams.cinematic_enabled) {
+        float contrast = fminf(fmaxf(vparams.cinematic_contrast, 0.8f), 1.6f);
+        accumulated_r = (accumulated_r - 0.5f) * contrast + 0.5f;
+        accumulated_g = (accumulated_g - 0.5f) * contrast + 0.5f;
+        accumulated_b = (accumulated_b - 0.5f) * contrast + 0.5f;
     }
 
     output[y * img_w + x] = make_uchar4(
