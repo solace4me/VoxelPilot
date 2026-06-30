@@ -37,6 +37,7 @@
 #include "common/ui_state_helpers.h"
 #include "common/ai_features.h"
 #include "common/volume_import.h"
+#include "common/semantic_discovery.h"
 
 /* ============================================================
    Constants
@@ -172,6 +173,16 @@ typedef struct {
     uint32_t      label_mask_revision;
     int           label_overlay_visible;
     float         label_overlay_alpha;
+    VoxelPilotSemanticRegion semantic_regions[VOXELPILOT_ASD_MAX_REGIONS];
+    int           semantic_region_count;
+    VoxelPilotRegionRelation semantic_relations[VOXELPILOT_ASD_MAX_RELATIONS];
+    int           semantic_relation_count;
+    int           semantic_selected_region;
+    int           semantic_max_regions;
+    int           semantic_min_region_voxels;
+    float         semantic_sensitivity;
+    int           semantic_cinematic_emphasis;
+    char          semantic_status[512];
     char          annotation_status[256];
     char          hover_description[256];
     int           main_hover_active;
@@ -357,6 +368,14 @@ static void sync_orbit_from_camera(StandaloneApp *app);
 static void sync_resolution_selection(StandaloneApp *app);
 static void refresh_upload_file_details(StandaloneApp *app);
 static void reset_annotations(StandaloneApp *app);
+static void reset_semantic_discovery(StandaloneApp *app);
+static VoxelPilotSemanticRegion *find_semantic_region_by_label(
+    StandaloneApp *app,
+    unsigned char  label_id);
+static const char *semantic_relationship_note(
+    StandaloneApp *app,
+    unsigned char  label_id);
+static void run_adaptive_semantic_discovery(StandaloneApp *app);
 static void create_annotation_region_at_point(
     StandaloneApp *app,
     const float    point[3]);
@@ -775,6 +794,11 @@ static void reset_workspace(StandaloneApp *app)
     app->annotation_color[2] = 0.16f;
     app->label_overlay_visible = 1;
     app->label_overlay_alpha = 0.55f;
+    app->semantic_max_regions = MAX_ANNOTATIONS;
+    app->semantic_min_region_voxels = 128;
+    app->semantic_sensitivity = 0.55f;
+    app->semantic_cinematic_emphasis = 1;
+    reset_semantic_discovery(app);
     app->object_summary_ready = 0;
     snprintf(app->object_summary_status,
              sizeof(app->object_summary_status),
@@ -1158,6 +1182,19 @@ static void update_slice_previews(StandaloneApp *app)
     upload_gray_texture(app->sagittal_tex, app->slice_sagittal_buf, H, D);
 }
 
+
+static void reset_semantic_discovery(StandaloneApp *app)
+{
+    if (!app) return;
+    memset(app->semantic_regions, 0, sizeof(app->semantic_regions));
+    memset(app->semantic_relations, 0, sizeof(app->semantic_relations));
+    app->semantic_region_count = 0;
+    app->semantic_relation_count = 0;
+    app->semantic_selected_region = -1;
+    snprintf(app->semantic_status, sizeof(app->semantic_status),
+             "Click Discover Regions to run ASD-Lite on the loaded volume.");
+}
+
 static void reset_annotations(StandaloneApp *app)
 {
     if (app->label_mask) {
@@ -1172,6 +1209,7 @@ static void reset_annotations(StandaloneApp *app)
     memset(app->annotations, 0, sizeof(app->annotations));
     app->annotation_count = 0;
     app->selected_annotation = -1;
+    reset_semantic_discovery(app);
     app->label_mask_revision++;
     snprintf(app->annotation_status, sizeof(app->annotation_status),
              "No annotation regions yet.");
@@ -1290,6 +1328,69 @@ static AnnotationRegion *find_annotation_by_label(
 
     return NULL;
 }
+
+static VoxelPilotSemanticRegion *find_semantic_region_by_label(
+    StandaloneApp *app,
+    unsigned char  label_id)
+{
+    int i;
+
+    if (!app || label_id == 0) {
+        return NULL;
+    }
+
+    for (i = 0; i < app->semantic_region_count; ++i) {
+        if (app->semantic_regions[i].label_id == label_id) {
+            return &app->semantic_regions[i];
+        }
+    }
+
+    return NULL;
+}
+
+static const char *semantic_relationship_note(
+    StandaloneApp *app,
+    unsigned char  label_id)
+{
+    static char empty_note[1] = { '\0' };
+    int i;
+
+    if (!app || label_id == 0) {
+        return empty_note;
+    }
+
+    for (i = 0; i < app->semantic_relation_count; ++i) {
+        if (app->semantic_relations[i].region_a == label_id ||
+            app->semantic_relations[i].region_b == label_id) {
+            return app->semantic_relations[i].description;
+        }
+    }
+
+    return empty_note;
+}
+
+static void write_json_escaped(FILE *fp, const char *text)
+{
+    const unsigned char *cursor = (const unsigned char *)(text ? text : "");
+    while (*cursor) {
+        unsigned char ch = *cursor++;
+        if (ch == '"' || ch == '\\') {
+            fputc('\\', fp);
+            fputc((int)ch, fp);
+        } else if (ch == '\n') {
+            fputs("\\n", fp);
+        } else if (ch == '\r') {
+            fputs("\\r", fp);
+        } else if (ch == '\t') {
+            fputs("\\t", fp);
+        } else if (ch < 32) {
+            fprintf(fp, "\\u%04x", (unsigned int)ch);
+        } else {
+            fputc((int)ch, fp);
+        }
+    }
+}
+
 
 static void clear_label_from_mask(
     StandaloneApp *app,
@@ -1460,29 +1561,176 @@ static void export_annotation_mask(StandaloneApp *app)
                 app->label_mask_H,
                 app->label_mask_D);
         fprintf(meta, "  \"labels\": [\n");
-        for (i = 0; i < app->annotation_count; ++i) {
-            AnnotationRegion *region = &app->annotations[i];
-            if (!region->active) continue;
-            fprintf(meta,
-                    "    {\"id\": %u, \"name\": \"%s\", \"voxels\": %zu, \"seed\": [%.6f, %.6f, %.6f], \"tolerance\": %.6f, \"intensityRange\": [%.6f, %.6f]}%s\n",
-                    (unsigned int)region->label_id,
-                    region->name,
-                    region->voxel_count,
-                    region->seed[0],
-                    region->seed[1],
-                    region->seed[2],
-                    region->tolerance,
-                    region->min_intensity,
-                    region->max_intensity,
-                    (i + 1 < app->annotation_count) ? "," : "");
+        {
+            int emitted = 0;
+            for (i = 0; i < app->annotation_count; ++i) {
+                AnnotationRegion *region = &app->annotations[i];
+                VoxelPilotSemanticRegion *semantic = NULL;
+                if (!region->active) continue;
+                semantic = find_semantic_region_by_label(app, region->label_id);
+                if (emitted > 0) fprintf(meta, ",\n");
+                fprintf(meta,
+                        "    {\"id\": %u, \"name\": \"",
+                        (unsigned int)region->label_id);
+                write_json_escaped(meta, region->name);
+                fprintf(meta,
+                        "\", \"voxels\": %zu, \"seed\": [%.6f, %.6f, %.6f], \"tolerance\": %.6f, \"intensityRange\": [%.6f, %.6f]",
+                        region->voxel_count,
+                        region->seed[0],
+                        region->seed[1],
+                        region->seed[2],
+                        region->tolerance,
+                        region->min_intensity,
+                        region->max_intensity);
+                if (semantic) {
+                    fprintf(meta,
+                            ", \"semantic\": {\"source\": \"ASD-Lite heuristic\", \"confidence\": %.6f, \"stabilityScore\": %.6f, \"importanceScore\": %.6f, \"importanceRank\": %d, \"archetype\": \"",
+                            semantic->confidence,
+                            semantic->stability_score,
+                            semantic->importance_score,
+                            semantic->importance_rank);
+                    write_json_escaped(meta, semantic->archetype);
+                    fprintf(meta, "\", \"description\": \"");
+                    write_json_escaped(meta, semantic->description);
+                    fprintf(meta, "\"}");
+                }
+                fprintf(meta, "}");
+                emitted++;
+            }
+            fprintf(meta, "\n  ],\n");
         }
-        fprintf(meta, "  ]\n");
+        fprintf(meta, "  \"relationships\": [\n");
+        {
+            int emitted = 0;
+            for (i = 0; i < app->semantic_relation_count; ++i) {
+                VoxelPilotRegionRelation *relation = &app->semantic_relations[i];
+                if (relation->region_a == 0) continue;
+                if (emitted > 0) fprintf(meta, ",\n");
+                fprintf(meta,
+                        "    {\"regionA\": %u, \"regionB\": %u, \"type\": %d, \"centroidDistance\": %.6f, \"confidence\": %.6f, \"description\": \"",
+                        (unsigned int)relation->region_a,
+                        (unsigned int)relation->region_b,
+                        (int)relation->type,
+                        relation->centroid_distance,
+                        relation->confidence);
+                write_json_escaped(meta, relation->description);
+                fprintf(meta, "\"}");
+                emitted++;
+            }
+            fprintf(meta, "\n  ]\n");
+        }
         fprintf(meta, "}\n");
         fclose(meta);
     }
 
     snprintf(app->annotation_status, sizeof(app->annotation_status),
              "Exported annotation mask: %s", selected);
+}
+
+
+static void run_adaptive_semantic_discovery(StandaloneApp *app)
+{
+    int discovered = 0;
+    int overlay_count = 0;
+    int i;
+
+    if (!app || !app->renderer.volume_data ||
+        app->renderer.W < 1 || app->renderer.H < 1 || app->renderer.D < 1) {
+        if (app) {
+            snprintf(app->semantic_status, sizeof(app->semantic_status),
+                     "Load a volume before running ASD-Lite.");
+        }
+        return;
+    }
+
+    if (app->semantic_max_regions < 1) app->semantic_max_regions = 1;
+    if (app->semantic_max_regions > MAX_ANNOTATIONS) app->semantic_max_regions = MAX_ANNOTATIONS;
+    if (app->semantic_min_region_voxels < 1) app->semantic_min_region_voxels = 1;
+    app->semantic_sensitivity = voxelpilot_asd_clampf(app->semantic_sensitivity, 0.0f, 1.0f);
+
+    if (!ensure_label_mask(app)) {
+        snprintf(app->semantic_status, sizeof(app->semantic_status),
+                 "Could not allocate semantic label mask for this volume.");
+        return;
+    }
+
+    discovered = voxelpilot_discover_semantic_regions(
+        app->renderer.volume_data,
+        app->renderer.W,
+        app->renderer.H,
+        app->renderer.D,
+        app->histogram,
+        HISTOGRAM_BINS,
+        app->semantic_max_regions,
+        app->semantic_sensitivity,
+        (size_t)app->semantic_min_region_voxels,
+        app->label_mask,
+        app->semantic_regions,
+        &app->semantic_region_count);
+
+    memset(app->annotations, 0, sizeof(app->annotations));
+    app->annotation_count = 0;
+    app->selected_annotation = -1;
+    app->semantic_selected_region = -1;
+    app->semantic_relation_count = 0;
+
+    if (!discovered || app->semantic_region_count < 1) {
+        memset(app->semantic_relations, 0, sizeof(app->semantic_relations));
+        app->label_mask_revision++;
+        snprintf(app->semantic_status, sizeof(app->semantic_status),
+                 "ASD-Lite found no stable regions. Try higher sensitivity or lower Min Voxels.");
+        snprintf(app->annotation_status, sizeof(app->annotation_status),
+                 "No semantic regions discovered for overlay.");
+        return;
+    }
+
+    voxelpilot_compute_region_relationships(
+        app->semantic_regions,
+        app->semantic_region_count,
+        app->semantic_relations,
+        VOXELPILOT_ASD_MAX_RELATIONS,
+        &app->semantic_relation_count);
+
+    overlay_count = app->semantic_region_count;
+    if (overlay_count > MAX_ANNOTATIONS) overlay_count = MAX_ANNOTATIONS;
+    app->annotation_count = overlay_count;
+
+    for (i = 0; i < overlay_count; ++i) {
+        AnnotationRegion *region = &app->annotations[i];
+        VoxelPilotSemanticRegion *semantic = &app->semantic_regions[i];
+        memset(region, 0, sizeof(*region));
+        region->active = 1;
+        region->label_id = semantic->label_id;
+        snprintf(region->name, sizeof(region->name), "%s", semantic->name);
+        region->color[0] = semantic->color[0];
+        region->color[1] = semantic->color[1];
+        region->color[2] = semantic->color[2];
+        region->seed[0] = semantic->centroid[0] / fmaxf((float)(app->renderer.W - 1), 1.0f);
+        region->seed[1] = semantic->centroid[1] / fmaxf((float)(app->renderer.H - 1), 1.0f);
+        region->seed[2] = semantic->centroid[2] / fmaxf((float)(app->renderer.D - 1), 1.0f);
+        region->seed_intensity = semantic->mean_intensity;
+        region->tolerance = app->semantic_sensitivity;
+        region->voxel_count = semantic->voxel_count;
+        region->min_intensity = semantic->min_intensity;
+        region->max_intensity = semantic->max_intensity;
+    }
+
+    app->selected_annotation = overlay_count > 0 ? 0 : -1;
+    app->semantic_selected_region = overlay_count > 0 ? 0 : -1;
+    app->label_overlay_visible = 1;
+    if (app->semantic_cinematic_emphasis) {
+        app->cinematic_enabled = 1;
+        if (app->label_overlay_alpha < 0.72f) app->label_overlay_alpha = 0.72f;
+    }
+    app->label_mask_revision++;
+
+    snprintf(app->semantic_status, sizeof(app->semantic_status),
+             "ASD-Lite discovered %d region(s), ranked them, and found %d relationship(s).",
+             app->semantic_region_count,
+             app->semantic_relation_count);
+    snprintf(app->annotation_status, sizeof(app->annotation_status),
+             "Semantic overlays ready: %d ASD region(s).",
+             overlay_count);
 }
 
 static void draw_slice_card(
@@ -1526,6 +1774,7 @@ static void draw_slice_card(
             float intensity = app->renderer.volume_data[voxel_index];
             unsigned char label_id = 0;
             AnnotationRegion *region = NULL;
+            VoxelPilotSemanticRegion *semantic = NULL;
 
             if (app->label_mask &&
                 app->label_mask_W == app->renderer.W &&
@@ -1533,18 +1782,38 @@ static void draw_slice_card(
                 app->label_mask_D == app->renderer.D) {
                 label_id = app->label_mask[voxel_index];
                 region = find_annotation_by_label(app, label_id);
+                semantic = find_semantic_region_by_label(app, label_id);
             }
 
-            voxelpilot_describe_voxel_context(
-                intensity,
-                label_id,
-                region ? region->name : "",
-                app->hover_description,
-                sizeof(app->hover_description));
+            if (semantic) {
+                const char *note = semantic_relationship_note(app, label_id);
+                snprintf(app->hover_description,
+                         sizeof(app->hover_description),
+                         "%s | %s | confidence %.0f%% | stability %.0f%% | source ASD-Lite. %s%s%s",
+                         semantic->name,
+                         semantic->archetype,
+                         semantic->confidence * 100.0f,
+                         semantic->stability_score * 100.0f,
+                         semantic->description,
+                         (note && note[0]) ? " " : "",
+                         (note && note[0]) ? note : "");
+            } else {
+                voxelpilot_describe_voxel_context(
+                    intensity,
+                    label_id,
+                    region ? region->name : "",
+                    app->hover_description,
+                    sizeof(app->hover_description));
+            }
 
             ImGui::BeginTooltip();
             ImGui::Text("%s", app->hover_description);
             ImGui::Text("Voxel: %d, %d, %d", vx, vy, vz);
+            if (semantic) {
+                ImGui::Text("ASD rank: %d | importance %.0f%%",
+                            semantic->importance_rank,
+                            semantic->importance_score * 100.0f);
+            }
             if (region) {
                 ImGui::Text("Region voxels: %zu", region->voxel_count);
                 ImGui::ColorButton("##label_color",
@@ -3039,6 +3308,57 @@ static void draw_ai_assist_panel(StandaloneApp *app)
 
     ImGui::Spacing();
     ImGui::Separator();
+    ImGui::Text("Adaptive Semantic Discovery");
+    ImGui::TextWrapped("ASD-Lite discovers candidate regions from intensity, connectedness, shape, stability, and relationships. Labels are cautious and local, not hardcoded anatomy.");
+    ImGui::SliderInt("ASD Max Regions", &app->semantic_max_regions, 1, MAX_ANNOTATIONS);
+    ImGui::SliderFloat("ASD Sensitivity", &app->semantic_sensitivity, 0.0f, 1.0f);
+    ImGui::InputInt("ASD Min Voxels", &app->semantic_min_region_voxels);
+    if (app->semantic_min_region_voxels < 1) app->semantic_min_region_voxels = 1;
+    {
+        bool emphasis = app->semantic_cinematic_emphasis != 0;
+        if (ImGui::Checkbox("ASD Cinematic Emphasis", &emphasis)) {
+            app->semantic_cinematic_emphasis = emphasis ? 1 : 0;
+        }
+    }
+    if (ImGui::Button("Discover Regions")) {
+        run_adaptive_semantic_discovery(app);
+    }
+    ImGui::TextWrapped("ASD status: %s", app->semantic_status);
+    if (app->semantic_region_count > 0) {
+        int i;
+        ImGui::Text("Region Legend");
+        for (i = 0; i < app->semantic_region_count; ++i) {
+            VoxelPilotSemanticRegion *semantic = &app->semantic_regions[i];
+            char row_label[256];
+            snprintf(row_label, sizeof(row_label),
+                     "#%u %s | %s | %.0f%% stable | rank %d##asd_%d",
+                     (unsigned int)semantic->label_id,
+                     semantic->name,
+                     semantic->archetype,
+                     semantic->stability_score * 100.0f,
+                     semantic->importance_rank,
+                     i);
+            if (ImGui::Selectable(row_label, app->semantic_selected_region == i)) {
+                app->semantic_selected_region = i;
+                if (i < app->annotation_count) app->selected_annotation = i;
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::BeginTooltip();
+                ImGui::TextWrapped("%s", semantic->description);
+                ImGui::Text("Confidence %.0f%% | Importance %.0f%%",
+                            semantic->confidence * 100.0f,
+                            semantic->importance_score * 100.0f);
+                {
+                    const char *note = semantic_relationship_note(app, semantic->label_id);
+                    if (note && note[0]) ImGui::TextWrapped("%s", note);
+                }
+                ImGui::EndTooltip();
+            }
+        }
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
     ImGui::Text("Multi-Material Labels");
     {
         bool annotation_mode = (app->annotation_mode != 0);
@@ -3204,6 +3524,7 @@ static void update_main_render_hover_pick(StandaloneApp *app)
     float3 ray;
     unsigned char label_id = 0;
     AnnotationRegion *region = NULL;
+    VoxelPilotSemanticRegion *semantic = NULL;
 
     app->main_hover_active = 0;
     app->main_hover_label_id = 0;
@@ -3280,16 +3601,31 @@ static void update_main_render_hover_pick(StandaloneApp *app)
         app->label_mask_D == app->renderer.D) {
         label_id = app->label_mask[app->main_hover_pick.index];
         region = find_annotation_by_label(app, label_id);
+        semantic = find_semantic_region_by_label(app, label_id);
     }
 
     app->main_hover_active = 1;
     app->main_hover_label_id = label_id;
-    voxelpilot_describe_voxel_context(
-        app->main_hover_pick.intensity,
-        label_id,
-        region ? region->name : "",
-        app->main_hover_description,
-        sizeof(app->main_hover_description));
+    if (semantic) {
+        const char *note = semantic_relationship_note(app, label_id);
+        snprintf(app->main_hover_description,
+                 sizeof(app->main_hover_description),
+                 "%s | %s | confidence %.0f%% | stability %.0f%% | source ASD-Lite. %s%s%s",
+                 semantic->name,
+                 semantic->archetype,
+                 semantic->confidence * 100.0f,
+                 semantic->stability_score * 100.0f,
+                 semantic->description,
+                 (note && note[0]) ? " " : "",
+                 (note && note[0]) ? note : "");
+    } else {
+        voxelpilot_describe_voxel_context(
+            app->main_hover_pick.intensity,
+            label_id,
+            region ? region->name : "",
+            app->main_hover_description,
+            sizeof(app->main_hover_description));
+    }
 }
 
 static void draw_main_render_hover_tooltip(StandaloneApp *app)
@@ -3303,12 +3639,14 @@ static void draw_main_render_hover_tooltip(StandaloneApp *app)
         ImGuiWindowFlags_NoInputs;
     ImVec2 mouse = ImGui::GetIO().MousePos;
     AnnotationRegion *region = NULL;
+    VoxelPilotSemanticRegion *semantic = NULL;
 
     if (!app->main_hover_active) {
         return;
     }
 
     region = find_annotation_by_label(app, app->main_hover_label_id);
+    semantic = find_semantic_region_by_label(app, app->main_hover_label_id);
     ImGui::SetNextWindowPos(ImVec2(mouse.x + 18.0f, mouse.y + 18.0f), ImGuiCond_Always);
     ImGui::SetNextWindowBgAlpha(0.92f);
     ImGui::Begin("3D Hover Pick", NULL, flags);
@@ -3323,6 +3661,11 @@ static void draw_main_render_hover_tooltip(StandaloneApp *app)
                 app->main_hover_pick.point[0],
                 app->main_hover_pick.point[1],
                 app->main_hover_pick.point[2]);
+    if (semantic) {
+        ImGui::Text("ASD rank: %d | importance %.0f%%",
+                    semantic->importance_rank,
+                    semantic->importance_score * 100.0f);
+    }
     if (region) {
         ImGui::Text("Region voxels: %zu", region->voxel_count);
         ImGui::ColorButton("##main_hover_label_color",
@@ -3941,6 +4284,11 @@ int main(int argc, char **argv)
     app.annotation_color[2] = 0.16f;
     app.label_overlay_visible = 1;
     app.label_overlay_alpha = 0.55f;
+    app.semantic_max_regions = MAX_ANNOTATIONS;
+    app.semantic_min_region_voxels = 128;
+    app.semantic_sensitivity = 0.55f;
+    app.semantic_cinematic_emphasis = 1;
+    reset_semantic_discovery(&app);
     app.slice_preview_dirty = 1;
     app.slice_prev_x = -1.0f;
     app.slice_prev_y = -1.0f;

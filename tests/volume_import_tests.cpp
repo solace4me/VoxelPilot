@@ -6,6 +6,7 @@
 #include "../common/volume_import.h"
 #include "../common/ui_state_helpers.h"
 #include "../common/ai_features.h"
+#include "../common/semantic_discovery.h"
 
 static int expect_true(int condition, const char *message)
 {
@@ -887,6 +888,213 @@ static int test_brick_cache_plan_reports_queue_and_eviction_pressure(void)
         "cache planner should identify non-resident bricks as evictable");
 }
 
+static int test_asd_rejects_invalid_inputs(void)
+{
+    unsigned char label_mask[8] = { 0 };
+    VoxelPilotSemanticRegion regions[VOXELPILOT_ASD_MAX_REGIONS];
+    int region_count = 123;
+
+    if (!expect_true(
+            voxelpilot_discover_semantic_regions(
+                NULL,
+                2,
+                2,
+                2,
+                NULL,
+                0,
+                4,
+                0.5f,
+                1,
+                label_mask,
+                regions,
+                &region_count) == 0,
+            "ASD should reject null volume data")) {
+        return 0;
+    }
+
+    if (!expect_true(region_count == 0,
+            "ASD should clear output region count on invalid input")) {
+        return 0;
+    }
+
+    return expect_true(
+        voxelpilot_discover_semantic_regions(
+            (const float *)label_mask,
+            0,
+            2,
+            2,
+            NULL,
+            0,
+            4,
+            0.5f,
+            1,
+            label_mask,
+            regions,
+            &region_count) == 0,
+        "ASD should reject invalid dimensions");
+}
+
+static int test_asd_discovers_high_density_connected_region(void)
+{
+    float volume[27] = { 0.0f };
+    unsigned char label_mask[27] = { 0 };
+    VoxelPilotSemanticRegion regions[VOXELPILOT_ASD_MAX_REGIONS];
+    int region_count = 0;
+    int index;
+
+    volume[13] = 0.92f;
+    volume[14] = 0.90f;
+    volume[16] = 0.88f;
+    volume[22] = 0.91f;
+
+    if (!expect_true(
+            voxelpilot_discover_semantic_regions(
+                volume,
+                3,
+                3,
+                3,
+                NULL,
+                0,
+                4,
+                0.55f,
+                2,
+                label_mask,
+                regions,
+                &region_count) == 1,
+            "ASD should discover at least one connected region")) {
+        return 0;
+    }
+
+    if (!expect_true(region_count == 1,
+            "ASD should report one high-density connected component")) {
+        return 0;
+    }
+
+    if (!expect_true(regions[0].label_id == 1,
+            "ASD first region should use label id one")) {
+        return 0;
+    }
+
+    if (!expect_true(regions[0].voxel_count == 4,
+            "ASD should count connected region voxels")) {
+        return 0;
+    }
+
+    for (index = 0; index < 27; ++index) {
+        if (volume[index] > 0.80f && label_mask[index] != 1) {
+            fprintf(stderr, "FAIL: high-density voxel %d was not labeled\n", index);
+            return 0;
+        }
+    }
+
+    return expect_true(
+        regions[0].mean_intensity > 0.88f && regions[0].mean_intensity < 0.93f,
+        "ASD should compute region mean intensity");
+}
+
+
+static int test_asd_assigns_archetype_stability_and_importance(void)
+{
+    float volume[125] = { 0.0f };
+    unsigned char label_mask[125] = { 0 };
+    VoxelPilotSemanticRegion regions[VOXELPILOT_ASD_MAX_REGIONS];
+    int region_count = 0;
+    int x;
+
+    for (x = 1; x <= 4; ++x) {
+        volume[2 * 25 + 2 * 5 + x] = 0.95f;
+    }
+
+    if (!expect_true(
+            voxelpilot_discover_semantic_regions(
+                volume,
+                5,
+                5,
+                5,
+                NULL,
+                0,
+                4,
+                0.50f,
+                2,
+                label_mask,
+                regions,
+                &region_count) == 1,
+            "ASD should discover rod test region")) {
+        return 0;
+    }
+
+    if (!expect_true(region_count == 1,
+            "ASD rod test should produce one region")) {
+        return 0;
+    }
+
+    if (!expect_true(strcmp(regions[0].archetype, "rod") == 0,
+            "ASD should classify elongated region as rod archetype")) {
+        return 0;
+    }
+
+    if (!expect_true(strstr(regions[0].name, "rod") != NULL,
+            "ASD cautious name should include rod archetype")) {
+        return 0;
+    }
+
+    if (!expect_true(regions[0].stability_score >= 0.0f && regions[0].stability_score <= 1.0f,
+            "ASD stability score should be normalized")) {
+        return 0;
+    }
+
+    return expect_true(regions[0].importance_score > 0.0f,
+        "ASD importance score should be positive for a discovered region");
+}
+
+
+static int test_asd_ranks_regions_and_reports_relationships(void)
+{
+    VoxelPilotSemanticRegion regions[2];
+    VoxelPilotRegionRelation relations[VOXELPILOT_ASD_MAX_RELATIONS];
+    int relation_count = 0;
+
+    memset(regions, 0, sizeof(regions));
+    regions[0].label_id = 1;
+    regions[0].importance_score = 0.25f;
+    regions[0].bbox_min[0] = 0; regions[0].bbox_min[1] = 0; regions[0].bbox_min[2] = 0;
+    regions[0].bbox_max[0] = 2; regions[0].bbox_max[1] = 2; regions[0].bbox_max[2] = 2;
+    regions[0].centroid[0] = 1.0f; regions[0].centroid[1] = 1.0f; regions[0].centroid[2] = 1.0f;
+
+    regions[1].label_id = 2;
+    regions[1].importance_score = 0.90f;
+    regions[1].bbox_min[0] = 3; regions[1].bbox_min[1] = 0; regions[1].bbox_min[2] = 0;
+    regions[1].bbox_max[0] = 4; regions[1].bbox_max[1] = 2; regions[1].bbox_max[2] = 2;
+    regions[1].centroid[0] = 3.5f; regions[1].centroid[1] = 1.0f; regions[1].centroid[2] = 1.0f;
+
+    voxelpilot_asd_rank_regions(regions, 2);
+
+    if (!expect_true(regions[1].importance_rank == 1,
+            "ASD should rank highest-importance region first")) {
+        return 0;
+    }
+
+    if (!expect_true(
+            voxelpilot_compute_region_relationships(
+                regions,
+                2,
+                relations,
+                VOXELPILOT_ASD_MAX_RELATIONS,
+                &relation_count) == 1,
+            "ASD relationship helper should accept two regions")) {
+        return 0;
+    }
+
+    if (!expect_true(relation_count >= 1,
+            "ASD should report at least one relationship")) {
+        return 0;
+    }
+
+    return expect_true(
+        relations[0].type == VOXELPILOT_REGION_RELATION_ADJACENT,
+        "ASD should identify adjacent bounding boxes");
+}
+
 int main(void)
 {
     int passed = 1;
@@ -921,6 +1129,10 @@ int main(void)
     passed &= test_quant_metrics_summarize_histogram_without_volume_scan();
     passed &= test_streaming_estimate_counts_visible_nonempty_bricks();
     passed &= test_brick_cache_plan_reports_queue_and_eviction_pressure();
+    passed &= test_asd_rejects_invalid_inputs();
+    passed &= test_asd_discovers_high_density_connected_region();
+    passed &= test_asd_assigns_archetype_stability_and_importance();
+    passed &= test_asd_ranks_regions_and_reports_relationships();
 
     if (!passed) {
         return 1;
