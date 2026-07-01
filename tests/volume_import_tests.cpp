@@ -533,6 +533,56 @@ static int test_prompt_parser_maps_density_commands_to_transfer_settings(void)
         "hide-below prompt should expose the visible upper intensity range");
 }
 
+static int test_prompt_parser_clamps_negative_intensity_cutoffs(void)
+{
+    VoxelPilotPromptResult result;
+
+    if (!expect_true(
+            voxelpilot_parse_prompt_action(
+                "hide everything below -0.2 intensity",
+                &result) == 1,
+            "prompt parser should recognize negative numeric cutoffs")) {
+        return 0;
+    }
+
+    if (!expect_float_close(
+            result.min_intensity,
+            0.0f,
+            "negative cutoff should clamp to the visible lower bound instead of becoming positive")) {
+        return 0;
+    }
+
+    return expect_true(
+        result.set_min_intensity == 1 &&
+        result.tf_width > 0.95f,
+        "negative hide-below prompt should keep the full visible intensity range");
+}
+
+static int test_prompt_reset_uses_visible_default_opacity(void)
+{
+    VoxelPilotPromptResult result;
+
+    voxelpilot_init_prompt_result(&result);
+    if (!expect_float_close(
+            result.tf_opacity_scale,
+            1.8f,
+            "prompt defaults should match the app's visible transfer opacity")) {
+        return 0;
+    }
+
+    if (!expect_true(
+            voxelpilot_parse_prompt_action(
+                "reset the view",
+                &result) == 1,
+            "prompt parser should recognize reset view commands")) {
+        return 0;
+    }
+
+    return expect_float_close(
+        result.tf_opacity_scale,
+        1.8f,
+        "reset view prompt should restore the visible transfer opacity");
+}
 
 static int test_prompt_parser_recognizes_visibility_and_quality_intents(void)
 {
@@ -1561,6 +1611,8 @@ int main(void)
     passed &= test_semantic_demo_defaults_enable_visible_asd_callouts();
     passed &= test_raymarch_step_limit_reaches_full_volume_at_fine_steps();
     passed &= test_prompt_parser_maps_density_commands_to_transfer_settings();
+    passed &= test_prompt_parser_clamps_negative_intensity_cutoffs();
+    passed &= test_prompt_reset_uses_visible_default_opacity();
     passed &= test_prompt_parser_recognizes_visibility_and_quality_intents();
     passed &= test_auto_enhance_transfer_boosts_sparse_visible_histograms();
     passed &= test_auto_enhance_load_guard_preserves_high_background_ct_defaults();

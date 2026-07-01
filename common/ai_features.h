@@ -123,7 +123,12 @@ static inline int voxelpilot_ai_extract_first_number(
 
     cursor = text;
     while (*cursor) {
-        if ((*cursor >= '0' && *cursor <= '9') || *cursor == '.') {
+        int is_digit = (*cursor >= '0' && *cursor <= '9');
+        int is_signed_number =
+            *cursor == '-' &&
+            ((*(cursor + 1) >= '0' && *(cursor + 1) <= '9') ||
+             *(cursor + 1) == '.');
+        if (is_digit || *cursor == '.' || is_signed_number) {
             value = strtod(cursor, &end_ptr);
             if (end_ptr != cursor) {
                 *out_value = (float)value;
@@ -515,7 +520,7 @@ static inline void voxelpilot_init_prompt_result(
     result->quality_mode = VOXELPILOT_RENDER_QUALITY_BALANCED;
     result->tf_center = 0.45f;
     result->tf_width = 0.35f;
-    result->tf_opacity_scale = 1.0f;
+    result->tf_opacity_scale = 1.8f;
     result->min_intensity = 0.0f;
     snprintf(result->status, sizeof(result->status), "No prompt action recognized.");
 }
@@ -619,7 +624,7 @@ static inline int voxelpilot_parse_prompt_action(
         result->auto_enhance = 1;
         result->tf_center = 0.45f;
         result->tf_width = 0.35f;
-        result->tf_opacity_scale = 1.0f;
+        result->tf_opacity_scale = 1.8f;
         snprintf(result->status, sizeof(result->status),
                  "Prompt reset clipping and requested histogram-based view enhancement.");
         return 1;
