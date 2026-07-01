@@ -38,6 +38,7 @@
 #include "common/ai_features.h"
 #include "common/volume_import.h"
 #include "common/semantic_discovery.h"
+#include "common/performance_governor.h"
 
 /* ============================================================
    Constants
@@ -123,6 +124,10 @@ typedef struct {
     float         last_render_ms;
     float         gui_fps;
     uint32_t      frame_id;
+    float         render_ms_average;
+    int           render_ms_average_ready;
+    VoxelPilotPerformanceResult performance_result;
+    char          performance_status[512];
 
     /* Volume upload */
     char          upload_path[1024];
@@ -388,6 +393,8 @@ static const char *semantic_relationship_note(
     unsigned char  label_id);
 static void run_adaptive_semantic_discovery(StandaloneApp *app);
 static void run_semantic_demo_workflow(StandaloneApp *app, const char *reason);
+static void update_render_performance_average(StandaloneApp *app);
+static void refresh_performance_governor(StandaloneApp *app);
 static void export_ai_review_bundle(StandaloneApp *app);
 static void refresh_semantic_annotation_overlays(StandaloneApp *app);
 static int save_semantic_memory(StandaloneApp *app, const char *path);
@@ -833,6 +840,11 @@ static void reset_workspace(StandaloneApp *app)
              "No report exported yet.");
     snprintf(app->report_path, sizeof(app->report_path),
              "voxelpilot_insight_report.html");
+    app->render_ms_average = 0.0f;
+    app->render_ms_average_ready = 0;
+    voxelpilot_performance_result_defaults(&app->performance_result);
+    snprintf(app->performance_status, sizeof(app->performance_status),
+             "Performance Safety: waiting for render telemetry.");
     app->main_hover_active = 0;
     app->main_hover_label_id = 0;
     memset(&app->main_hover_pick, 0, sizeof(app->main_hover_pick));
@@ -2278,6 +2290,7 @@ static void render_frame_gpu_snapshot(StandaloneApp *app)
 
     apply_render_command(&app->renderer, &cmd);
     app->last_render_ms = render_frame_gpu(&app->renderer);
+    update_render_performance_average(app);
     app->frame_id++;
 }
 
@@ -2353,6 +2366,7 @@ static void render_frame_standalone(StandaloneApp *app)
 
     /* Render directly on GPU */
     app->last_render_ms = render_frame_gpu(&app->renderer);
+    update_render_performance_average(app);
     app->frame_id++;
 
     /* Upload pixels directly to OpenGL texture (RGBA) */
@@ -3306,6 +3320,88 @@ static void run_semantic_demo_workflow(StandaloneApp *app, const char *reason)
                  "%s ran, but ASD-Lite found no stable regions. Try lowering Min Voxels or increasing sensitivity.",
                  label);
     }
+}
+
+static void update_render_performance_average(StandaloneApp *app)
+{
+    if (!app) return;
+    app->render_ms_average = voxelpilot_update_render_ms_average(
+        app->render_ms_average,
+        app->last_render_ms,
+        app->render_ms_average_ready);
+    app->render_ms_average_ready = 1;
+}
+
+static size_t estimate_current_volume_bytes(const StandaloneApp *app)
+{
+    if (!app || app->renderer.W < 1 || app->renderer.H < 1 || app->renderer.D < 1) {
+        return 0;
+    }
+    return (size_t)app->renderer.W *
+           (size_t)app->renderer.H *
+           (size_t)app->renderer.D *
+           sizeof(float);
+}
+
+static size_t estimate_current_label_mask_bytes(const StandaloneApp *app)
+{
+    if (!app || !app->label_mask ||
+        app->label_mask_W < 1 || app->label_mask_H < 1 || app->label_mask_D < 1) {
+        return 0;
+    }
+    return (size_t)app->label_mask_W *
+           (size_t)app->label_mask_H *
+           (size_t)app->label_mask_D;
+}
+
+static void refresh_performance_governor(StandaloneApp *app)
+{
+    VoxelPilotPerformanceInputs inputs;
+    size_t free_bytes = 0;
+    size_t total_bytes = 0;
+    cudaError_t telemetry_status;
+
+    if (!app) return;
+
+    voxelpilot_performance_inputs_defaults(&inputs);
+    inputs.volume_width = app->renderer.W;
+    inputs.volume_height = app->renderer.H;
+    inputs.volume_depth = app->renderer.D;
+    inputs.render_width = app->render_w;
+    inputs.render_height = app->render_h;
+    inputs.estimated_volume_bytes = estimate_current_volume_bytes(app);
+    inputs.estimated_gradient_bytes = inputs.estimated_volume_bytes * 3u;
+    inputs.estimated_label_mask_bytes = estimate_current_label_mask_bytes(app);
+    inputs.estimated_render_target_bytes = voxelpilot_estimate_render_target_bytes(app->render_w, app->render_h);
+    inputs.render_ms_last = app->last_render_ms;
+    inputs.render_ms_average = app->render_ms_average_ready ? app->render_ms_average : app->last_render_ms;
+    inputs.render_quality_mode = app->render_quality_mode;
+    inputs.cinematic_enabled = app->cinematic_enabled;
+    inputs.label_overlay_enabled = app->label_overlay_visible;
+    inputs.label_mask_present = app->label_mask != NULL;
+    inputs.semantic_callouts_enabled = app->semantic_callouts_enabled;
+    inputs.semantic_callout_top_regions = app->semantic_callout_top_regions;
+    inputs.semantic_region_count = app->semantic_region_count;
+
+    telemetry_status = cudaMemGetInfo(&free_bytes, &total_bytes);
+    if (telemetry_status == cudaSuccess && free_bytes > 0 && total_bytes > 0) {
+        inputs.has_gpu_memory_telemetry = 1;
+        inputs.gpu_memory_available = free_bytes;
+        inputs.gpu_memory_total = total_bytes;
+    }
+
+    if (!voxelpilot_evaluate_performance(&inputs, &app->performance_result)) {
+        voxelpilot_performance_result_defaults(&app->performance_result);
+        snprintf(app->performance_status, sizeof(app->performance_status),
+                 "Performance Safety: telemetry unavailable.");
+        return;
+    }
+
+    snprintf(app->performance_status, sizeof(app->performance_status),
+             "Performance Safety: %s (%d/100). %s",
+             app->performance_result.status_label,
+             app->performance_result.pressure_score,
+             app->performance_result.recommendation);
 }
 
 static void update_streaming_estimate(StandaloneApp *app)
@@ -5162,6 +5258,10 @@ int main(int argc, char **argv)
            "Click Refresh Quant Metrics to summarize the active volume.");
     strcpy(app.report_status, "No report exported yet.");
     strcpy(app.report_path, "voxelpilot_insight_report.html");
+    app.render_ms_average = 0.0f;
+    app.render_ms_average_ready = 0;
+    voxelpilot_performance_result_defaults(&app.performance_result);
+    strcpy(app.performance_status, "Performance Safety: waiting for render telemetry.");
     app.streaming_budget_bricks = 0;
     app.streaming_stream_now = 0;
     app.streaming_queue = 0;
