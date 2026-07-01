@@ -7,6 +7,7 @@
 #include "../common/ui_state_helpers.h"
 #include "../common/ai_features.h"
 #include "../common/semantic_discovery.h"
+#include "../common/performance_governor.h"
 
 static int expect_true(int condition, const char *message)
 {
@@ -1058,6 +1059,130 @@ static int test_brick_cache_plan_reports_queue_and_eviction_pressure(void)
         "cache planner should identify non-resident bricks as evictable");
 }
 
+static int test_performance_governor_small_volume_is_healthy(void)
+{
+    VoxelPilotPerformanceInputs inputs;
+    VoxelPilotPerformanceResult result;
+    voxelpilot_performance_inputs_defaults(&inputs);
+    inputs.volume_width = 256;
+    inputs.volume_height = 256;
+    inputs.volume_depth = 256;
+    inputs.render_width = 1024;
+    inputs.render_height = 1024;
+    inputs.estimated_volume_bytes = 256u * 256u * 256u * sizeof(float);
+    inputs.estimated_gradient_bytes = inputs.estimated_volume_bytes * 3u;
+    inputs.estimated_label_mask_bytes = 256u * 256u * 256u;
+    inputs.gpu_memory_available = 4ull * 1024ull * 1024ull * 1024ull;
+    inputs.gpu_memory_total = 6ull * 1024ull * 1024ull * 1024ull;
+    inputs.has_gpu_memory_telemetry = 1;
+    inputs.render_ms_average = 35.0f;
+    inputs.render_quality_mode = VOXELPILOT_RENDER_QUALITY_BALANCED;
+    if (!expect_true(voxelpilot_evaluate_performance(&inputs, &result) == 1,
+            "performance governor should evaluate healthy inputs")) return 0;
+    if (!expect_true(result.status == VOXELPILOT_GOVERNOR_HEALTHY,
+            "small laptop-friendly volume should be healthy")) return 0;
+    if (!expect_true(result.safe_to_run_asd == 1,
+            "healthy pressure should allow ASD")) return 0;
+    return expect_true(result.suggest_interactive_gpu == 0,
+        "healthy pressure should not suggest interactive GPU");
+}
+
+static int test_performance_governor_high_render_time_suggests_interactive(void)
+{
+    VoxelPilotPerformanceInputs inputs;
+    VoxelPilotPerformanceResult result;
+    voxelpilot_performance_inputs_defaults(&inputs);
+    inputs.volume_width = 256;
+    inputs.volume_height = 256;
+    inputs.volume_depth = 256;
+    inputs.render_width = 1920;
+    inputs.render_height = 1080;
+    inputs.estimated_volume_bytes = 256u * 256u * 256u * sizeof(float);
+    inputs.estimated_gradient_bytes = inputs.estimated_volume_bytes * 3u;
+    inputs.gpu_memory_available = 4ull * 1024ull * 1024ull * 1024ull;
+    inputs.gpu_memory_total = 6ull * 1024ull * 1024ull * 1024ull;
+    inputs.has_gpu_memory_telemetry = 1;
+    inputs.render_ms_average = 155.0f;
+    inputs.render_quality_mode = VOXELPILOT_RENDER_QUALITY_QUALITY;
+    inputs.cinematic_enabled = 1;
+    inputs.label_overlay_enabled = 1;
+    if (!expect_true(voxelpilot_evaluate_performance(&inputs, &result) == 1,
+            "performance governor should evaluate high render time inputs")) return 0;
+    if (!expect_true(result.status >= VOXELPILOT_GOVERNOR_WATCH,
+            "high render time should raise at least watch status")) return 0;
+    if (!expect_true(result.suggest_interactive_gpu == 1,
+            "high render time should suggest interactive GPU")) return 0;
+    return expect_true(strstr(result.recommendation, "Interactive GPU") != NULL,
+        "recommendation should name the interactive GPU action");
+}
+
+static int test_performance_governor_memory_pressure_suggests_streaming(void)
+{
+    VoxelPilotPerformanceInputs inputs;
+    VoxelPilotPerformanceResult result;
+    voxelpilot_performance_inputs_defaults(&inputs);
+    inputs.volume_width = 1024;
+    inputs.volume_height = 1024;
+    inputs.volume_depth = 768;
+    inputs.render_width = 1920;
+    inputs.render_height = 1080;
+    inputs.estimated_volume_bytes = 1024ull * 1024ull * 768ull * sizeof(float);
+    inputs.estimated_gradient_bytes = inputs.estimated_volume_bytes * 3ull;
+    inputs.estimated_label_mask_bytes = 1024ull * 1024ull * 768ull;
+    inputs.gpu_memory_available = 4ull * 1024ull * 1024ull * 1024ull;
+    inputs.gpu_memory_total = 6ull * 1024ull * 1024ull * 1024ull;
+    inputs.has_gpu_memory_telemetry = 1;
+    inputs.render_ms_average = 95.0f;
+    inputs.render_quality_mode = VOXELPILOT_RENDER_QUALITY_BALANCED;
+    if (!expect_true(voxelpilot_evaluate_performance(&inputs, &result) == 1,
+            "performance governor should evaluate high memory inputs")) return 0;
+    if (!expect_true(result.status >= VOXELPILOT_GOVERNOR_PRESSURE,
+            "large working set should raise pressure status")) return 0;
+    if (!expect_true(result.suggest_brick_streaming == 1,
+            "large working set should suggest brick streaming path")) return 0;
+    return expect_true(result.safe_to_export_mask == 0,
+        "critical memory pressure should not recommend full mask export");
+}
+
+static int test_performance_governor_callout_pressure_suggests_limit(void)
+{
+    VoxelPilotPerformanceInputs inputs;
+    VoxelPilotPerformanceResult result;
+    voxelpilot_performance_inputs_defaults(&inputs);
+    inputs.volume_width = 512;
+    inputs.volume_height = 512;
+    inputs.volume_depth = 512;
+    inputs.render_width = 1280;
+    inputs.render_height = 720;
+    inputs.estimated_volume_bytes = 512ull * 512ull * 512ull * sizeof(float);
+    inputs.estimated_gradient_bytes = inputs.estimated_volume_bytes * 3ull;
+    inputs.estimated_label_mask_bytes = 512ull * 512ull * 512ull;
+    inputs.render_ms_average = 118.0f;
+    inputs.render_quality_mode = VOXELPILOT_RENDER_QUALITY_BALANCED;
+    inputs.label_overlay_enabled = 1;
+    inputs.label_mask_present = 1;
+    inputs.semantic_callouts_enabled = 1;
+    inputs.semantic_callout_top_regions = 6;
+    inputs.semantic_region_count = 6;
+    if (!expect_true(voxelpilot_evaluate_performance(&inputs, &result) == 1,
+            "performance governor should evaluate callout-heavy inputs")) return 0;
+    if (!expect_true(result.suggest_reduce_callouts == 1,
+            "callout-heavy pressure should suggest limiting callouts")) return 0;
+    return expect_true(strstr(result.recommendation, "callouts") != NULL,
+        "recommendation should explain callout reduction");
+}
+
+static int test_performance_governor_moving_average_is_stable(void)
+{
+    float average = voxelpilot_update_render_ms_average(0.0f, 100.0f, 0);
+    if (!expect_float_close(average, 100.0f,
+            "first render sample should initialize moving average")) return 0;
+    average = voxelpilot_update_render_ms_average(average, 200.0f, 1);
+    return expect_float_close(average, 115.0f,
+        "subsequent render sample should use stable 15 percent smoothing");
+}
+
+
 static int test_asd_rejects_invalid_inputs(void)
 {
     unsigned char label_mask[8] = { 0 };
@@ -1451,6 +1576,11 @@ int main(void)
     passed &= test_quant_metrics_summarize_histogram_without_volume_scan();
     passed &= test_streaming_estimate_counts_visible_nonempty_bricks();
     passed &= test_brick_cache_plan_reports_queue_and_eviction_pressure();
+    passed &= test_performance_governor_small_volume_is_healthy();
+    passed &= test_performance_governor_high_render_time_suggests_interactive();
+    passed &= test_performance_governor_memory_pressure_suggests_streaming();
+    passed &= test_performance_governor_callout_pressure_suggests_limit();
+    passed &= test_performance_governor_moving_average_is_stable();
     passed &= test_asd_rejects_invalid_inputs();
     passed &= test_asd_discovers_high_density_connected_region();
     passed &= test_asd_assigns_archetype_stability_and_importance();
