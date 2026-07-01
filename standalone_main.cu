@@ -3868,6 +3868,58 @@ static void export_insight_report(StandaloneApp *app)
              "Exported insight report: %s", selected);
 }
 
+static void draw_performance_safety_block(StandaloneApp *app)
+{
+    if (!app) return;
+
+    refresh_performance_governor(app);
+
+    ImGui::Separator();
+    ImGui::Text("Performance Safety");
+    ImGui::Text("Status: %s | Score: %d/100",
+                app->performance_result.status_label,
+                app->performance_result.pressure_score);
+    ImGui::TextWrapped("%s", app->performance_result.primary_reason);
+    ImGui::TextWrapped("Recommendation: %s", app->performance_result.recommendation);
+
+    if (app->performance_result.suggest_interactive_gpu &&
+        app->render_quality_mode != VOXELPILOT_RENDER_QUALITY_INTERACTIVE) {
+        if (ImGui::Button("Use Interactive GPU")) {
+            apply_render_quality_preset(app, VOXELPILOT_RENDER_QUALITY_INTERACTIVE);
+            snprintf(app->ai_assist_status, sizeof(app->ai_assist_status),
+                     "Performance Safety applied Interactive GPU. Return to Balanced GPU for screenshots when stable.");
+            refresh_performance_governor(app);
+        }
+        ImGui::SameLine();
+    }
+
+    if (app->render_quality_mode == VOXELPILOT_RENDER_QUALITY_INTERACTIVE) {
+        if (ImGui::Button("Return to Balanced GPU")) {
+            apply_render_quality_preset(app, VOXELPILOT_RENDER_QUALITY_BALANCED);
+            snprintf(app->ai_assist_status, sizeof(app->ai_assist_status),
+                     "Performance Safety returned rendering to Balanced GPU.");
+            refresh_performance_governor(app);
+        }
+    }
+
+    if (app->performance_result.suggest_reduce_callouts &&
+        app->semantic_callouts_enabled &&
+        app->semantic_callout_top_regions > 1) {
+        if (ImGui::Button("Limit Callouts to 1")) {
+            app->semantic_callout_top_regions = 1;
+            snprintf(app->ai_assist_status, sizeof(app->ai_assist_status),
+                     "Performance Safety limited cinematic callouts to one highlighted region.");
+            refresh_performance_governor(app);
+        }
+    }
+
+    if (ImGui::Button("Refresh Safety Check")) {
+        refresh_performance_governor(app);
+        snprintf(app->ai_assist_status, sizeof(app->ai_assist_status),
+                 "%s", app->performance_status);
+    }
+}
+
 static void draw_ai_assist_panel(StandaloneApp *app)
 {
     int has_volume =
@@ -3910,6 +3962,8 @@ static void draw_ai_assist_panel(StandaloneApp *app)
                     app->hist_min_value,
                     app->hist_max_value);
     }
+
+    draw_performance_safety_block(app);
 
     ImGui::Separator();
     ImGui::Text("Auto Object Identification");
@@ -4734,6 +4788,8 @@ static void draw_status_bar(StandaloneApp *app)
     ImGui::Text("| Clip: %s", clipping_is_active(app) ? "On" : "Off");
     ImGui::SameLine();
     ImGui::Text("| Cinematic: %s", app->cinematic_enabled ? "On" : "Off");
+    ImGui::SameLine();
+    ImGui::Text("| Safety: %s", app->performance_result.status_label);
     ImGui::SameLine();
     ImGui::Text("| Measure: %.3f vox / %.3f u",
                 measurement_distance(app),
