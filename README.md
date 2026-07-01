@@ -82,6 +82,14 @@ Run the larger 16 MB Bonsai CT verification sample:
 
 This checks another `256 x 256 x 256 uint8` public dataset without changing the canonical foot baseline.
 
+Run the Bonsai ASD discovery verifier:
+
+```powershell
+.\run_bonsai_asd_verification_windows.bat
+```
+
+This writes `build\bonsai_asd_report.json` using the same ASD-Lite region discovery code used by the app, so the 16 MB Bonsai dataset has both render and AI-interpretation checks.
+
 Generate an opt-in Cinematic Lite snapshot without changing the default renderer:
 
 ```powershell

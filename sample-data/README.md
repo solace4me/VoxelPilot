@@ -83,6 +83,14 @@ Run its render verification:
 .\run_bonsai_verification_windows.bat
 ```
 
+Run its ASD-Lite discovery verification:
+
+```powershell
+.\run_bonsai_asd_verification_windows.bat
+```
+
+In the app, load Bonsai, open `AI Assist`, click `Discover Regions`, and keep `Cinematic Callouts` enabled. The current ASD pass detects a high-density shell-like structure, which is useful for demonstrating cautious AI labels without claiming exact botany or anatomy.
+
 Source:
 
 - Open Scientific Visualization Datasets / Klacansky Bonsai CT dataset
