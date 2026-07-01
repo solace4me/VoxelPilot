@@ -13,6 +13,7 @@
 - Mouse orbit/zoom, preset camera views, and measurements
 - PNG snapshot export, AI review bundles, lightweight HTML insight reports, and `.vpilot` workspace save/load
 - AI Assist prompts, Adaptive Semantic Discovery, local object identification, slice annotations, cinematic callouts, 3D label overlays, hover explanations, and brick-cache telemetry
+- Local Performance Safety Governor that watches render time, estimated GPU memory pressure, labels, callouts, and optional AI workload before recommending user-approved safe actions
 - Demo splash, guided walkthrough, and About panel
 
 ## Quick Start
@@ -116,6 +117,7 @@ Generate an opt-in Cinematic Lite snapshot without changing the default renderer
 - Try `Front` and `Isometric`, then orbit and zoom in the main viewport.
 - Adjust `Sagittal X`, `Coronal Y`, and `Axial Z` in `Insights` for slice review.
 - Click `Run Semantic Demo` in `AI Assist` for a one-click local AI review: auto-enhanced transfer, object summary, ASD-Lite discovery, cinematic mode, label overlay, and callouts.
+- Check `Performance Safety` in `AI Assist`; it explains whether the current dataset is healthy, watch-level, pressure-level, or critical without silently changing render quality.
 - Click `Analyze Loaded Volume` in `AI Assist` to generate a local material/object summary if you want to run the steps manually.
 - Click `Refresh Quant Metrics`, then `Export Insight Report` to save a lightweight HTML review report. Use `Export AI Review Bundle` to save a PNG snapshot, ASD regions JSON, relationships JSON, label mask, and linked HTML report together.
 - For scripted review, run `volume_renderer_standalone.exe --volume sample-data\bonsai_256x256x256_uint8.raw --width 256 --height 256 --depth 256 --type uint8 --semantic-demo --review-bundle build` to export the same bundle without opening the folder dialog.
