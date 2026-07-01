@@ -30,6 +30,7 @@ def validate_headsq(metrics: dict[str, object]) -> list[str]:
     failures: list[str] = []
     width = int(metrics.get("width", 0))
     height = int(metrics.get("height", 0))
+    mean_luma = float(metrics.get("mean_luma", 0.0))
     max_luma = int(metrics.get("max_luma", 0))
     visible_pixels = int(metrics.get("visible_pixels", 0))
     visible_ratio = float(metrics.get("visible_ratio", 0.0))
@@ -38,7 +39,9 @@ def validate_headsq(metrics: dict[str, object]) -> list[str]:
 
     if width < 1024 or height < 1024:
         failures.append(f"snapshot is too small: {width}x{height}")
-    if max_luma < 30:
+    if mean_luma < 8.0:
+        failures.append(f"CT head snapshot mean is too low: {mean_luma:.2f}")
+    if max_luma < 120:
         failures.append(f"CT head snapshot peak is too low: {max_luma}")
     if visible_pixels < 120_000:
         failures.append(f"visible CT structure count is too low: {visible_pixels}")

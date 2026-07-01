@@ -195,7 +195,7 @@ static inline int voxelpilot_compute_auto_enhance_transfer(
     float total_samples = 0.0f;
     float background_ratio;
     float lower_percentile;
-    float upper_percentile = 0.995f;
+    float upper_percentile;
     float informative_samples = 0.0f;
     float informative_ratio;
     int lower_bin;
@@ -225,6 +225,7 @@ static inline int voxelpilot_compute_auto_enhance_transfer(
     lower_percentile = background_ratio > 0.30f
         ? voxelpilot_ai_clampf(background_ratio + 0.02f, 0.02f, 0.82f)
         : 0.02f;
+    upper_percentile = background_ratio > 0.55f ? 0.995f : 0.900f;
 
     lower_bin = voxelpilot_ai_histogram_percentile_bin(
         histogram,

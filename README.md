@@ -74,6 +74,14 @@ Run the tiny VTK headsq CT verification sample:
 
 This writes `build\vtk_headsq_bone_snapshot.png` and checks CT-appropriate visibility thresholds for the `64 x 64 x 93` dataset.
 
+Run the larger 16 MB Bonsai CT verification sample:
+
+```powershell
+.\run_bonsai_verification_windows.bat
+```
+
+This checks another `256 x 256 x 256 uint8` public dataset without changing the canonical foot baseline.
+
 Generate an opt-in Cinematic Lite snapshot without changing the default renderer:
 
 ```powershell

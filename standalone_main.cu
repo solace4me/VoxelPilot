@@ -3026,6 +3026,29 @@ static void draw_insights_panel(StandaloneApp *app)
     ImGui::End();
 }
 
+static void apply_auto_enhance_import_view(StandaloneApp *app)
+{
+    if (!app) {
+        return;
+    }
+
+    app->tf_palette = 1;
+    app->cinematic_enabled = 1;
+    app->cinematic_rim_strength = fmaxf(app->cinematic_rim_strength, 0.45f);
+    app->cinematic_glow_strength = fmaxf(app->cinematic_glow_strength, 0.35f);
+    app->cinematic_contrast = fmaxf(app->cinematic_contrast, 1.20f);
+    clamp_cinematic_settings(app);
+
+    app->light_pos[0] = -0.80f;
+    app->light_pos[1] =  2.05f;
+    app->light_pos[2] = -3.00f;
+    app->fov_y_deg = 82.0f;
+    set_camera_preset(app,
+        1.15f, 0.16f, 1.45f,
+       -0.54f, 0.29f,-0.79f,
+        0.0f, 1.0f, 0.0f);
+}
+
 static int apply_auto_enhance_transfer(StandaloneApp *app, const char *reason)
 {
     float center = 0.0f;
@@ -3081,7 +3104,16 @@ static int apply_auto_enhance_on_load_if_safe(StandaloneApp *app, const char *re
         return 0;
     }
 
-    return apply_auto_enhance_transfer(app, reason);
+    if (!apply_auto_enhance_transfer(app, reason)) {
+        return 0;
+    }
+
+    apply_auto_enhance_import_view(app);
+    snprintf(app->ai_assist_status,
+             sizeof(app->ai_assist_status),
+             "%s auto-enhanced transfer, palette, lighting, and camera framing for import visibility.",
+             reason && reason[0] ? reason : "Volume load");
+    return 1;
 }
 
 static void apply_ai_prompt_to_app(StandaloneApp *app)

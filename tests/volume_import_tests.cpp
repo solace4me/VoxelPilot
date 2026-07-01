@@ -582,6 +582,53 @@ static int test_auto_enhance_boosts_compact_low_contrast_histograms(void)
         "compact low-contrast volumes are safe to auto-enhance on load");
 }
 
+static int test_auto_enhance_load_frames_headsq_style_histograms(void)
+{
+    float histogram[128] = { 0.0f };
+    float center = 0.0f;
+    float width = 0.0f;
+    float opacity = 0.0f;
+    int bin_index;
+
+    histogram[0] = 73000.0f;
+    histogram[1] = 141000.0f;
+    for (bin_index = 2; bin_index <= 25; ++bin_index) {
+        histogram[bin_index] = 6200.0f;
+    }
+    for (bin_index = 26; bin_index <= 121; ++bin_index) {
+        histogram[bin_index] = 280.0f;
+    }
+    histogram[127] = 1800.0f;
+
+    if (!expect_true(
+            voxelpilot_should_auto_enhance_on_load(histogram, 128) == 1,
+            "headsq-style low-background CT should auto-enhance on import")) {
+        return 0;
+    }
+
+    if (!expect_true(
+            voxelpilot_compute_auto_enhance_transfer(
+                histogram,
+                128,
+                &center,
+                &width,
+                &opacity) == 1,
+            "headsq-style histogram should produce an auto-enhance transfer")) {
+        return 0;
+    }
+
+    if (!expect_true(
+            center >= 0.08f && center <= 0.18f &&
+            width >= 0.19f && width <= 0.26f,
+            "headsq-style import should use a tight high-visibility CT window")) {
+        return 0;
+    }
+
+    return expect_true(
+        opacity >= 1.85f,
+        "headsq-style import should boost opacity on load");
+}
+
 static int test_flood_fill_labels_connected_intensity_region(void)
 {
     float volume[] = {
@@ -1267,6 +1314,7 @@ int main(void)
     passed &= test_auto_enhance_transfer_boosts_sparse_visible_histograms();
     passed &= test_auto_enhance_load_guard_preserves_high_background_ct_defaults();
     passed &= test_auto_enhance_boosts_compact_low_contrast_histograms();
+    passed &= test_auto_enhance_load_frames_headsq_style_histograms();
     passed &= test_flood_fill_labels_connected_intensity_region();
     passed &= test_object_description_prefers_labels_then_density_classes();
     passed &= test_ray_pick_hits_first_visible_voxel();

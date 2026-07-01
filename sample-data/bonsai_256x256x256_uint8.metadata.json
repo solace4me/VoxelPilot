@@ -1,0 +1,15 @@
+{
+  "name": "Bonsai CT sample",
+  "source": "Open Scientific Visualization Datasets / Klacansky",
+  "source_url": "http://klacansky.com/open-scivis-datasets/bonsai/bonsai_256x256x256_uint8.raw",
+  "dimensions": [
+    256,
+    256,
+    256
+  ],
+  "type": "uint8",
+  "voxel_count": 16777216,
+  "byte_count": 16777216,
+  "sha256": "288d2818cffb50d2e2c9e3b5b0a2520d09b0f5051bb63cca315f3fc7a894af80",
+  "purpose": "16 MB public CT volume for laptop-scale rendering, ASD, and cinematic callout verification"
+}
