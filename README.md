@@ -119,7 +119,7 @@ Generate an opt-in Cinematic Lite snapshot without changing the default renderer
 - Click `Analyze Loaded Volume` in `AI Assist` to generate a local material/object summary if you want to run the steps manually.
 - Click `Refresh Quant Metrics`, then `Export Insight Report` to save a lightweight HTML review report.
 - Use `AI Assist` prompts such as `show high-density shell` or `hide below 0.3 intensity`.
-- Click `Discover Regions` in `AI Assist` to run ASD-Lite, then keep or enable `Cinematic Callouts` for leader-line labels on the top or selected discovered regions. Hover over slices or the 3D render for cautious region descriptions, stability, importance, and relationship notes. Select a discovered region to confirm, rename, reject, save, or reload correction memory.
+- Click `Discover Regions` in `AI Assist` to run ASD-Lite, then keep or enable `Cinematic Callouts` for leader-line labels on the top or selected discovered regions. `Selected Region Glow` boosts the selected label directly inside the CUDA label overlay without adding a second render pass. Hover over slices or the 3D render for cautious region descriptions, stability, importance, and relationship notes. Select a discovered region to confirm, rename, reject, save, or reload correction memory.
 - Enable `Slice Click Labels`, keep `Show Labels in 3D Render` on, click a slice, then export the label mask for downstream analysis.
 - Use `Set A From Slices` and `Set B From Slices` for a quick measurement pass.
 - Click `Save Snapshot` to export a PNG still.
@@ -167,6 +167,7 @@ Useful docs inside it:
 - `Auto Enhance View` only changes transfer-window and opacity parameters; it does not downsample the viewport or replace the CUDA renderer.
 - `Cinematic Mode` is off by default; when enabled, it uses a single CUDA raymarch styling branch with bounded rim, glow, and contrast controls.
 - `Cinematic Callouts` are an ImGui foreground overlay fed by ASD metadata; they add no CUDA kernels, model inference, or extra volume scan.
+- `Selected Region Glow` reuses the existing CUDA label-mask overlay and only brightens the currently selected label id in the same raymarch pass.
 - Report export writes a small HTML file and does not block rendering except during the save operation.
 - Sample datasets should stay modest for demo laptops; prefer `uint8` raw volumes around `64^3` to `256^3` unless true out-of-core paging is enabled.
 

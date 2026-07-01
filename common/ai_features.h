@@ -314,6 +314,35 @@ static inline int voxelpilot_blend_label_overlay(
     return 1;
 }
 
+static inline int voxelpilot_apply_selected_label_emphasis(
+    unsigned char label_id,
+    unsigned char selected_label_id,
+    float strength,
+    float *r,
+    float *g,
+    float *b)
+{
+    float boost;
+
+    if (!r || !g || !b ||
+        label_id == 0 ||
+        selected_label_id == 0 ||
+        label_id != selected_label_id) {
+        return 0;
+    }
+
+    strength = voxelpilot_ai_clampf(strength, 0.0f, 1.0f);
+    if (strength <= 0.0f) {
+        return 0;
+    }
+
+    boost = 0.20f + 0.45f * strength;
+    *r = voxelpilot_ai_clampf(*r + (1.0f - *r) * boost, 0.0f, 1.0f);
+    *g = voxelpilot_ai_clampf(*g + (1.0f - *g) * boost, 0.0f, 1.0f);
+    *b = voxelpilot_ai_clampf(*b + (1.0f - *b) * boost, 0.0f, 1.0f);
+    return 1;
+}
+
 static inline int voxelpilot_ray_box_intersection(
     const float origin[3],
     const float direction[3],

@@ -173,6 +173,8 @@ typedef struct {
     uint32_t      label_mask_revision;
     int           label_overlay_visible;
     float         label_overlay_alpha;
+    int           label_selected_emphasis_enabled;
+    float         label_selected_emphasis_strength;
     VoxelPilotSemanticRegion semantic_regions[VOXELPILOT_ASD_MAX_REGIONS];
     int           semantic_region_count;
     VoxelPilotRegionRelation semantic_relations[VOXELPILOT_ASD_MAX_RELATIONS];
@@ -807,6 +809,8 @@ static void reset_workspace(StandaloneApp *app)
     app->annotation_color[2] = 0.16f;
     app->label_overlay_visible = 1;
     app->label_overlay_alpha = 0.55f;
+    app->label_selected_emphasis_enabled = 1;
+    app->label_selected_emphasis_strength = 0.65f;
     app->semantic_max_regions = MAX_ANNOTATIONS;
     app->semantic_min_region_voxels = 128;
     app->semantic_sensitivity = 0.55f;
@@ -2241,6 +2245,35 @@ static void render_frame_gpu_snapshot(StandaloneApp *app)
     memcpy(cmd.clip_max, app->clip_max, sizeof(cmd.clip_max));
     cmd.img_width  = (uint32_t)app->render_w;
     cmd.img_height = (uint32_t)app->render_h;
+    if (app->label_overlay_visible &&
+        app->label_mask &&
+        app->annotation_count > 0 &&
+        app->label_mask_W == app->renderer.W &&
+        app->label_mask_H == app->renderer.H &&
+        app->label_mask_D == app->renderer.D) {
+        int i;
+
+        cmd.label_mask = app->label_mask;
+        cmd.labels.enabled = 1;
+        cmd.labels.width = app->label_mask_W;
+        cmd.labels.height = app->label_mask_H;
+        cmd.labels.depth = app->label_mask_D;
+        cmd.labels.label_count = app->annotation_count;
+        cmd.labels.alpha = app->label_overlay_alpha;
+        cmd.labels.revision = app->label_mask_revision;
+        if (app->label_selected_emphasis_enabled &&
+            app->selected_annotation >= 0 &&
+            app->selected_annotation < app->annotation_count) {
+            cmd.labels.selected_label_id = app->annotations[app->selected_annotation].label_id;
+            cmd.labels.selected_emphasis = app->label_selected_emphasis_strength;
+        }
+
+        for (i = 0; i < MAX_ANNOTATIONS; ++i) {
+            cmd.labels.colors[i * 3 + 0] = app->annotations[i].color[0];
+            cmd.labels.colors[i * 3 + 1] = app->annotations[i].color[1];
+            cmd.labels.colors[i * 3 + 2] = app->annotations[i].color[2];
+        }
+    }
 
     apply_render_command(&app->renderer, &cmd);
     app->last_render_ms = render_frame_gpu(&app->renderer);
@@ -2300,6 +2333,12 @@ static void render_frame_standalone(StandaloneApp *app)
         cmd.labels.label_count = app->annotation_count;
         cmd.labels.alpha = app->label_overlay_alpha;
         cmd.labels.revision = app->label_mask_revision;
+        if (app->label_selected_emphasis_enabled &&
+            app->selected_annotation >= 0 &&
+            app->selected_annotation < app->annotation_count) {
+            cmd.labels.selected_label_id = app->annotations[app->selected_annotation].label_id;
+            cmd.labels.selected_emphasis = app->label_selected_emphasis_strength;
+        }
 
         for (i = 0; i < MAX_ANNOTATIONS; ++i) {
             cmd.labels.colors[i * 3 + 0] = app->annotations[i].color[0];
@@ -3239,6 +3278,8 @@ static void run_semantic_demo_workflow(StandaloneApp *app, const char *reason)
     app->semantic_callout_opacity = settings.callout_opacity;
     app->label_overlay_visible = settings.label_overlay_visible;
     app->label_overlay_alpha = fmaxf(app->label_overlay_alpha, settings.label_overlay_alpha);
+    app->label_selected_emphasis_enabled = 1;
+    app->label_selected_emphasis_strength = fmaxf(app->label_selected_emphasis_strength, 0.72f);
     app->semantic_max_regions = settings.semantic_max_regions;
     app->semantic_min_region_voxels = settings.semantic_min_region_voxels;
     app->semantic_sensitivity = settings.semantic_sensitivity;
@@ -3748,6 +3789,13 @@ static void draw_ai_assist_panel(StandaloneApp *app)
         }
     }
     ImGui::SliderFloat("3D Label Opacity", &app->label_overlay_alpha, 0.10f, 0.95f);
+    {
+        bool selected_emphasis = (app->label_selected_emphasis_enabled != 0);
+        if (ImGui::Checkbox("Selected Region Glow", &selected_emphasis)) {
+            app->label_selected_emphasis_enabled = selected_emphasis ? 1 : 0;
+        }
+    }
+    ImGui::SliderFloat("Selected Glow Strength", &app->label_selected_emphasis_strength, 0.0f, 1.0f);
     ImGui::InputText("Label Name", app->annotation_name, sizeof(app->annotation_name));
     ImGui::SliderFloat("Label Tolerance", &app->annotation_tolerance, 0.005f, 0.250f);
     ImGui::ColorEdit3("Label Color", app->annotation_color);
@@ -4793,6 +4841,8 @@ int main(int argc, char **argv)
     app.annotation_color[2] = 0.16f;
     app.label_overlay_visible = 1;
     app.label_overlay_alpha = 0.55f;
+    app.label_selected_emphasis_enabled = 1;
+    app.label_selected_emphasis_strength = 0.65f;
     app.semantic_max_regions = MAX_ANNOTATIONS;
     app.semantic_min_region_voxels = 128;
     app.semantic_sensitivity = 0.55f;

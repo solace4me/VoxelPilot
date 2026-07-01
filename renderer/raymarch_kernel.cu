@@ -131,6 +131,35 @@ __device__ static unsigned char sample_label_mask(
     return label_mask[idx];
 }
 
+__device__ static int apply_selected_label_emphasis_device(
+    unsigned char label_id,
+    unsigned char selected_label_id,
+    float strength,
+    float *r,
+    float *g,
+    float *b)
+{
+    float boost;
+
+    if (!r || !g || !b ||
+        label_id == 0 ||
+        selected_label_id == 0 ||
+        label_id != selected_label_id) {
+        return 0;
+    }
+
+    strength = fminf(fmaxf(strength, 0.0f), 1.0f);
+    if (strength <= 0.0f) {
+        return 0;
+    }
+
+    boost = 0.20f + 0.45f * strength;
+    *r = fminf(fmaxf(*r + (1.0f - *r) * boost, 0.0f), 1.0f);
+    *g = fminf(fmaxf(*g + (1.0f - *g) * boost, 0.0f), 1.0f);
+    *b = fminf(fmaxf(*b + (1.0f - *b) * boost, 0.0f), 1.0f);
+    return 1;
+}
+
 __device__ static void apply_label_overlay(
     RendererLabelParams labels,
     unsigned char label_id,
@@ -156,7 +185,15 @@ __device__ static void apply_label_overlay(
     *r = *r * (1.0f - alpha) + labels.colors[color_index + 0] * alpha;
     *g = *g * (1.0f - alpha) + labels.colors[color_index + 1] * alpha;
     *b = *b * (1.0f - alpha) + labels.colors[color_index + 2] * alpha;
-    *a = fmaxf(*a, 0.18f + alpha * 0.18f);
+    if (apply_selected_label_emphasis_device(
+            label_id,
+            labels.selected_label_id,
+            labels.selected_emphasis,
+            r, g, b)) {
+        *a = fmaxf(*a, 0.28f + alpha * 0.24f);
+    } else {
+        *a = fmaxf(*a, 0.18f + alpha * 0.18f);
+    }
 }
 
 /* ============================================================

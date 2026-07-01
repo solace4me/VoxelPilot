@@ -206,8 +206,14 @@ static void sync_label_overlay(RendererState *st, const RendererInput *cmd)
     st->labels.alpha =
         st->labels.alpha < 0.0f ? 0.0f :
         (st->labels.alpha > 1.0f ? 1.0f : st->labels.alpha);
+    st->labels.selected_emphasis =
+        st->labels.selected_emphasis < 0.0f ? 0.0f :
+        (st->labels.selected_emphasis > 1.0f ? 1.0f : st->labels.selected_emphasis);
     if (st->labels.label_count > RENDERER_MAX_LABELS) {
         st->labels.label_count = RENDERER_MAX_LABELS;
+    }
+    if (st->labels.selected_label_id > st->labels.label_count) {
+        st->labels.selected_label_id = 0;
     }
 }
 

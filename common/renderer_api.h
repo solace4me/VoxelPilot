@@ -12,6 +12,8 @@ typedef struct {
     int      depth;
     int      label_count;
     float    alpha;
+    unsigned char selected_label_id;
+    float    selected_emphasis;
     uint32_t revision;
     float    colors[RENDERER_MAX_LABELS * 3];
 } RendererLabelParams;

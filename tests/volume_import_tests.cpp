@@ -836,6 +836,41 @@ static int test_label_overlay_blends_annotation_color(void)
     return expect_float_close(out_b, 0.1f, "label overlay should reduce blue channel");
 }
 
+static int test_selected_label_emphasis_boosts_only_selected_label(void)
+{
+    float selected_r = 0.35f;
+    float selected_g = 0.45f;
+    float selected_b = 0.55f;
+    float other_r = 0.35f;
+    float other_g = 0.45f;
+    float other_b = 0.55f;
+
+    if (!expect_true(
+            voxelpilot_apply_selected_label_emphasis(
+                2, 2, 0.60f,
+                &selected_r, &selected_g, &selected_b) == 1,
+            "selected label emphasis should report a selected-label boost")) {
+        return 0;
+    }
+
+    if (!expect_true(selected_r > 0.35f && selected_g > 0.45f && selected_b > 0.55f,
+            "selected label emphasis should brighten selected color channels")) {
+        return 0;
+    }
+
+    if (!expect_true(
+            voxelpilot_apply_selected_label_emphasis(
+                1, 2, 0.60f,
+                &other_r, &other_g, &other_b) == 0,
+            "selected label emphasis should skip non-selected labels")) {
+        return 0;
+    }
+
+    if (!expect_float_close(other_r, 0.35f, "non-selected emphasis should preserve red channel")) return 0;
+    if (!expect_float_close(other_g, 0.45f, "non-selected emphasis should preserve green channel")) return 0;
+    return expect_float_close(other_b, 0.55f, "non-selected emphasis should preserve blue channel");
+}
+
 static int test_object_summary_identifies_high_density_dominance(void)
 {
     float histogram[8] = { 1.0f, 1.0f, 2.0f, 3.0f, 5.0f, 20.0f, 30.0f, 38.0f };
@@ -1357,6 +1392,7 @@ int main(void)
     passed &= test_ray_pick_hits_first_visible_voxel();
     passed &= test_ray_pick_respects_clip_bounds();
     passed &= test_label_overlay_blends_annotation_color();
+    passed &= test_selected_label_emphasis_boosts_only_selected_label();
     passed &= test_object_summary_identifies_high_density_dominance();
     passed &= test_quant_metrics_summarize_histogram_without_volume_scan();
     passed &= test_streaming_estimate_counts_visible_nonempty_bricks();
