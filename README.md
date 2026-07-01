@@ -90,6 +90,12 @@ Run the Bonsai ASD discovery verifier:
 
 This writes `build\bonsai_asd_report.json` using the same ASD-Lite region discovery code used by the app, so the 16 MB Bonsai dataset has both render and AI-interpretation checks.
 
+Launch Bonsai directly into the one-click semantic demo workflow:
+
+```powershell
+.\volume_renderer_standalone.exe --volume .\sample-data\bonsai_256x256x256_uint8.raw --width 256 --height 256 --depth 256 --type uint8 --semantic-demo
+```
+
 Generate an opt-in Cinematic Lite snapshot without changing the default renderer:
 
 ```powershell
@@ -109,7 +115,8 @@ Generate an opt-in Cinematic Lite snapshot without changing the default renderer
 - Use `Browse...`, confirm `Width`, `Height`, `Depth`, and `Data Type`, then click `Load Volume`.
 - Try `Front` and `Isometric`, then orbit and zoom in the main viewport.
 - Adjust `Sagittal X`, `Coronal Y`, and `Axial Z` in `Insights` for slice review.
-- Click `Analyze Loaded Volume` in `AI Assist` to generate a local material/object summary.
+- Click `Run Semantic Demo` in `AI Assist` for a one-click local AI review: auto-enhanced transfer, object summary, ASD-Lite discovery, cinematic mode, label overlay, and callouts.
+- Click `Analyze Loaded Volume` in `AI Assist` to generate a local material/object summary if you want to run the steps manually.
 - Click `Refresh Quant Metrics`, then `Export Insight Report` to save a lightweight HTML review report.
 - Use `AI Assist` prompts such as `show high-density shell` or `hide below 0.3 intensity`.
 - Click `Discover Regions` in `AI Assist` to run ASD-Lite, then keep or enable `Cinematic Callouts` for leader-line labels on the top or selected discovered regions. Hover over slices or the 3D render for cautious region descriptions, stability, importance, and relationship notes. Select a discovered region to confirm, rename, reject, save, or reload correction memory.

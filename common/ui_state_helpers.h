@@ -275,6 +275,43 @@ static inline void voxelpilot_cinematic_clamp(VoxelPilotCinematicParams *params)
     params->contrast = voxelpilot_clampf(params->contrast, 0.8f, 1.6f);
 }
 
+typedef struct {
+    int   cinematic_enabled;
+    float cinematic_rim_strength;
+    float cinematic_glow_strength;
+    float cinematic_contrast;
+    int   callouts_enabled;
+    int   callout_top_regions;
+    int   selected_only;
+    float callout_opacity;
+    int   label_overlay_visible;
+    float label_overlay_alpha;
+    int   semantic_max_regions;
+    int   semantic_min_region_voxels;
+    float semantic_sensitivity;
+} VoxelPilotSemanticDemoSettings;
+
+static inline void voxelpilot_semantic_demo_defaults(VoxelPilotSemanticDemoSettings *settings)
+{
+    if (!settings) {
+        return;
+    }
+
+    settings->cinematic_enabled = 1;
+    settings->cinematic_rim_strength = 0.55f;
+    settings->cinematic_glow_strength = 0.40f;
+    settings->cinematic_contrast = 1.24f;
+    settings->callouts_enabled = 1;
+    settings->callout_top_regions = 3;
+    settings->selected_only = 0;
+    settings->callout_opacity = 0.94f;
+    settings->label_overlay_visible = 1;
+    settings->label_overlay_alpha = 0.78f;
+    settings->semantic_max_regions = 8;
+    settings->semantic_min_region_voxels = 2048;
+    settings->semantic_sensitivity = 0.72f;
+}
+
 static inline int voxelpilot_compute_raymarch_step_limit(
     float step_size,
     float t_max,

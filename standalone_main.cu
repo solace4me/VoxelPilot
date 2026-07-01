@@ -385,6 +385,7 @@ static const char *semantic_relationship_note(
     StandaloneApp *app,
     unsigned char  label_id);
 static void run_adaptive_semantic_discovery(StandaloneApp *app);
+static void run_semantic_demo_workflow(StandaloneApp *app, const char *reason);
 static void refresh_semantic_annotation_overlays(StandaloneApp *app);
 static int save_semantic_memory(StandaloneApp *app, const char *path);
 static int load_semantic_memory(StandaloneApp *app, const char *path);
@@ -3208,6 +3209,63 @@ static void update_object_summary(StandaloneApp *app)
              "%s", app->object_summary.description);
 }
 
+static void run_semantic_demo_workflow(StandaloneApp *app, const char *reason)
+{
+    VoxelPilotSemanticDemoSettings settings;
+    const char *label = reason && reason[0] ? reason : "Semantic demo";
+
+    if (!app || !app->renderer.volume_data ||
+        app->renderer.W < 1 || app->renderer.H < 1 || app->renderer.D < 1) {
+        if (app) {
+            snprintf(app->ai_assist_status, sizeof(app->ai_assist_status),
+                     "%s needs a loaded volume.", label);
+            snprintf(app->semantic_status, sizeof(app->semantic_status),
+                     "Load a volume before running the semantic demo.");
+        }
+        return;
+    }
+
+    voxelpilot_semantic_demo_defaults(&settings);
+
+    app->cinematic_enabled = settings.cinematic_enabled;
+    app->cinematic_rim_strength = fmaxf(app->cinematic_rim_strength, settings.cinematic_rim_strength);
+    app->cinematic_glow_strength = fmaxf(app->cinematic_glow_strength, settings.cinematic_glow_strength);
+    app->cinematic_contrast = fmaxf(app->cinematic_contrast, settings.cinematic_contrast);
+    clamp_cinematic_settings(app);
+
+    app->semantic_callouts_enabled = settings.callouts_enabled;
+    app->semantic_callout_top_regions = settings.callout_top_regions;
+    app->semantic_callout_selected_only = settings.selected_only;
+    app->semantic_callout_opacity = settings.callout_opacity;
+    app->label_overlay_visible = settings.label_overlay_visible;
+    app->label_overlay_alpha = fmaxf(app->label_overlay_alpha, settings.label_overlay_alpha);
+    app->semantic_max_regions = settings.semantic_max_regions;
+    app->semantic_min_region_voxels = settings.semantic_min_region_voxels;
+    app->semantic_sensitivity = settings.semantic_sensitivity;
+    app->semantic_cinematic_emphasis = 1;
+
+    apply_render_quality_preset(app, VOXELPILOT_RENDER_QUALITY_BALANCED);
+    apply_auto_enhance_transfer(app, label);
+    apply_auto_enhance_import_view(app);
+    update_object_summary(app);
+    update_quant_metrics(app);
+    run_adaptive_semantic_discovery(app);
+
+    if (app->semantic_region_count > 0) {
+        app->semantic_selected_region = 0;
+        app->selected_annotation = 0;
+        snprintf(app->semantic_edit_name, sizeof(app->semantic_edit_name),
+                 "%s", app->semantic_regions[0].name);
+        snprintf(app->ai_assist_status, sizeof(app->ai_assist_status),
+                 "%s ready: cinematic mode, auto window, ASD discovery, region overlay, and callouts are active.",
+                 label);
+    } else {
+        snprintf(app->ai_assist_status, sizeof(app->ai_assist_status),
+                 "%s ran, but ASD-Lite found no stable regions. Try lowering Min Voxels or increasing sensitivity.",
+                 label);
+    }
+}
+
 static void update_streaming_estimate(StandaloneApp *app)
 {
     VoxelPilotBrickCachePlan plan;
@@ -3552,6 +3610,14 @@ static void draw_ai_assist_panel(StandaloneApp *app)
     ImGui::Separator();
     ImGui::Text("Adaptive Semantic Discovery");
     ImGui::TextWrapped("ASD-Lite discovers candidate regions from intensity, connectedness, shape, stability, and relationships. Labels are cautious and local, not hardcoded anatomy.");
+    if (ImGui::Button("Run Semantic Demo")) {
+        run_semantic_demo_workflow(app, "Semantic demo");
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("one-click AI review");
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Runs auto-enhance, ASD discovery, cinematic mode, region overlay, and callouts using local explainable heuristics.");
+    }
     ImGui::SliderInt("ASD Max Regions", &app->semantic_max_regions, 1, MAX_ANNOTATIONS);
     ImGui::SliderFloat("ASD Sensitivity", &app->semantic_sensitivity, 0.0f, 1.0f);
     ImGui::InputInt("ASD Min Voxels", &app->semantic_min_region_voxels);
@@ -4429,6 +4495,7 @@ int main(int argc, char **argv)
     int           cli_cinematic_rim_set = 0;
     int           cli_cinematic_glow_set = 0;
     int           cli_cinematic_contrast_set = 0;
+    int           cli_semantic_demo = 0;
     float         cli_cinematic_rim = 0.35f;
     float         cli_cinematic_glow = 0.20f;
     float         cli_cinematic_contrast = 1.10f;
@@ -4475,6 +4542,8 @@ int main(int argc, char **argv)
             cli_tf_opacity_set = 1;
         } else if (strcmp(argv[i], "--cinematic-lite") == 0) {
             cli_cinematic_enabled = 1;
+        } else if (strcmp(argv[i], "--semantic-demo") == 0) {
+            cli_semantic_demo = 1;
         } else if (strcmp(argv[i], "--cinematic-rim") == 0 &&
                    i+1 < argc) {
             if (parse_cli_float(argv[++i], 0.0f, 1.0f, &cli_cinematic_rim) != 0) {
@@ -4559,7 +4628,7 @@ int main(int argc, char **argv)
         } else {
             fprintf(stderr, "Unknown argument: %s\n", argv[i]);
             fprintf(stderr,
-                    "Usage: %s [--volume file.raw] [--dim N | --width W --height H --depth D] [--type uint8|uint16|float32] [--snapshot path.png] [--tf-center C --tf-width W --tf-opacity O] [--cinematic-lite --cinematic-rim R --cinematic-glow G --cinematic-contrast C]\n",
+                    "Usage: %s [--volume file.raw] [--dim N | --width W --height H --depth D] [--type uint8|uint16|float32] [--snapshot path.png] [--tf-center C --tf-width W --tf-opacity O] [--cinematic-lite --cinematic-rim R --cinematic-glow G --cinematic-contrast C] [--semantic-demo]\n",
                     argv[0]);
             return -1;
         }
@@ -4823,6 +4892,10 @@ int main(int argc, char **argv)
                      "Startup import failed: %s. Synthetic volume loaded instead.",
                      startup_error);
         }
+    }
+
+    if (cli_semantic_demo) {
+        run_semantic_demo_workflow(&app, "CLI semantic demo");
     }
 
     if (snapshot_path) {

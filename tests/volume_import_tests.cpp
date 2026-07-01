@@ -405,6 +405,42 @@ static int test_cinematic_params_clamp_safe_ranges(void)
     return expect_float_close(params.contrast, 1.6f, "cinematic contrast should clamp high");
 }
 
+static int test_semantic_demo_defaults_enable_visible_asd_callouts(void)
+{
+    VoxelPilotSemanticDemoSettings settings;
+    memset(&settings, 0, sizeof(settings));
+
+    voxelpilot_semantic_demo_defaults(&settings);
+
+    if (!expect_true(settings.cinematic_enabled == 1,
+            "semantic demo should enable cinematic mode")) {
+        return 0;
+    }
+    if (!expect_true(settings.callouts_enabled == 1,
+            "semantic demo should enable ASD callouts")) {
+        return 0;
+    }
+    if (!expect_true(settings.callout_top_regions == 3,
+            "semantic demo should show the top three ASD regions")) {
+        return 0;
+    }
+    if (!expect_true(settings.selected_only == 0,
+            "semantic demo should not hide unselected top regions")) {
+        return 0;
+    }
+    if (!expect_true(settings.semantic_min_region_voxels >= 512,
+            "semantic demo should use a bounded minimum region size")) {
+        return 0;
+    }
+    if (!expect_true(settings.label_overlay_alpha >= 0.70f,
+            "semantic demo should make region overlays visible")) {
+        return 0;
+    }
+
+    return expect_true(settings.semantic_sensitivity > 0.50f,
+        "semantic demo should use a discovery-friendly ASD sensitivity");
+}
+
 static int test_prompt_parser_maps_density_commands_to_transfer_settings(void)
 {
     VoxelPilotPromptResult result;
@@ -1308,6 +1344,7 @@ int main(void)
     passed &= test_render_target_sync_respects_match_window_mode();
     passed &= test_cinematic_params_default_disabled();
     passed &= test_cinematic_params_clamp_safe_ranges();
+    passed &= test_semantic_demo_defaults_enable_visible_asd_callouts();
     passed &= test_raymarch_step_limit_reaches_full_volume_at_fine_steps();
     passed &= test_prompt_parser_maps_density_commands_to_transfer_settings();
     passed &= test_prompt_parser_recognizes_visibility_and_quality_intents();
