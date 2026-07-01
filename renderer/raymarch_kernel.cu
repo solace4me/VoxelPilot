@@ -241,10 +241,17 @@ __global__ void volume_render_kernel(
             f3_add(cam.position,
                    f3_scale(ray_dir, t));
 
+        if (pos_world.x < 0.0f || pos_world.x > 1.0f ||
+            pos_world.y < 0.0f || pos_world.y > 1.0f ||
+            pos_world.z < 0.0f || pos_world.z > 1.0f) {
+            t += vparams.step_size;
+            continue;
+        }
+
         float3 pos_tex;
-        pos_tex.x = fminf(fmaxf(pos_world.x, 0.0f), 1.0f);
-        pos_tex.y = fminf(fmaxf(pos_world.y, 0.0f), 1.0f);
-        pos_tex.z = fminf(fmaxf(pos_world.z, 0.0f), 1.0f);
+        pos_tex.x = pos_world.x;
+        pos_tex.y = pos_world.y;
+        pos_tex.z = pos_world.z;
 
         if (pos_tex.x < vparams.clip_min[0] ||
             pos_tex.y < vparams.clip_min[1] ||
@@ -304,7 +311,7 @@ __global__ void volume_render_kernel(
 
             float3 lit =
                 apply_phong(base, grad, L, V,
-                            0.1f, 0.7f, 0.2f, 16.0f);
+                            0.25f, 0.65f, 0.10f, 16.0f);
 
             if (vparams.cinematic_enabled) {
                 float rim_strength = fminf(fmaxf(vparams.cinematic_rim_strength, 0.0f), 1.0f);

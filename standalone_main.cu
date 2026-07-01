@@ -784,7 +784,7 @@ static void reset_workspace(StandaloneApp *app)
     }
     app->tf_center = 0.45f;
     app->tf_width = 0.35f;
-    app->tf_opacity_scale = 1.0f;
+    app->tf_opacity_scale = 1.8f;
     app->tf_palette = 0;
     app->tf_invert = 0;
     voxelpilot_set_default_clip_bounds(app->clip_min, app->clip_max);
@@ -3097,11 +3097,12 @@ static int apply_auto_enhance_on_load_if_safe(StandaloneApp *app, const char *re
     }
 
     if (!voxelpilot_should_auto_enhance_on_load(app->histogram, HISTOGRAM_BINS)) {
+        app->tf_opacity_scale = 2.0f;
         snprintf(app->ai_assist_status,
                  sizeof(app->ai_assist_status),
-                 "%s preserved the default transfer for a high-background CT-style volume.",
+                 "%s boosted opacity for CT-style volume; use Auto Enhance to also adjust the TF window.",
                  reason && reason[0] ? reason : "Volume load");
-        return 0;
+        return 1;
     }
 
     if (!apply_auto_enhance_transfer(app, reason)) {
@@ -4653,7 +4654,7 @@ int main(int argc, char **argv)
     app.paused     = 0;
     app.tf_center = 0.45f;
     app.tf_width = 0.35f;
-    app.tf_opacity_scale = 1.0f;
+    app.tf_opacity_scale = 1.8f;
     if (cli_tf_center_set) app.tf_center = cli_tf_center;
     if (cli_tf_width_set) app.tf_width = cli_tf_width;
     if (cli_tf_opacity_set) app.tf_opacity_scale = cli_tf_opacity;
