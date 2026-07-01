@@ -3868,6 +3868,34 @@ static void export_insight_report(StandaloneApp *app)
              "Exported insight report: %s", selected);
 }
 
+static int performance_allows_optional_action(
+    StandaloneApp *app,
+    const char    *action_label,
+    int            requires_asd,
+    int            requires_mask_export)
+{
+    if (!app) return 0;
+
+    refresh_performance_governor(app);
+
+    if (requires_asd && !app->performance_result.safe_to_run_asd) {
+        snprintf(app->ai_assist_status, sizeof(app->ai_assist_status),
+                 "%s paused by Performance Safety: %s",
+                 action_label,
+                 app->performance_result.recommendation);
+        return 0;
+    }
+
+    if (requires_mask_export && !app->performance_result.safe_to_export_mask) {
+        snprintf(app->ai_assist_status, sizeof(app->ai_assist_status),
+                 "%s paused by Performance Safety: full label-mask export is not recommended for this memory pressure. Use metadata/export snapshot first.",
+                 action_label);
+        return 0;
+    }
+
+    return 1;
+}
+
 static void draw_performance_safety_block(StandaloneApp *app)
 {
     if (!app) return;
@@ -3992,7 +4020,10 @@ static void draw_ai_assist_panel(StandaloneApp *app)
         export_insight_report(app);
     }
     if (ImGui::Button("Export AI Review Bundle")) {
-        export_ai_review_bundle(app);
+        if (performance_allows_optional_action(app, "AI review bundle", 1, 1)) {
+            export_ai_review_bundle(app);
+            refresh_performance_governor(app);
+        }
     }
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("Exports PNG snapshot, ASD regions JSON, relationships JSON, label mask, and HTML report.");
@@ -4082,7 +4113,10 @@ static void draw_ai_assist_panel(StandaloneApp *app)
     ImGui::Text("Adaptive Semantic Discovery");
     ImGui::TextWrapped("ASD-Lite discovers candidate regions from intensity, connectedness, shape, stability, and relationships. Labels are cautious and local, not hardcoded anatomy.");
     if (ImGui::Button("Run Semantic Demo")) {
-        run_semantic_demo_workflow(app, "Semantic demo");
+        if (performance_allows_optional_action(app, "Semantic demo", 1, 0)) {
+            run_semantic_demo_workflow(app, "Semantic demo");
+            refresh_performance_governor(app);
+        }
     }
     ImGui::SameLine();
     ImGui::TextDisabled("one-click AI review");
@@ -4114,7 +4148,10 @@ static void draw_ai_assist_panel(StandaloneApp *app)
     }
     ImGui::SliderFloat("Callout Opacity", &app->semantic_callout_opacity, 0.35f, 1.0f);
     if (ImGui::Button("Discover Regions")) {
-        run_adaptive_semantic_discovery(app);
+        if (performance_allows_optional_action(app, "ASD discovery", 1, 0)) {
+            run_adaptive_semantic_discovery(app);
+            refresh_performance_governor(app);
+        }
     }
     ImGui::TextWrapped("ASD status: %s", app->semantic_status);
     if (app->semantic_region_count > 0) {
