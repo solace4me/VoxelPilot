@@ -360,6 +360,58 @@ static int test_raymarch_step_limit_reaches_full_volume_at_fine_steps(void)
         "raymarch step limit should respect the hard cap");
 }
 
+static int test_review_bundle_paths_sanitize_stem_and_join_folder(void)
+{
+    VoxelPilotReviewBundlePaths paths;
+    memset(&paths, 0, sizeof(paths));
+
+    if (!expect_true(
+            voxelpilot_make_review_bundle_paths(
+                "C:\\tmp\\VoxelPilot",
+                "Bonsai CT sample",
+                &paths) == 1,
+            "review bundle path builder should accept folder and stem")) {
+        return 0;
+    }
+
+    if (!expect_true(
+            strcmp(paths.snapshot_png, "C:\\tmp\\VoxelPilot\\Bonsai_CT_sample_snapshot.png") == 0,
+            "review bundle should produce deterministic snapshot path")) {
+        return 0;
+    }
+    if (!expect_true(
+            strcmp(paths.regions_json, "C:\\tmp\\VoxelPilot\\Bonsai_CT_sample_regions.json") == 0,
+            "review bundle should produce deterministic regions JSON path")) {
+        return 0;
+    }
+    if (!expect_true(
+            strcmp(paths.relationships_json, "C:\\tmp\\VoxelPilot\\Bonsai_CT_sample_relationships.json") == 0,
+            "review bundle should produce deterministic relationships JSON path")) {
+        return 0;
+    }
+    if (!expect_true(
+            strcmp(paths.label_mask_raw, "C:\\tmp\\VoxelPilot\\Bonsai_CT_sample_label_mask.raw") == 0,
+            "review bundle should produce deterministic label mask path")) {
+        return 0;
+    }
+    return expect_true(
+        strcmp(paths.report_html, "C:\\tmp\\VoxelPilot\\Bonsai_CT_sample_report.html") == 0,
+        "review bundle should produce deterministic HTML report path");
+}
+
+static int test_review_bundle_paths_reject_overlong_output(void)
+{
+    VoxelPilotReviewBundlePaths paths;
+    char long_folder[VOXELPILOT_REVIEW_BUNDLE_PATH_MAX];
+    memset(&paths, 0, sizeof(paths));
+    memset(long_folder, 'a', sizeof(long_folder));
+    long_folder[sizeof(long_folder) - 1] = '\0';
+
+    return expect_true(
+        voxelpilot_make_review_bundle_paths(long_folder, "bundle", &paths) == 0,
+        "review bundle path builder should reject truncated paths");
+}
+
 static int test_render_target_sync_respects_match_window_mode(void)
 {
     if (!expect_true(
@@ -1377,6 +1429,8 @@ int main(void)
     passed &= test_focus_slice_scout_selects_high_variance_axial_slice();
     passed &= test_render_extent_clamps_to_safe_range();
     passed &= test_render_target_sync_respects_match_window_mode();
+    passed &= test_review_bundle_paths_sanitize_stem_and_join_folder();
+    passed &= test_review_bundle_paths_reject_overlong_output();
     passed &= test_cinematic_params_default_disabled();
     passed &= test_cinematic_params_clamp_safe_ranges();
     passed &= test_semantic_demo_defaults_enable_visible_asd_callouts();

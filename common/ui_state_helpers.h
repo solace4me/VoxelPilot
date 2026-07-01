@@ -1,7 +1,10 @@
 #ifndef UI_STATE_HELPERS_H
 #define UI_STATE_HELPERS_H
 
+#include <ctype.h>
 #include <math.h>
+#include <stdio.h>
+#include <string.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -360,6 +363,104 @@ static inline int voxelpilot_should_sync_render_target(
 
     return current_width != framebuffer_width ||
            current_height != framebuffer_height;
+}
+
+#define VOXELPILOT_REVIEW_BUNDLE_PATH_MAX 512
+
+typedef struct {
+    char snapshot_png[VOXELPILOT_REVIEW_BUNDLE_PATH_MAX];
+    char regions_json[VOXELPILOT_REVIEW_BUNDLE_PATH_MAX];
+    char relationships_json[VOXELPILOT_REVIEW_BUNDLE_PATH_MAX];
+    char label_mask_raw[VOXELPILOT_REVIEW_BUNDLE_PATH_MAX];
+    char report_html[VOXELPILOT_REVIEW_BUNDLE_PATH_MAX];
+} VoxelPilotReviewBundlePaths;
+
+static inline void voxelpilot_sanitize_bundle_stem(
+    const char *stem,
+    char *out_stem,
+    size_t out_stem_size)
+{
+    size_t write_index = 0;
+    size_t read_index;
+
+    if (!out_stem || out_stem_size == 0) {
+        return;
+    }
+
+    if (!stem || !stem[0]) {
+        snprintf(out_stem, out_stem_size, "voxelpilot_ai_review");
+        return;
+    }
+
+    for (read_index = 0; stem[read_index] && write_index + 1 < out_stem_size; ++read_index) {
+        unsigned char c = (unsigned char)stem[read_index];
+        if (isalnum(c) || c == '-' || c == '_') {
+            out_stem[write_index++] = (char)c;
+        } else {
+            if (write_index == 0 || out_stem[write_index - 1] != '_') {
+                out_stem[write_index++] = '_';
+            }
+        }
+    }
+
+    while (write_index > 0 && out_stem[write_index - 1] == '_') {
+        --write_index;
+    }
+    out_stem[write_index] = '\0';
+
+    if (!out_stem[0]) {
+        snprintf(out_stem, out_stem_size, "voxelpilot_ai_review");
+    }
+}
+
+static inline int voxelpilot_write_bundle_path(
+    char *out_path,
+    size_t out_path_size,
+    const char *folder,
+    const char *separator,
+    const char *safe_stem,
+    const char *suffix)
+{
+    int written;
+
+    if (!out_path || out_path_size == 0) return 0;
+    written = snprintf(out_path, out_path_size,
+                       "%s%s%s%s", folder, separator, safe_stem, suffix);
+    return written > 0 && (size_t)written < out_path_size;
+}
+
+static inline int voxelpilot_make_review_bundle_paths(
+    const char *folder,
+    const char *stem,
+    VoxelPilotReviewBundlePaths *paths)
+{
+    char safe_stem[128];
+    const char *separator = "\\";
+    size_t folder_len;
+
+    if (!folder || !folder[0] || !paths) {
+        return 0;
+    }
+
+    memset(paths, 0, sizeof(*paths));
+    voxelpilot_sanitize_bundle_stem(stem, safe_stem, sizeof(safe_stem));
+
+    folder_len = strlen(folder);
+    if (folder_len > 0 &&
+        (folder[folder_len - 1] == '\\' || folder[folder_len - 1] == '/')) {
+        separator = "";
+    }
+
+    return voxelpilot_write_bundle_path(paths->snapshot_png, sizeof(paths->snapshot_png),
+                                        folder, separator, safe_stem, "_snapshot.png") &&
+           voxelpilot_write_bundle_path(paths->regions_json, sizeof(paths->regions_json),
+                                        folder, separator, safe_stem, "_regions.json") &&
+           voxelpilot_write_bundle_path(paths->relationships_json, sizeof(paths->relationships_json),
+                                        folder, separator, safe_stem, "_relationships.json") &&
+           voxelpilot_write_bundle_path(paths->label_mask_raw, sizeof(paths->label_mask_raw),
+                                        folder, separator, safe_stem, "_label_mask.raw") &&
+           voxelpilot_write_bundle_path(paths->report_html, sizeof(paths->report_html),
+                                        folder, separator, safe_stem, "_report.html");
 }
 
 static inline float voxelpilot_dot3(const float a[3], const float b[3])

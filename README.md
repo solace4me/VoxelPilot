@@ -11,7 +11,7 @@
 - Axial, coronal, and sagittal slice review
 - Transfer mapping, clipping, histogram, and metadata panels
 - Mouse orbit/zoom, preset camera views, and measurements
-- PNG snapshot export, lightweight HTML insight reports, and `.vpilot` workspace save/load
+- PNG snapshot export, AI review bundles, lightweight HTML insight reports, and `.vpilot` workspace save/load
 - AI Assist prompts, Adaptive Semantic Discovery, local object identification, slice annotations, cinematic callouts, 3D label overlays, hover explanations, and brick-cache telemetry
 - Demo splash, guided walkthrough, and About panel
 
@@ -117,7 +117,8 @@ Generate an opt-in Cinematic Lite snapshot without changing the default renderer
 - Adjust `Sagittal X`, `Coronal Y`, and `Axial Z` in `Insights` for slice review.
 - Click `Run Semantic Demo` in `AI Assist` for a one-click local AI review: auto-enhanced transfer, object summary, ASD-Lite discovery, cinematic mode, label overlay, and callouts.
 - Click `Analyze Loaded Volume` in `AI Assist` to generate a local material/object summary if you want to run the steps manually.
-- Click `Refresh Quant Metrics`, then `Export Insight Report` to save a lightweight HTML review report.
+- Click `Refresh Quant Metrics`, then `Export Insight Report` to save a lightweight HTML review report. Use `Export AI Review Bundle` to save a PNG snapshot, ASD regions JSON, relationships JSON, label mask, and linked HTML report together.
+- For scripted review, run `volume_renderer_standalone.exe --volume sample-data\bonsai_256x256x256_uint8.raw --width 256 --height 256 --depth 256 --type uint8 --semantic-demo --review-bundle build` to export the same bundle without opening the folder dialog.
 - Use `AI Assist` prompts such as `show high-density shell` or `hide below 0.3 intensity`.
 - Click `Discover Regions` in `AI Assist` to run ASD-Lite, then keep or enable `Cinematic Callouts` for leader-line labels on the top or selected discovered regions. `Selected Region Glow` boosts the selected label directly inside the CUDA label overlay without adding a second render pass. Hover over slices or the 3D render for cautious region descriptions, stability, importance, and relationship notes. Select a discovered region to confirm, rename, reject, save, or reload correction memory.
 - Enable `Slice Click Labels`, keep `Show Labels in 3D Render` on, click a slice, then export the label mask for downstream analysis.

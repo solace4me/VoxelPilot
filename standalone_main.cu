@@ -388,6 +388,7 @@ static const char *semantic_relationship_note(
     unsigned char  label_id);
 static void run_adaptive_semantic_discovery(StandaloneApp *app);
 static void run_semantic_demo_workflow(StandaloneApp *app, const char *reason);
+static void export_ai_review_bundle(StandaloneApp *app);
 static void refresh_semantic_annotation_overlays(StandaloneApp *app);
 static int save_semantic_memory(StandaloneApp *app, const char *path);
 static int load_semantic_memory(StandaloneApp *app, const char *path);
@@ -3389,6 +3390,279 @@ static void write_html_escaped(FILE *fp, const char *text)
     }
 }
 
+static void make_review_bundle_stem(StandaloneApp *app, char *out_stem, size_t out_stem_size)
+{
+    const char *source;
+    const char *base;
+    const char *dot;
+    size_t length;
+
+    if (!out_stem || out_stem_size == 0) return;
+
+    source = (app && app->upload_path[0]) ? app->upload_path : "voxelpilot_ai_review";
+    base = strrchr(source, '\\');
+    if (!base) base = strrchr(source, '/');
+    base = base ? base + 1 : source;
+    dot = strrchr(base, '.');
+    length = dot && dot > base ? (size_t)(dot - base) : strlen(base);
+    if (length >= out_stem_size) length = out_stem_size - 1;
+    memcpy(out_stem, base, length);
+    out_stem[length] = '\0';
+    if (!out_stem[0]) {
+        snprintf(out_stem, out_stem_size, "voxelpilot_ai_review");
+    }
+}
+
+static int write_ai_review_regions_json(StandaloneApp *app, const char *path)
+{
+    FILE *fp;
+    int i;
+
+    if (!app || !path || !path[0]) return 0;
+    fp = fopen(path, "w");
+    if (!fp) return 0;
+
+    fprintf(fp, "{\n");
+    fprintf(fp, "  \"version\": 1,\n");
+    fprintf(fp, "  \"source\": \"ASD-Lite heuristic\",\n");
+    fprintf(fp, "  \"dimensions\": [%d, %d, %d],\n", app->renderer.W, app->renderer.H, app->renderer.D);
+    fprintf(fp, "  \"selectedLabelId\": %u,\n",
+            (app->selected_annotation >= 0 && app->selected_annotation < app->annotation_count)
+                ? (unsigned int)app->annotations[app->selected_annotation].label_id
+                : 0u);
+    fprintf(fp, "  \"regions\": [\n");
+    for (i = 0; i < app->semantic_region_count; ++i) {
+        VoxelPilotSemanticRegion *region = &app->semantic_regions[i];
+        fprintf(fp, "    {\"labelId\": %u, \"name\": \"", (unsigned int)region->label_id);
+        write_json_escaped(fp, region->name);
+        fprintf(fp, "\", \"archetype\": \"");
+        write_json_escaped(fp, region->archetype);
+        fprintf(fp, "\", \"category\": \"");
+        write_json_escaped(fp, region->category);
+        fprintf(fp,
+                "\", \"voxelCount\": %zu, \"confidence\": %.6f, \"stabilityScore\": %.6f, \"importanceScore\": %.6f, \"importanceRank\": %d, \"meanIntensity\": %.6f, \"minIntensity\": %.6f, \"maxIntensity\": %.6f, \"centroid\": [%.6f, %.6f, %.6f], \"bboxMin\": [%d, %d, %d], \"bboxMax\": [%d, %d, %d], \"userConfirmed\": %d, \"rejected\": %d, \"description\": \"",
+                region->voxel_count,
+                region->confidence,
+                region->stability_score,
+                region->importance_score,
+                region->importance_rank,
+                region->mean_intensity,
+                region->min_intensity,
+                region->max_intensity,
+                region->centroid[0], region->centroid[1], region->centroid[2],
+                region->bbox_min[0], region->bbox_min[1], region->bbox_min[2],
+                region->bbox_max[0], region->bbox_max[1], region->bbox_max[2],
+                region->user_confirmed,
+                region->rejected);
+        write_json_escaped(fp, region->description);
+        fprintf(fp, "\"}%s\n", (i + 1 < app->semantic_region_count) ? "," : "");
+    }
+    fprintf(fp, "  ]\n}\n");
+    fclose(fp);
+    return 1;
+}
+
+static int write_ai_review_relationships_json(StandaloneApp *app, const char *path)
+{
+    FILE *fp;
+    int i;
+
+    if (!app || !path || !path[0]) return 0;
+    fp = fopen(path, "w");
+    if (!fp) return 0;
+
+    fprintf(fp, "{\n  \"version\": 1,\n  \"relationships\": [\n");
+    for (i = 0; i < app->semantic_relation_count; ++i) {
+        VoxelPilotRegionRelation *relation = &app->semantic_relations[i];
+        fprintf(fp,
+                "    {\"regionA\": %u, \"regionB\": %u, \"type\": %d, \"centroidDistance\": %.6f, \"confidence\": %.6f, \"description\": \"",
+                (unsigned int)relation->region_a,
+                (unsigned int)relation->region_b,
+                (int)relation->type,
+                relation->centroid_distance,
+                relation->confidence);
+        write_json_escaped(fp, relation->description);
+        fprintf(fp, "\"}%s\n", (i + 1 < app->semantic_relation_count) ? "," : "");
+    }
+    fprintf(fp, "  ]\n}\n");
+    fclose(fp);
+    return 1;
+}
+
+static int write_ai_review_label_mask(StandaloneApp *app, const char *path)
+{
+    FILE *fp;
+    size_t voxel_count;
+    size_t written;
+
+    if (!app || !path || !path[0] || !app->label_mask ||
+        app->label_mask_W < 1 || app->label_mask_H < 1 || app->label_mask_D < 1) {
+        return 0;
+    }
+
+    voxel_count =
+        (size_t)app->label_mask_W *
+        (size_t)app->label_mask_H *
+        (size_t)app->label_mask_D;
+    fp = fopen(path, "wb");
+    if (!fp) return 0;
+    written = fwrite(app->label_mask, 1, voxel_count, fp);
+    fclose(fp);
+    return written == voxel_count;
+}
+
+static const char *review_bundle_file_name(const char *path)
+{
+    const char *slash;
+    const char *backslash;
+
+    if (!path) return "";
+    slash = strrchr(path, '/');
+    backslash = strrchr(path, '\\');
+    if (!slash || (backslash && backslash > slash)) slash = backslash;
+    return slash ? slash + 1 : path;
+}
+
+static int write_ai_review_bundle_report(
+    StandaloneApp *app,
+    const VoxelPilotReviewBundlePaths *paths,
+    const char *path)
+{
+    FILE *fp;
+    int i;
+
+    if (!app || !paths || !path || !path[0]) return 0;
+    fp = fopen(path, "w");
+    if (!fp) return 0;
+
+    update_quant_metrics(app);
+    update_object_summary(app);
+    update_streaming_estimate(app);
+
+    fputs("<!doctype html><html><head><meta charset=\"utf-8\">", fp);
+    fputs("<title>VoxelPilot AI Review Bundle</title>", fp);
+    fputs("<style>body{font-family:Segoe UI,Arial,sans-serif;background:#101820;color:#eef;line-height:1.45;margin:32px;}section{border:1px solid #345;padding:16px;margin:16px 0;border-radius:10px;background:#16212b;}table{border-collapse:collapse;width:100%;}td,th{border-bottom:1px solid #345;padding:6px;text-align:left;}code{color:#8fe;}img{max-width:100%;border:1px solid #345;border-radius:8px;}</style>", fp);
+    fputs("</head><body><h1>VoxelPilot AI Review Bundle</h1>", fp);
+
+    fputs("<section><h2>Summary</h2><table>", fp);
+    fprintf(fp, "<tr><th>Dimensions</th><td>%d x %d x %d</td></tr>", app->renderer.W, app->renderer.H, app->renderer.D);
+    fprintf(fp, "<tr><th>Semantic regions</th><td>%d</td></tr>", app->semantic_region_count);
+    fprintf(fp, "<tr><th>Relationships</th><td>%d</td></tr>", app->semantic_relation_count);
+    fputs("<tr><th>AI type</th><td>Local explainable heuristic AI using histogram, connected regions, shape archetypes, stability, importance ranking, hover picking, and user-confirmed corrections. No cloud model is used.</td></tr>", fp);
+    fputs("<tr><th>Object summary</th><td>", fp);
+    write_html_escaped(fp, app->object_summary_status);
+    fputs("</td></tr></table></section>", fp);
+
+    fputs("<section><h2>Snapshot</h2><p><img src=\"", fp);
+    write_html_escaped(fp, review_bundle_file_name(paths->snapshot_png));
+    fputs("\" alt=\"VoxelPilot render snapshot\"></p></section>", fp);
+
+    fputs("<section><h2>Bundle Files</h2><ul>", fp);
+    fputs("<li>Snapshot: <code>", fp); write_html_escaped(fp, review_bundle_file_name(paths->snapshot_png)); fputs("</code></li>", fp);
+    fputs("<li>Regions JSON: <code>", fp); write_html_escaped(fp, review_bundle_file_name(paths->regions_json)); fputs("</code></li>", fp);
+    fputs("<li>Relationships JSON: <code>", fp); write_html_escaped(fp, review_bundle_file_name(paths->relationships_json)); fputs("</code></li>", fp);
+    fputs("<li>Label mask RAW: <code>", fp); write_html_escaped(fp, review_bundle_file_name(paths->label_mask_raw)); fputs("</code></li>", fp);
+    fputs("</ul></section>", fp);
+
+    fputs("<section><h2>Regions</h2><table><tr><th>ID</th><th>Name</th><th>Archetype</th><th>Confidence</th><th>Stability</th><th>Importance</th><th>Voxels</th></tr>", fp);
+    for (i = 0; i < app->semantic_region_count; ++i) {
+        VoxelPilotSemanticRegion *region = &app->semantic_regions[i];
+        fprintf(fp, "<tr><td>%u</td><td>", (unsigned int)region->label_id);
+        write_html_escaped(fp, region->name);
+        fputs("</td><td>", fp);
+        write_html_escaped(fp, region->archetype);
+        fprintf(fp, "</td><td>%.0f%%</td><td>%.0f%%</td><td>rank %d / %.0f%%</td><td>%zu</td></tr>",
+                region->confidence * 100.0f,
+                region->stability_score * 100.0f,
+                region->importance_rank,
+                region->importance_score * 100.0f,
+                region->voxel_count);
+    }
+    fputs("</table></section>", fp);
+
+    fputs("<section><h2>Relationship Notes</h2><ul>", fp);
+    for (i = 0; i < app->semantic_relation_count; ++i) {
+        fputs("<li>", fp);
+        write_html_escaped(fp, app->semantic_relations[i].description);
+        fputs("</li>", fp);
+    }
+    if (app->semantic_relation_count == 0) fputs("<li>No region relationships discovered.</li>", fp);
+    fputs("</ul></section>", fp);
+
+    fputs("</body></html>\n", fp);
+    fclose(fp);
+    return 1;
+}
+
+static int export_ai_review_bundle_to_folder(StandaloneApp *app, const char *folder)
+{
+    VoxelPilotReviewBundlePaths paths;
+    char stem[128];
+
+    if (!app || !app->renderer.volume_data || app->renderer.W < 1 || app->renderer.H < 1 || app->renderer.D < 1) {
+        if (app) snprintf(app->report_status, sizeof(app->report_status), "Load a volume before exporting an AI review bundle.");
+        return 0;
+    }
+    if (!folder || !folder[0]) {
+        snprintf(app->report_status, sizeof(app->report_status), "Choose a folder for the AI review bundle.");
+        return 0;
+    }
+
+    if (app->semantic_region_count < 1) {
+        run_semantic_demo_workflow(app, "AI review bundle");
+    }
+    if (app->semantic_region_count < 1 || !app->label_mask || app->annotation_count < 1) {
+        snprintf(app->report_status, sizeof(app->report_status),
+                 "AI review bundle needs ASD regions. Run Semantic Demo or tune ASD settings first.");
+        return 0;
+    }
+
+    make_review_bundle_stem(app, stem, sizeof(stem));
+    if (!voxelpilot_make_review_bundle_paths(folder, stem, &paths)) {
+        snprintf(app->report_status, sizeof(app->report_status), "Could not prepare AI review bundle paths.");
+        return 0;
+    }
+
+    render_frame_gpu_snapshot(app);
+    if (!app->renderer.h_out ||
+        write_png_file((const unsigned char *)app->renderer.h_out, app->render_w, app->render_h, paths.snapshot_png) != 0) {
+        snprintf(app->report_status, sizeof(app->report_status), "Could not write AI review snapshot.");
+        return 0;
+    }
+    if (!write_ai_review_regions_json(app, paths.regions_json)) {
+        snprintf(app->report_status, sizeof(app->report_status), "Could not write AI review regions JSON.");
+        return 0;
+    }
+    if (!write_ai_review_relationships_json(app, paths.relationships_json)) {
+        snprintf(app->report_status, sizeof(app->report_status), "Could not write AI review relationships JSON.");
+        return 0;
+    }
+    if (!write_ai_review_label_mask(app, paths.label_mask_raw)) {
+        snprintf(app->report_status, sizeof(app->report_status), "Could not write AI review label mask.");
+        return 0;
+    }
+    if (!write_ai_review_bundle_report(app, &paths, paths.report_html)) {
+        snprintf(app->report_status, sizeof(app->report_status), "Could not write AI review bundle report.");
+        return 0;
+    }
+
+    strncpy(app->report_path, paths.report_html, sizeof(app->report_path) - 1);
+    app->report_path[sizeof(app->report_path) - 1] = '\0';
+    snprintf(app->report_status, sizeof(app->report_status),
+             "Exported AI review bundle: %s", paths.report_html);
+    return 1;
+}
+
+static void export_ai_review_bundle(StandaloneApp *app)
+{
+    const char *folder = tinyfd_selectFolderDialog("Export VoxelPilot AI Review Bundle", ".");
+    if (!folder) {
+        if (app) snprintf(app->report_status, sizeof(app->report_status), "AI review bundle export canceled.");
+        return;
+    }
+    export_ai_review_bundle_to_folder(app, folder);
+}
+
 static void export_insight_report(StandaloneApp *app)
 {
     const char *patterns[] = { "*.html" };
@@ -3566,6 +3840,12 @@ static void draw_ai_assist_panel(StandaloneApp *app)
     ImGui::SameLine();
     if (ImGui::Button("Export Insight Report")) {
         export_insight_report(app);
+    }
+    if (ImGui::Button("Export AI Review Bundle")) {
+        export_ai_review_bundle(app);
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Exports PNG snapshot, ASD regions JSON, relationships JSON, label mask, and HTML report.");
     }
     if (app->quant_metrics_ready) {
         ImGui::Text("Visible: %.1f%% | Median: %.3f | P95: %.3f",
@@ -4528,6 +4808,7 @@ int main(int argc, char **argv)
     StandaloneApp app;
     const char   *volume_path = NULL;
     const char   *snapshot_path = NULL;
+    const char   *review_bundle_folder = NULL;
     int           startup_width = 256;
     int           startup_height = 256;
     int           startup_depth = 256;
@@ -4567,6 +4848,9 @@ int main(int argc, char **argv)
         } else if (strcmp(argv[i], "--snapshot") == 0 &&
                    i+1 < argc) {
             snapshot_path = argv[++i];
+        } else if (strcmp(argv[i], "--review-bundle") == 0 &&
+                   i+1 < argc) {
+            review_bundle_folder = argv[++i];
         } else if (strcmp(argv[i], "--tf-center") == 0 &&
                    i+1 < argc) {
             if (parse_cli_float(argv[++i], 0.0f, 1.0f, &cli_tf_center) != 0) {
@@ -4664,6 +4948,7 @@ int main(int argc, char **argv)
                     strcmp(argv[i], "--type") == 0 ||
                     strcmp(argv[i], "--volume") == 0 ||
                     strcmp(argv[i], "--snapshot") == 0 ||
+                    strcmp(argv[i], "--review-bundle") == 0 ||
                     strcmp(argv[i], "--tf-center") == 0 ||
                     strcmp(argv[i], "--tf-width") == 0 ||
                     strcmp(argv[i], "--tf-opacity") == 0 ||
@@ -4676,7 +4961,7 @@ int main(int argc, char **argv)
         } else {
             fprintf(stderr, "Unknown argument: %s\n", argv[i]);
             fprintf(stderr,
-                    "Usage: %s [--volume file.raw] [--dim N | --width W --height H --depth D] [--type uint8|uint16|float32] [--snapshot path.png] [--tf-center C --tf-width W --tf-opacity O] [--cinematic-lite --cinematic-rim R --cinematic-glow G --cinematic-contrast C] [--semantic-demo]\n",
+                    "Usage: %s [--volume file.raw] [--dim N | --width W --height H --depth D] [--type uint8|uint16|float32] [--snapshot path.png] [--review-bundle folder] [--tf-center C --tf-width W --tf-opacity O] [--cinematic-lite --cinematic-rim R --cinematic-glow G --cinematic-contrast C] [--semantic-demo]\n",
                     argv[0]);
             return -1;
         }
@@ -4946,6 +5231,26 @@ int main(int argc, char **argv)
 
     if (cli_semantic_demo) {
         run_semantic_demo_workflow(&app, "CLI semantic demo");
+    }
+
+    if (review_bundle_folder) {
+        if (app.render_w < 1024) app.render_w = 1024;
+        if (app.render_h < 1024) app.render_h = 1024;
+        set_camera_preset(&app,
+            -0.35f, 0.95f, -0.35f,
+            0.7f, -0.35f, 0.7f,
+            0.0f, 1.0f, 0.0f);
+        apply_auto_enhance_on_load_if_safe(&app, "AI review bundle");
+        if (!export_ai_review_bundle_to_folder(&app, review_bundle_folder)) {
+            fprintf(stderr, "AI review bundle export failed: %s\n", app.report_status);
+            renderer_state_cleanup(&app.renderer);
+            cudaDeviceReset();
+            return -1;
+        }
+        printf("AI review bundle saved: %s\n", app.report_path);
+        renderer_state_cleanup(&app.renderer);
+        cudaDeviceReset();
+        return 0;
     }
 
     if (snapshot_path) {
