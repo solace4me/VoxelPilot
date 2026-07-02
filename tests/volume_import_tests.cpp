@@ -653,6 +653,131 @@ static int test_auto_enhance_transfer_boosts_sparse_visible_histograms(void)
         "auto-enhance helper should boost opacity for sparse visible samples");
 }
 
+static int test_transfer_advisor_recommends_dark_sparse_enhancement(void)
+{
+    float histogram[16] = { 0.0f };
+    VoxelPilotTransferAdvisorResult advisor;
+
+    histogram[0] = 1200.0f;
+    histogram[1] = 280.0f;
+    histogram[2] = 90.0f;
+    histogram[7] = 35.0f;
+    histogram[10] = 8.0f;
+
+    if (!expect_true(
+            voxelpilot_compute_transfer_advisor(
+                histogram,
+                16,
+                0.45f,
+                0.35f,
+                1.8f,
+                0,
+                &advisor) == 1,
+            "transfer advisor should accept sparse dark histograms")) {
+        return 0;
+    }
+
+    if (!expect_true(
+            advisor.has_recommendation == 1 &&
+            advisor.kind == VOXELPILOT_TRANSFER_ADVICE_BRIGHTEN_SPARSE,
+            "sparse dark histogram should produce a brighten recommendation")) {
+        return 0;
+    }
+
+    if (!expect_true(
+            advisor.tf_opacity_scale > 1.8f &&
+            advisor.tf_width >= 0.20f,
+            "sparse dark advisor should boost opacity while preserving a usable window")) {
+        return 0;
+    }
+
+    return expect_true(
+        strstr(advisor.explanation, "background") != NULL,
+        "sparse dark advisor should explain the background-dominant reason");
+}
+
+static int test_transfer_advisor_recommends_high_density_shell(void)
+{
+    float histogram[16] = { 0.0f };
+    VoxelPilotTransferAdvisorResult advisor;
+    int bin_index;
+
+    for (bin_index = 10; bin_index < 16; ++bin_index) {
+        histogram[bin_index] = 120.0f + (float)(bin_index - 10) * 20.0f;
+    }
+    histogram[0] = 20.0f;
+    histogram[4] = 12.0f;
+
+    if (!expect_true(
+            voxelpilot_compute_transfer_advisor(
+                histogram,
+                16,
+                0.45f,
+                0.35f,
+                1.8f,
+                4,
+                &advisor) == 1,
+            "transfer advisor should accept high-density histograms")) {
+        return 0;
+    }
+
+    if (!expect_true(
+            advisor.has_recommendation == 1 &&
+            advisor.kind == VOXELPILOT_TRANSFER_ADVICE_HIGH_DENSITY_FOCUS,
+            "high-density histogram should produce a shell/object focus recommendation")) {
+        return 0;
+    }
+
+    if (!expect_true(
+            advisor.tf_center > 0.65f &&
+            advisor.tf_width <= 0.36f,
+            "high-density advisor should focus the upper intensity band")) {
+        return 0;
+    }
+
+    return expect_true(
+        strstr(advisor.action, "high-density") != NULL &&
+        advisor.confidence > 0.55f,
+        "high-density advisor should provide a cautious explainable action");
+}
+
+static int test_transfer_advisor_keeps_balanced_volume_stable(void)
+{
+    float histogram[10] = { 0.0f };
+    VoxelPilotTransferAdvisorResult advisor;
+    int bin_index;
+
+    for (bin_index = 1; bin_index < 9; ++bin_index) {
+        histogram[bin_index] = 100.0f;
+    }
+
+    if (!expect_true(
+            voxelpilot_compute_transfer_advisor(
+                histogram,
+                10,
+                0.45f,
+                0.35f,
+                1.8f,
+                2,
+                &advisor) == 1,
+            "transfer advisor should summarize balanced histograms")) {
+        return 0;
+    }
+
+    if (!expect_true(
+            advisor.kind == VOXELPILOT_TRANSFER_ADVICE_KEEP_CURRENT &&
+            advisor.has_recommendation == 0,
+            "balanced histogram should not force unnecessary transfer changes")) {
+        return 0;
+    }
+
+    return expect_true(
+        advisor.tf_center == 0.45f &&
+        advisor.tf_width == 0.35f &&
+        advisor.tf_opacity_scale == 1.8f,
+        "balanced advisor should preserve current transfer settings");
+}
+
 
 
 static int test_auto_enhance_load_guard_preserves_high_background_ct_defaults(void)
@@ -1615,6 +1740,9 @@ int main(void)
     passed &= test_prompt_reset_uses_visible_default_opacity();
     passed &= test_prompt_parser_recognizes_visibility_and_quality_intents();
     passed &= test_auto_enhance_transfer_boosts_sparse_visible_histograms();
+    passed &= test_transfer_advisor_recommends_dark_sparse_enhancement();
+    passed &= test_transfer_advisor_recommends_high_density_shell();
+    passed &= test_transfer_advisor_keeps_balanced_volume_stable();
     passed &= test_auto_enhance_load_guard_preserves_high_background_ct_defaults();
     passed &= test_auto_enhance_boosts_compact_low_contrast_histograms();
     passed &= test_auto_enhance_load_frames_headsq_style_histograms();

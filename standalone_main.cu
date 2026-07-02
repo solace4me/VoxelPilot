@@ -3959,6 +3959,10 @@ static void draw_ai_assist_panel(StandaloneApp *app)
     float suggested_width = 0.0f;
     float suggested_opacity = 0.0f;
     int has_transfer_suggestion = 0;
+    VoxelPilotTransferAdvisorResult transfer_advisor;
+    int has_transfer_advisor = 0;
+
+    memset(&transfer_advisor, 0, sizeof(transfer_advisor));
 
     set_default_window_layout(app, "AI Assist");
     ImGui::Begin("AI Assist");
@@ -3977,6 +3981,15 @@ static void draw_ai_assist_panel(StandaloneApp *app)
                 &suggested_center,
                 &suggested_width,
                 &suggested_opacity);
+        has_transfer_advisor =
+            voxelpilot_compute_transfer_advisor(
+                app->histogram,
+                HISTOGRAM_BINS,
+                app->tf_center,
+                app->tf_width,
+                app->tf_opacity_scale,
+                app->semantic_region_count,
+                &transfer_advisor);
     }
 
     if (!has_volume) {
@@ -3992,6 +4005,39 @@ static void draw_ai_assist_panel(StandaloneApp *app)
     }
 
     draw_performance_safety_block(app);
+
+    ImGui::Separator();
+    ImGui::Text("AI Transfer Advisor");
+    ImGui::TextWrapped("Local advisor: reads the existing histogram and suggests visibility settings without model inference, downsampling, or automatic renderer changes.");
+    if (!has_volume || !app->histogram_ready) {
+        ImGui::TextWrapped("Load a volume with a populated histogram to enable transfer advice.");
+    } else if (has_transfer_advisor) {
+        ImGui::Text("Advice: %s", transfer_advisor.action);
+        ImGui::Text("Confidence: %.1f%%", transfer_advisor.confidence * 100.0f);
+        ImGui::TextWrapped("Why: %s", transfer_advisor.explanation);
+        if (transfer_advisor.has_recommendation) {
+            ImGui::Text("Suggested center/width/opacity: %.3f / %.3f / %.2f",
+                        transfer_advisor.tf_center,
+                        transfer_advisor.tf_width,
+                        transfer_advisor.tf_opacity_scale);
+            if (ImGui::Button("Apply Advisor Settings")) {
+                app->tf_center = transfer_advisor.tf_center;
+                app->tf_width = transfer_advisor.tf_width;
+                app->tf_opacity_scale = transfer_advisor.tf_opacity_scale;
+                snprintf(app->ai_assist_status,
+                         sizeof(app->ai_assist_status),
+                         "Applied advisor settings: center %.3f, width %.3f, opacity %.2f.",
+                         app->tf_center,
+                         app->tf_width,
+                         app->tf_opacity_scale);
+                update_quant_metrics(app);
+            }
+        } else {
+            ImGui::TextWrapped("No transfer change recommended. Current settings look safe for review.");
+        }
+    } else {
+        ImGui::TextWrapped("Advisor could not summarize this histogram. Try loading the volume again.");
+    }
 
     ImGui::Separator();
     ImGui::Text("Auto Object Identification");

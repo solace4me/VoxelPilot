@@ -59,6 +59,22 @@ typedef struct {
     char  summary[256];
 } VoxelPilotQuantMetrics;
 
+#define VOXELPILOT_TRANSFER_ADVICE_KEEP_CURRENT       0
+#define VOXELPILOT_TRANSFER_ADVICE_BRIGHTEN_SPARSE    1
+#define VOXELPILOT_TRANSFER_ADVICE_HIGH_DENSITY_FOCUS 2
+
+typedef struct {
+    int   kind;
+    int   has_recommendation;
+    float tf_center;
+    float tf_width;
+    float tf_opacity_scale;
+    float min_intensity;
+    float confidence;
+    char  action[128];
+    char  explanation[256];
+} VoxelPilotTransferAdvisorResult;
+
 typedef struct {
     int visible;
     int resident_candidates;
@@ -286,6 +302,157 @@ static inline int voxelpilot_compute_auto_enhance_transfer(
     *out_center = voxelpilot_ai_clampf(center, 0.0f, 1.0f);
     *out_width = voxelpilot_ai_clampf(width, 0.05f, 1.0f);
     *out_opacity_scale = voxelpilot_ai_clampf(opacity_scale, 1.0f, 3.0f);
+    return 1;
+}
+
+static inline int voxelpilot_compute_transfer_advisor(
+    const float                    *histogram,
+    int                             bin_count,
+    float                           current_center,
+    float                           current_width,
+    float                           current_opacity_scale,
+    int                             semantic_region_count,
+    VoxelPilotTransferAdvisorResult *advisor)
+{
+    float total = 0.0f;
+    float low = 0.0f;
+    float mid = 0.0f;
+    float high = 0.0f;
+    float weighted_sum = 0.0f;
+    float background_ratio;
+    float low_ratio;
+    float mid_ratio;
+    float high_ratio;
+    float mean_intensity;
+    int lower_bin;
+    int upper_bin;
+    int bin_index;
+    int nonzero_bins = 0;
+    float suggested_center;
+    float suggested_width;
+    float suggested_opacity;
+
+    if (!histogram || bin_count < 2 || !advisor) {
+        return 0;
+    }
+
+    memset(advisor, 0, sizeof(*advisor));
+    advisor->kind = VOXELPILOT_TRANSFER_ADVICE_KEEP_CURRENT;
+    advisor->tf_center = voxelpilot_ai_clampf(current_center, 0.0f, 1.0f);
+    advisor->tf_width = voxelpilot_ai_clampf(current_width, 0.02f, 1.0f);
+    advisor->tf_opacity_scale = voxelpilot_ai_clampf(current_opacity_scale, 0.1f, 3.0f);
+    advisor->min_intensity = 0.0f;
+
+    for (bin_index = 0; bin_index < bin_count; ++bin_index) {
+        float count = histogram[bin_index] > 0.0f ? histogram[bin_index] : 0.0f;
+        float normalized = (float)bin_index / (float)(bin_count - 1);
+        if (count <= 0.0f) {
+            continue;
+        }
+        total += count;
+        weighted_sum += count * normalized;
+        nonzero_bins++;
+        if (normalized >= 0.65f) {
+            high += count;
+        } else if (normalized >= 0.20f) {
+            mid += count;
+        } else {
+            low += count;
+        }
+    }
+
+    if (total <= 0.0f) {
+        snprintf(advisor->action, sizeof(advisor->action),
+                 "Load a populated volume histogram");
+        snprintf(advisor->explanation, sizeof(advisor->explanation),
+                 "AI Transfer Advisor needs a non-empty histogram before it can recommend visibility settings.");
+        return 0;
+    }
+
+    background_ratio = histogram[0] > 0.0f ? histogram[0] / total : 0.0f;
+    low_ratio = low / total;
+    mid_ratio = mid / total;
+    high_ratio = high / total;
+    mean_intensity = weighted_sum / total;
+
+    if ((background_ratio > 0.45f || low_ratio > 0.70f || nonzero_bins <= bin_count / 3) &&
+        voxelpilot_compute_auto_enhance_transfer(
+            histogram,
+            bin_count,
+            &suggested_center,
+            &suggested_width,
+            &suggested_opacity)) {
+        advisor->kind = VOXELPILOT_TRANSFER_ADVICE_BRIGHTEN_SPARSE;
+        advisor->has_recommendation = 1;
+        advisor->tf_center = suggested_center;
+        advisor->tf_width = suggested_width;
+        advisor->tf_opacity_scale = voxelpilot_ai_clampf(
+            suggested_opacity > current_opacity_scale ? suggested_opacity : current_opacity_scale + 0.25f,
+            1.0f,
+            3.0f);
+        advisor->min_intensity = voxelpilot_ai_clampf(
+            advisor->tf_center - advisor->tf_width * 0.5f,
+            0.0f,
+            1.0f);
+        advisor->confidence = voxelpilot_ai_clampf(
+            background_ratio > low_ratio ? background_ratio : low_ratio,
+            0.45f,
+            0.95f);
+        snprintf(advisor->action, sizeof(advisor->action),
+                 "Brighten sparse/background-dominant volume");
+        snprintf(advisor->explanation, sizeof(advisor->explanation),
+                 "The histogram is %.1f%% background/low-density with only %d active bins, so the advisor recommends a tighter visible window and stronger opacity without changing render quality.",
+                 (background_ratio > low_ratio ? background_ratio : low_ratio) * 100.0f,
+                 nonzero_bins);
+        return 1;
+    }
+
+    if (high_ratio >= 0.42f || mean_intensity >= 0.62f) {
+        lower_bin = voxelpilot_ai_histogram_percentile_bin(histogram, bin_count, 0.18f, total);
+        upper_bin = voxelpilot_ai_histogram_percentile_bin(histogram, bin_count, 0.96f, total);
+        if (lower_bin < (int)((float)(bin_count - 1) * 0.60f)) {
+            lower_bin = (int)((float)(bin_count - 1) * 0.60f);
+        }
+        if (upper_bin < lower_bin) {
+            upper_bin = lower_bin;
+        }
+        advisor->kind = VOXELPILOT_TRANSFER_ADVICE_HIGH_DENSITY_FOCUS;
+        advisor->has_recommendation = 1;
+        advisor->tf_center = ((float)lower_bin + (float)upper_bin) * 0.5f / (float)(bin_count - 1);
+        advisor->tf_width = ((float)upper_bin - (float)lower_bin) / (float)(bin_count - 1);
+        advisor->tf_width = voxelpilot_ai_clampf(advisor->tf_width, 0.18f, 0.36f);
+        if (advisor->tf_center - advisor->tf_width * 0.5f < 0.0f) {
+            advisor->tf_center = advisor->tf_width * 0.5f;
+        }
+        if (advisor->tf_center + advisor->tf_width * 0.5f > 1.0f) {
+            advisor->tf_center = 1.0f - advisor->tf_width * 0.5f;
+        }
+        advisor->tf_opacity_scale = voxelpilot_ai_clampf(
+            current_opacity_scale < 1.85f ? 1.85f : current_opacity_scale,
+            1.0f,
+            3.0f);
+        advisor->min_intensity = voxelpilot_ai_clampf(
+            advisor->tf_center - advisor->tf_width * 0.5f,
+            0.0f,
+            1.0f);
+        advisor->confidence = voxelpilot_ai_clampf(high_ratio, 0.50f, 0.96f);
+        snprintf(advisor->action, sizeof(advisor->action),
+                 "Focus high-density shell/object detail");
+        snprintf(advisor->explanation, sizeof(advisor->explanation),
+                 "High-density samples dominate %.1f%% of the histogram%s, so the advisor recommends an upper-band transfer window for shell, bone-like, mineral, or dense industrial structures.",
+                 high_ratio * 100.0f,
+                 semantic_region_count > 0 ? " and ASD regions are available" : "");
+        return 1;
+    }
+
+    advisor->confidence = voxelpilot_ai_clampf(
+        mid_ratio > low_ratio ? mid_ratio : low_ratio,
+        0.35f,
+        0.80f);
+    snprintf(advisor->action, sizeof(advisor->action),
+             "Keep current transfer settings");
+    snprintf(advisor->explanation, sizeof(advisor->explanation),
+             "The histogram is already balanced across visible intensities, so the advisor does not recommend changing the current transfer window.");
     return 1;
 }
 
