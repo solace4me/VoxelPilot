@@ -123,7 +123,7 @@ Generate an opt-in Cinematic Lite snapshot without changing the default renderer
 - Click `Refresh Quant Metrics`, then `Export Insight Report` to save a lightweight HTML review report. Use `Export AI Review Bundle` to save a PNG snapshot, ASD regions JSON, relationships JSON, label mask, and linked HTML report together.
 - For scripted review, run `volume_renderer_standalone.exe --volume sample-data\bonsai_256x256x256_uint8.raw --width 256 --height 256 --depth 256 --type uint8 --semantic-demo --review-bundle build` to export the same bundle without opening the folder dialog.
 - Use `AI Assist` prompts such as `show high-density shell` or `hide below 0.3 intensity`.
-- Click `Discover Regions` in `AI Assist` to run ASD-Lite, then keep or enable `Cinematic Callouts` for leader-line labels on the top or selected discovered regions. `Selected Region Glow` boosts the selected label directly inside the CUDA label overlay without adding a second render pass. Hover over slices or the 3D render for cautious region descriptions, stability, importance, and relationship notes. Select a discovered region to confirm, rename, reject, save, or reload correction memory.
+- Click `Discover Regions` in `AI Assist` to run ASD-Lite, then use `Start Guided Review` to step through the top reviewable regions with focused slices, selected-region glow, and selected-only cinematic callouts. Hover over slices or the 3D render for cautious region descriptions, stability, importance, and relationship notes. Select a discovered region to confirm, rename, reject, save, or reload correction memory.
 - Enable `Slice Click Labels`, keep `Show Labels in 3D Render` on, click a slice, then export the label mask for downstream analysis.
 - Use `Set A From Slices` and `Set B From Slices` for a quick measurement pass.
 - Click `Save Snapshot` to export a PNG still.
@@ -173,6 +173,7 @@ Useful docs inside it:
 - `Cinematic Mode` is off by default; when enabled, it uses a single CUDA raymarch styling branch with bounded rim, glow, and contrast controls.
 - `Cinematic Callouts` are an ImGui foreground overlay fed by ASD metadata; they add no CUDA kernels, model inference, or extra volume scan.
 - `Selected Region Glow` reuses the existing CUDA label-mask overlay and only brightens the currently selected label id in the same raymarch pass.
+- `Guided Review Mode` is an ImGui review layer over existing ASD metadata; it changes selected region, slice focus, and callout focus without adding neural inference or another CUDA render pass.
 - Report export writes a small HTML file and does not block rendering except during the save operation.
 - Sample datasets should stay modest for demo laptops; prefer `uint8` raw volumes around `64^3` to `256^3` unless true out-of-core paging is enabled.
 
@@ -184,7 +185,7 @@ ASD-Lite deliberately uses cautious names such as `dense rod-like structure` ins
 
 Phase 2C adds human-in-the-loop correction memory. Users can select a discovered region, rename or confirm it, reject false positives, and save/load `voxelpilot_asd_memory.json`. Future ASD passes cautiously reapply those corrections by matching archetype, density class, intensity profile, compactness, elongation, and size ratio, with provenance shown as user-confirmed or rejected rather than hidden model output.
 
-Phase 2D adds cinematic ASD callouts. The overlay projects selected/top region centroids into screen space and draws glow points, leader lines, and compact cards with cautious names, archetype, confidence, stability, and provenance. This improves interpretability for demos without changing the core CUDA renderer.
+Phase 2D adds cinematic ASD callouts. The overlay projects selected/top region centroids into screen space and draws glow points, leader lines, and compact cards with cautious names, archetype, confidence, stability, and provenance. Guided Review Mode builds on those callouts by walking through reviewable regions in importance-rank order, focusing the orthogonal slices at each centroid, and keeping labels cautious rather than diagnostic. This improves interpretability for demos without changing the core CUDA renderer.
 
 ## AI Concept Note
 

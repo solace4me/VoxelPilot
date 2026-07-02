@@ -92,6 +92,15 @@ typedef struct {
     unsigned int use_count;
 } VoxelPilotSemanticCorrection;
 
+typedef struct {
+    int region_index;
+    unsigned char label_id;
+    int step_number;
+    int step_count;
+    char title[96];
+    char cue[256];
+} VoxelPilotGuidedReviewStep;
+
 static inline float voxelpilot_asd_clampf(float value, float min_value, float max_value)
 {
     if (value < min_value) return min_value;
@@ -261,6 +270,142 @@ static inline void voxelpilot_asd_assign_name_and_description(VoxelPilotSemantic
 
     snprintf(region->description, sizeof(region->description),
         "ASD-Lite heuristic candidate grouped by connected voxels. It is described by density and shape only, not asserted as anatomy or diagnosis.");
+}
+
+static inline int voxelpilot_guided_review_is_reviewable(
+    const VoxelPilotSemanticRegion *region)
+{
+    return region && region->label_id != 0 && !region->rejected;
+}
+
+static inline int voxelpilot_guided_review_rank_key(
+    const VoxelPilotSemanticRegion *region,
+    int fallback_index)
+{
+    if (!region) return fallback_index + 1;
+    return region->importance_rank > 0 ? region->importance_rank : fallback_index + 1;
+}
+
+static inline int voxelpilot_guided_review_count_regions(
+    const VoxelPilotSemanticRegion *regions,
+    int region_count)
+{
+    int count = 0;
+    int i;
+
+    if (!regions || region_count < 1) return 0;
+    for (i = 0; i < region_count; ++i) {
+        if (voxelpilot_guided_review_is_reviewable(&regions[i])) {
+            count++;
+        }
+    }
+    return count;
+}
+
+static inline int voxelpilot_guided_review_select_region(
+    const VoxelPilotSemanticRegion *regions,
+    int region_count,
+    int current_index,
+    int direction,
+    VoxelPilotGuidedReviewStep *step)
+{
+    int reviewable_count;
+    int current_rank = 0;
+    int best_index = -1;
+    int best_rank = 0;
+    int best_step_number = 0;
+    int fallback_index = -1;
+    int fallback_rank = 0;
+    int fallback_step_number = 0;
+    int i;
+
+    if (!regions || region_count < 1 || !step) return 0;
+    memset(step, 0, sizeof(*step));
+    reviewable_count = voxelpilot_guided_review_count_regions(regions, region_count);
+    if (reviewable_count < 1) return 0;
+
+    if (current_index >= 0 && current_index < region_count &&
+        voxelpilot_guided_review_is_reviewable(&regions[current_index])) {
+        current_rank = voxelpilot_guided_review_rank_key(&regions[current_index], current_index);
+    }
+
+    if (direction < 0) {
+        int step_number = 0;
+        for (i = 0; i < region_count; ++i) {
+            int rank;
+            if (!voxelpilot_guided_review_is_reviewable(&regions[i])) continue;
+            rank = voxelpilot_guided_review_rank_key(&regions[i], i);
+            step_number++;
+            if (fallback_index < 0 || rank > fallback_rank) {
+                fallback_index = i;
+                fallback_rank = rank;
+                fallback_step_number = step_number;
+            }
+            if (current_rank > 0 && rank < current_rank &&
+                (best_index < 0 || rank > best_rank)) {
+                best_index = i;
+                best_rank = rank;
+                best_step_number = step_number;
+            }
+        }
+    } else {
+        int step_number = 0;
+        for (i = 0; i < region_count; ++i) {
+            int rank;
+            if (!voxelpilot_guided_review_is_reviewable(&regions[i])) continue;
+            rank = voxelpilot_guided_review_rank_key(&regions[i], i);
+            step_number++;
+            if (fallback_index < 0 || rank < fallback_rank) {
+                fallback_index = i;
+                fallback_rank = rank;
+                fallback_step_number = step_number;
+            }
+            if (current_rank > 0 && rank > current_rank &&
+                (best_index < 0 || rank < best_rank)) {
+                best_index = i;
+                best_rank = rank;
+                best_step_number = step_number;
+            }
+        }
+    }
+
+    if (best_index < 0) {
+        best_index = fallback_index;
+        best_rank = fallback_rank;
+        best_step_number = fallback_step_number;
+    }
+
+    if (best_index < 0) return 0;
+
+    best_step_number = 0;
+    for (i = 0; i < region_count; ++i) {
+        int rank;
+        if (!voxelpilot_guided_review_is_reviewable(&regions[i])) continue;
+        rank = voxelpilot_guided_review_rank_key(&regions[i], i);
+        if (rank <= best_rank) {
+            best_step_number++;
+        }
+    }
+    if (best_step_number < 1) best_step_number = 1;
+    if (best_step_number > reviewable_count) best_step_number = reviewable_count;
+
+    step->region_index = best_index;
+    step->label_id = regions[best_index].label_id;
+    step->step_count = reviewable_count;
+    step->step_number = best_step_number;
+    snprintf(step->title, sizeof(step->title),
+             "Region %d/%d: %s",
+             step->step_number,
+             step->step_count,
+             regions[best_index].name[0] ? regions[best_index].name : "ASD candidate region");
+    snprintf(step->cue, sizeof(step->cue),
+             "Review %s %s with %.0f%% confidence, %.0f%% stability, and importance rank %d. Treat this as a cautious local AI cue, not a diagnosis.",
+             regions[best_index].archetype[0] ? regions[best_index].archetype : "unclassified",
+             regions[best_index].category[0] ? regions[best_index].category : "candidate region",
+             regions[best_index].confidence * 100.0f,
+             regions[best_index].stability_score * 100.0f,
+             best_rank);
+    return 1;
 }
 
 static inline float voxelpilot_asd_size_ratio(

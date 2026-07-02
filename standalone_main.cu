@@ -241,6 +241,9 @@ typedef struct {
     int           demo_mode_enabled;
     int           walkthrough_visible;
     int           walkthrough_step;
+    int           guided_review_visible;
+    VoxelPilotGuidedReviewStep guided_review_step;
+    char          guided_review_status[256];
     int           splash_visible;
     double        splash_start_time;
     int           splash_status_index;
@@ -393,6 +396,9 @@ static const char *semantic_relationship_note(
     unsigned char  label_id);
 static void run_adaptive_semantic_discovery(StandaloneApp *app);
 static void run_semantic_demo_workflow(StandaloneApp *app, const char *reason);
+static int select_guided_review_region(StandaloneApp *app, int direction);
+static void start_guided_review(StandaloneApp *app);
+static void draw_guided_review_overlay(StandaloneApp *app);
 static void update_render_performance_average(StandaloneApp *app);
 static void refresh_performance_governor(StandaloneApp *app);
 static void export_ai_review_bundle(StandaloneApp *app);
@@ -828,6 +834,10 @@ static void reset_workspace(StandaloneApp *app)
     app->semantic_callout_selected_only = 0;
     app->semantic_callout_opacity = 0.88f;
     reset_semantic_discovery(app);
+    app->guided_review_visible = 0;
+    memset(&app->guided_review_step, 0, sizeof(app->guided_review_step));
+    snprintf(app->guided_review_status, sizeof(app->guided_review_status),
+             "Run Semantic Demo or Discover Regions, then start Guided Review.");
     app->object_summary_ready = 0;
     snprintf(app->object_summary_status,
              sizeof(app->object_summary_status),
@@ -3322,6 +3332,80 @@ static void run_semantic_demo_workflow(StandaloneApp *app, const char *reason)
     }
 }
 
+static int select_guided_review_region(StandaloneApp *app, int direction)
+{
+    VoxelPilotGuidedReviewStep step;
+    VoxelPilotSemanticRegion *region;
+    AnnotationRegion *overlay_region;
+
+    if (!app || app->semantic_region_count < 1) {
+        if (app) {
+            snprintf(app->guided_review_status, sizeof(app->guided_review_status),
+                     "Guided Review needs ASD regions. Run Semantic Demo or Discover Regions first.");
+        }
+        return 0;
+    }
+
+    if (!voxelpilot_guided_review_select_region(
+            app->semantic_regions,
+            app->semantic_region_count,
+            app->semantic_selected_region,
+            direction,
+            &step)) {
+        snprintf(app->guided_review_status, sizeof(app->guided_review_status),
+                 "Guided Review found no reviewable ASD regions. Check rejected labels or rerun discovery.");
+        return 0;
+    }
+
+    app->guided_review_step = step;
+    app->semantic_selected_region = step.region_index;
+    region = &app->semantic_regions[step.region_index];
+    overlay_region = find_annotation_by_label(app, region->label_id);
+    app->selected_annotation = overlay_region ? (int)(overlay_region - app->annotations) : -1;
+
+    if (app->renderer.W > 1) {
+        app->slice_x = voxelpilot_ai_clampf(region->centroid[0] / (float)(app->renderer.W - 1), 0.0f, 1.0f);
+    }
+    if (app->renderer.H > 1) {
+        app->slice_y = voxelpilot_ai_clampf(region->centroid[1] / (float)(app->renderer.H - 1), 0.0f, 1.0f);
+    }
+    if (app->renderer.D > 1) {
+        app->slice_z = voxelpilot_ai_clampf(region->centroid[2] / (float)(app->renderer.D - 1), 0.0f, 1.0f);
+    }
+    app->slice_preview_dirty = 1;
+
+    app->semantic_callouts_enabled = 1;
+    app->semantic_callout_selected_only = 1;
+    app->semantic_callout_top_regions = 1;
+    app->label_overlay_visible = 1;
+    app->label_selected_emphasis_enabled = 1;
+    app->label_selected_emphasis_strength = fmaxf(app->label_selected_emphasis_strength, 0.78f);
+    app->semantic_cinematic_emphasis = 1;
+    if (app->semantic_callout_opacity < 0.90f) app->semantic_callout_opacity = 0.90f;
+
+    snprintf(app->semantic_edit_name, sizeof(app->semantic_edit_name), "%s", region->name);
+    snprintf(app->guided_review_status, sizeof(app->guided_review_status),
+             "Guided Review focused %s at slices X %.3f, Y %.3f, Z %.3f.",
+             region->name,
+             app->slice_x,
+             app->slice_y,
+             app->slice_z);
+    snprintf(app->ai_assist_status, sizeof(app->ai_assist_status),
+             "Guided Review focused region %d of %d: %s.",
+             step.step_number,
+             step.step_count,
+             region->name);
+    return 1;
+}
+
+static void start_guided_review(StandaloneApp *app)
+{
+    if (!app) return;
+    if (select_guided_review_region(app, 1)) {
+        app->guided_review_visible = 1;
+    }
+}
+
 static void update_render_performance_average(StandaloneApp *app)
 {
     if (!app) return;
@@ -4169,6 +4253,18 @@ static void draw_ai_assist_panel(StandaloneApp *app)
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("Runs auto-enhance, ASD discovery, cinematic mode, region overlay, and callouts using local explainable heuristics.");
     }
+    if (ImGui::Button("Start Guided Review")) {
+        start_guided_review(app);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Prev Region")) {
+        if (select_guided_review_region(app, -1)) app->guided_review_visible = 1;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Next Region")) {
+        if (select_guided_review_region(app, 1)) app->guided_review_visible = 1;
+    }
+    ImGui::TextWrapped("Guided Review: %s", app->guided_review_status);
     ImGui::SliderInt("ASD Max Regions", &app->semantic_max_regions, 1, MAX_ANNOTATIONS);
     ImGui::SliderFloat("ASD Sensitivity", &app->semantic_sensitivity, 0.0f, 1.0f);
     ImGui::InputInt("ASD Min Voxels", &app->semantic_min_region_voxels);
@@ -4883,6 +4979,82 @@ static void draw_status_bar(StandaloneApp *app)
 }
 
 
+static void draw_guided_review_overlay(StandaloneApp *app)
+{
+    const ImGuiViewport *viewport;
+    ImGuiWindowFlags flags =
+        ImGuiWindowFlags_NoCollapse |
+        ImGuiWindowFlags_AlwaysAutoResize |
+        ImGuiWindowFlags_NoSavedSettings;
+    VoxelPilotSemanticRegion *region;
+    const char *note = NULL;
+
+    if (!app || !app->guided_review_visible) {
+        return;
+    }
+
+    if (app->guided_review_step.region_index < 0 ||
+        app->guided_review_step.region_index >= app->semantic_region_count) {
+        if (!select_guided_review_region(app, 1)) {
+            app->guided_review_visible = 0;
+            return;
+        }
+    }
+
+    region = &app->semantic_regions[app->guided_review_step.region_index];
+    note = semantic_relationship_note(app, region->label_id);
+    viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowBgAlpha(0.94f);
+    ImGui::SetNextWindowPos(
+        ImVec2(viewport->Pos.x + viewport->Size.x - 456.0f,
+               viewport->Pos.y + 92.0f),
+        ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(430.0f, 0.0f), ImGuiCond_Always);
+
+    {
+        bool review_visible = app->guided_review_visible != 0;
+        ImGui::Begin("Guided Review", &review_visible, flags);
+        app->guided_review_visible = review_visible ? 1 : 0;
+    }
+    ImGui::TextColored(ImVec4(0.40f, 0.88f, 0.78f, 1.0f),
+                       "%s", app->guided_review_step.title);
+    ImGui::Separator();
+    ImGui::TextWrapped("%s", app->guided_review_step.cue);
+    ImGui::Spacing();
+    ImGui::Text("Archetype: %s", region->archetype[0] ? region->archetype : "unclassified");
+    ImGui::Text("Confidence: %.0f%% | Stability: %.0f%% | Importance: %.0f%%",
+                region->confidence * 100.0f,
+                region->stability_score * 100.0f,
+                region->importance_score * 100.0f);
+    ImGui::Text("Centroid slices: X %.3f | Y %.3f | Z %.3f",
+                app->slice_x,
+                app->slice_y,
+                app->slice_z);
+    if (note && note[0]) {
+        ImGui::TextWrapped("Relationship: %s", note);
+    }
+    ImGui::TextWrapped("Description: %s", region->description);
+    ImGui::Separator();
+    ImGui::TextWrapped("Review mode keeps the CUDA renderer intact: it only changes the selected region, slice focus, callout focus, and label glow.");
+
+    if (ImGui::Button("Previous Region")) {
+        select_guided_review_region(app, -1);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Next Region")) {
+        select_guided_review_region(app, 1);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Finish Review")) {
+        app->guided_review_visible = 0;
+        app->semantic_callout_selected_only = 0;
+        if (app->semantic_callout_top_regions < 3) app->semantic_callout_top_regions = 3;
+        snprintf(app->guided_review_status, sizeof(app->guided_review_status),
+                 "Guided Review finished. Region overlays remain available for manual review.");
+    }
+    ImGui::End();
+}
+
 static void draw_cinematic_semantic_callouts(StandaloneApp *app)
 {
     ImGuiViewport *viewport;
@@ -5028,6 +5200,7 @@ static void draw_gui(StandaloneApp *app)
     draw_metadata_panel(app);
     draw_about_panel(app);
     draw_walkthrough_overlay(app);
+    draw_guided_review_overlay(app);
     draw_status_bar(app);
     update_main_render_hover_pick(app);
     draw_main_render_hover_tooltip(app);
@@ -5311,6 +5484,9 @@ int main(int argc, char **argv)
     app.demo_mode_enabled = 1;
     app.walkthrough_visible = 0;
     app.walkthrough_step = 0;
+    app.guided_review_visible = 0;
+    memset(&app.guided_review_step, 0, sizeof(app.guided_review_step));
+    strcpy(app.guided_review_status, "Run Semantic Demo or Discover Regions, then start Guided Review.");
     app.splash_visible = 1;
     app.splash_start_time = 0.0;
     app.splash_status_index = 0;

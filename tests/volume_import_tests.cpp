@@ -1566,6 +1566,133 @@ static int test_asd_ranks_regions_and_reports_relationships(void)
 }
 
 
+static void seed_guided_review_region(
+    VoxelPilotSemanticRegion *region,
+    unsigned char label_id,
+    int importance_rank,
+    int rejected,
+    const char *name)
+{
+    memset(region, 0, sizeof(*region));
+    region->label_id = label_id;
+    region->importance_rank = importance_rank;
+    region->rejected = rejected;
+    region->confidence = 0.70f;
+    region->stability_score = 0.80f;
+    region->importance_score = 0.60f;
+    region->centroid[0] = 8.0f * (float)label_id;
+    region->centroid[1] = 4.0f * (float)label_id;
+    region->centroid[2] = 2.0f * (float)label_id;
+    snprintf(region->name, sizeof(region->name), "%s", name);
+    snprintf(region->archetype, sizeof(region->archetype), "blob");
+    snprintf(region->description, sizeof(region->description), "Synthetic guided review region.");
+}
+
+static int test_guided_review_selects_top_ranked_region(void)
+{
+    VoxelPilotSemanticRegion regions[3];
+    VoxelPilotGuidedReviewStep step;
+
+    seed_guided_review_region(&regions[0], 1, 3, 0, "third ranked");
+    seed_guided_review_region(&regions[1], 2, 1, 0, "first ranked");
+    seed_guided_review_region(&regions[2], 3, 2, 0, "second ranked");
+
+    if (!expect_true(
+            voxelpilot_guided_review_select_region(
+                regions,
+                3,
+                -1,
+                1,
+                &step) == 1,
+            "guided review should select a first region when none is active")) {
+        return 0;
+    }
+
+    if (!expect_true(
+            step.region_index == 1 &&
+            step.label_id == 2 &&
+            step.step_number == 1 &&
+            step.step_count == 3,
+            "guided review should start with the top importance-ranked region")) {
+        return 0;
+    }
+
+    return expect_true(
+        strstr(step.title, "first ranked") != NULL,
+        "guided review step should include the selected region name");
+}
+
+static int test_guided_review_skips_rejected_regions(void)
+{
+    VoxelPilotSemanticRegion regions[3];
+    VoxelPilotGuidedReviewStep step;
+
+    seed_guided_review_region(&regions[0], 1, 1, 1, "rejected top");
+    seed_guided_review_region(&regions[1], 2, 2, 0, "reviewable second");
+    seed_guided_review_region(&regions[2], 3, 3, 0, "reviewable third");
+
+    if (!expect_true(
+            voxelpilot_guided_review_select_region(
+                regions,
+                3,
+                -1,
+                1,
+                &step) == 1,
+            "guided review should find a reviewable region after rejected entries")) {
+        return 0;
+    }
+
+    return expect_true(
+        step.region_index == 1 &&
+        step.label_id == 2 &&
+        step.step_count == 2,
+        "guided review should skip rejected regions and count only reviewable regions");
+}
+
+static int test_guided_review_wraps_through_reviewable_regions(void)
+{
+    VoxelPilotSemanticRegion regions[3];
+    VoxelPilotGuidedReviewStep step;
+
+    seed_guided_review_region(&regions[0], 1, 1, 0, "first ranked");
+    seed_guided_review_region(&regions[1], 2, 2, 0, "second ranked");
+    seed_guided_review_region(&regions[2], 3, 3, 0, "third ranked");
+
+    if (!expect_true(
+            voxelpilot_guided_review_select_region(
+                regions,
+                3,
+                2,
+                1,
+                &step) == 1,
+            "guided review should wrap forward after the final region")) {
+        return 0;
+    }
+
+    if (!expect_true(
+            step.region_index == 0 &&
+            step.step_number == 1,
+            "guided review should wrap forward to the top-ranked region")) {
+        return 0;
+    }
+
+    if (!expect_true(
+            voxelpilot_guided_review_select_region(
+                regions,
+                3,
+                0,
+                -1,
+                &step) == 1,
+            "guided review should wrap backward before the first region")) {
+        return 0;
+    }
+
+    return expect_true(
+        step.region_index == 2 &&
+        step.step_number == 3,
+        "guided review should wrap backward to the last-ranked region");
+}
+
 static int test_asd_correction_memory_confirms_matching_region(void)
 {
     VoxelPilotSemanticRegion region;
@@ -1765,6 +1892,9 @@ int main(void)
     passed &= test_asd_discovers_high_density_connected_region();
     passed &= test_asd_assigns_archetype_stability_and_importance();
     passed &= test_asd_ranks_regions_and_reports_relationships();
+    passed &= test_guided_review_selects_top_ranked_region();
+    passed &= test_guided_review_skips_rejected_regions();
+    passed &= test_guided_review_wraps_through_reviewable_regions();
     passed &= test_asd_correction_memory_confirms_matching_region();
     passed &= test_asd_correction_memory_rejects_matching_region();
     passed &= test_callout_projection_centers_visible_point();
