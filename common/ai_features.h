@@ -75,6 +75,29 @@ typedef struct {
     char  explanation[256];
 } VoxelPilotTransferAdvisorResult;
 
+#define VOXELPILOT_DATASET_HEALTH_OK        0
+#define VOXELPILOT_DATASET_HEALTH_WATCH     1
+#define VOXELPILOT_DATASET_HEALTH_ATTENTION 2
+
+#define VOXELPILOT_DATASET_HEALTH_TINY_VOLUME         0x01
+#define VOXELPILOT_DATASET_HEALTH_FLAT_RANGE          0x02
+#define VOXELPILOT_DATASET_HEALTH_BACKGROUND_DOMINANT 0x04
+#define VOXELPILOT_DATASET_HEALTH_LOW_CONTRAST        0x08
+#define VOXELPILOT_DATASET_HEALTH_LARGE_VOLUME        0x10
+
+typedef struct {
+    int    level;
+    int    flags;
+    float  score;
+    float  background_ratio;
+    float  active_bin_ratio;
+    float  dynamic_range;
+    size_t voxel_count;
+    size_t estimated_bytes;
+    char   summary[256];
+    char   recommendation[256];
+} VoxelPilotDatasetHealthResult;
+
 typedef struct {
     int visible;
     int resident_candidates;
@@ -302,6 +325,147 @@ static inline int voxelpilot_compute_auto_enhance_transfer(
     *out_center = voxelpilot_ai_clampf(center, 0.0f, 1.0f);
     *out_width = voxelpilot_ai_clampf(width, 0.05f, 1.0f);
     *out_opacity_scale = voxelpilot_ai_clampf(opacity_scale, 1.0f, 3.0f);
+    return 1;
+}
+
+static inline int voxelpilot_compute_dataset_health(
+    const float                   *histogram,
+    int                            bin_count,
+    int                            width,
+    int                            height,
+    int                            depth,
+    float                          value_min,
+    float                          value_max,
+    size_t                         estimated_bytes,
+    VoxelPilotDatasetHealthResult *health)
+{
+    float total = 0.0f;
+    float background_ratio = 0.0f;
+    float active_bin_ratio = 0.0f;
+    float dynamic_range;
+    float score = 100.0f;
+    int nonzero_bins = 0;
+    int bin_index;
+    size_t voxel_count;
+
+    if (!histogram || bin_count < 2 || width < 1 || height < 1 || depth < 1 || !health) {
+        return 0;
+    }
+
+    memset(health, 0, sizeof(*health));
+    voxel_count = (size_t)width * (size_t)height * (size_t)depth;
+    dynamic_range = value_max - value_min;
+    if (dynamic_range < 0.0f) dynamic_range = -dynamic_range;
+    if (estimated_bytes == 0) {
+        estimated_bytes = voxel_count * sizeof(float);
+    }
+
+    for (bin_index = 0; bin_index < bin_count; ++bin_index) {
+        float count = histogram[bin_index] > 0.0f ? histogram[bin_index] : 0.0f;
+        if (count <= 0.0f) continue;
+        total += count;
+        nonzero_bins++;
+    }
+
+    if (total <= 0.0f) {
+        health->level = VOXELPILOT_DATASET_HEALTH_ATTENTION;
+        health->flags = VOXELPILOT_DATASET_HEALTH_FLAT_RANGE;
+        health->score = 0.0f;
+        health->voxel_count = voxel_count;
+        health->estimated_bytes = estimated_bytes;
+        health->dynamic_range = dynamic_range;
+        snprintf(health->summary, sizeof(health->summary),
+                 "Dataset histogram is empty, so VoxelPilot cannot assess visibility yet.");
+        snprintf(health->recommendation, sizeof(health->recommendation),
+                 "Reload the volume or verify width, height, depth, and data type before running AI review.");
+        return 1;
+    }
+
+    background_ratio = histogram[0] > 0.0f ? histogram[0] / total : 0.0f;
+    active_bin_ratio = (float)nonzero_bins / (float)bin_count;
+
+    health->level = VOXELPILOT_DATASET_HEALTH_OK;
+    health->voxel_count = voxel_count;
+    health->estimated_bytes = estimated_bytes;
+    health->background_ratio = background_ratio;
+    health->active_bin_ratio = active_bin_ratio;
+    health->dynamic_range = dynamic_range;
+
+    if (voxel_count < (size_t)64 * 64 * 32) {
+        health->flags |= VOXELPILOT_DATASET_HEALTH_TINY_VOLUME;
+        score -= 15.0f;
+    }
+
+    if (dynamic_range < 1.0e-5f || nonzero_bins <= 1) {
+        health->flags |= VOXELPILOT_DATASET_HEALTH_FLAT_RANGE;
+        score -= 70.0f;
+    } else if (dynamic_range < 0.04f || active_bin_ratio < 0.10f) {
+        health->flags |= VOXELPILOT_DATASET_HEALTH_LOW_CONTRAST;
+        score -= 20.0f;
+    }
+
+    if (background_ratio > 0.75f) {
+        health->flags |= VOXELPILOT_DATASET_HEALTH_BACKGROUND_DOMINANT;
+        score -= background_ratio > 0.90f ? 35.0f : 22.0f;
+    }
+
+    if (estimated_bytes > (size_t)768 * 1024 * 1024 ||
+        voxel_count > (size_t)512 * 512 * 384) {
+        health->flags |= VOXELPILOT_DATASET_HEALTH_LARGE_VOLUME;
+        score -= 15.0f;
+    }
+
+    health->score = voxelpilot_ai_clampf(score, 0.0f, 100.0f);
+
+    if ((health->flags & VOXELPILOT_DATASET_HEALTH_FLAT_RANGE) ||
+        background_ratio > 0.88f) {
+        health->level = VOXELPILOT_DATASET_HEALTH_ATTENTION;
+    } else if (health->flags != 0) {
+        health->level = VOXELPILOT_DATASET_HEALTH_WATCH;
+    }
+
+    if (health->flags & VOXELPILOT_DATASET_HEALTH_FLAT_RANGE) {
+        snprintf(health->summary, sizeof(health->summary),
+                 "Attention: dataset appears flat or constant with %.6f dynamic range and %d active histogram bin(s).",
+                 dynamic_range,
+                 nonzero_bins);
+        snprintf(health->recommendation, sizeof(health->recommendation),
+                 "Verify import dimensions/data type; a constant volume cannot support meaningful rendering, ASD, or Guided Review.");
+    } else if (health->flags & VOXELPILOT_DATASET_HEALTH_BACKGROUND_DOMINANT) {
+        snprintf(health->summary, sizeof(health->summary),
+                 "Attention: %.1f%% of samples sit in the background bin, so the object may import too dark or sparse.",
+                 background_ratio * 100.0f);
+        snprintf(health->recommendation, sizeof(health->recommendation),
+                 "Use AI Transfer Advisor or Auto Enhance View before ASD/Guided Review; keep rendering quality unchanged until visibility improves.");
+    } else if (health->flags & VOXELPILOT_DATASET_HEALTH_LARGE_VOLUME) {
+        snprintf(health->summary, sizeof(health->summary),
+                 "Watch: dataset working set is %.1f MB with %.1f%% active histogram bins.",
+                 (double)estimated_bytes / (1024.0 * 1024.0),
+                 active_bin_ratio * 100.0f);
+        snprintf(health->recommendation, sizeof(health->recommendation),
+                 "Check Performance Safety before optional AI passes; keep callouts bounded and use brick telemetry for large volumes.");
+    } else if (health->flags & VOXELPILOT_DATASET_HEALTH_LOW_CONTRAST) {
+        snprintf(health->summary, sizeof(health->summary),
+                 "Watch: dataset has narrow contrast with %.1f%% active histogram bins.",
+                 active_bin_ratio * 100.0f);
+        snprintf(health->recommendation, sizeof(health->recommendation),
+                 "Use AI Transfer Advisor to widen visibility before region discovery.");
+    } else if (health->flags & VOXELPILOT_DATASET_HEALTH_TINY_VOLUME) {
+        snprintf(health->summary, sizeof(health->summary),
+                 "Watch: tiny dataset has %zu voxels; rendering is valid but semantic detail may be limited.",
+                 voxel_count);
+        snprintf(health->recommendation, sizeof(health->recommendation),
+                 "Use it for UI/report testing; semantic discovery and Guided Review are stronger on larger volumes.");
+    } else {
+        snprintf(health->summary, sizeof(health->summary),
+                 "healthy dataset: %zu voxels, %.1f%% active histogram bins, and %.3f dynamic range.",
+                 voxel_count,
+                 active_bin_ratio * 100.0f,
+                 dynamic_range);
+        snprintf(health->recommendation, sizeof(health->recommendation),
+                 "Proceed with AI Transfer Advisor, ASD-Lite, and Guided Review as needed.");
+    }
+
     return 1;
 }
 

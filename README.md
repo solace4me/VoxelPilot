@@ -117,6 +117,7 @@ Generate an opt-in Cinematic Lite snapshot without changing the default renderer
 - Try `Front` and `Isometric`, then orbit and zoom in the main viewport.
 - Adjust `Sagittal X`, `Coronal Y`, and `Axial Z` in `Insights` for slice review.
 - Click `Run Semantic Demo` in `AI Assist` for a one-click local AI review: auto-enhanced transfer, object summary, ASD-Lite discovery, cinematic mode, label overlay, and callouts.
+- Check `Dataset Health Check` in `AI Assist`; it explains whether the import is healthy, tiny, flat, background-dominant, low-contrast, or large enough to need caution.
 - Check `Performance Safety` in `AI Assist`; it explains whether the current dataset is healthy, watch-level, pressure-level, or critical without silently changing render quality.
 - Review `AI Transfer Advisor`; it explains whether the current histogram needs brighter opacity, a high-density focus window, or no transfer change, then applies settings only when clicked.
 - Click `Analyze Loaded Volume` in `AI Assist` to generate a local material/object summary if you want to run the steps manually.
@@ -169,6 +170,7 @@ Useful docs inside it:
 - Quantitative metrics reuse the existing histogram and annotation metadata, so they avoid extra volume-wide GPU passes.
 - `GPU Quality Preset` keeps the core CUDA renderer intact: `Balanced GPU` is the default, `Quality GPU` uses finer ray steps, and `Interactive GPU` is available for very heavy laptops/datasets.
 - `Auto Enhance View` only changes transfer-window and opacity parameters; it does not downsample the viewport or replace the CUDA renderer.
+- `Dataset Health Check` reuses the active histogram and dimensions to explain import/readability risks; it does not scan the volume again or change renderer settings.
 - `AI Transfer Advisor` previews histogram-derived transfer recommendations and waits for a user click before changing center, width, or opacity.
 - `Cinematic Mode` is off by default; when enabled, it uses a single CUDA raymarch styling branch with bounded rim, glow, and contrast controls.
 - `Cinematic Callouts` are an ImGui foreground overlay fed by ASD metadata; they add no CUDA kernels, model inference, or extra volume scan.
@@ -189,7 +191,7 @@ Phase 2D adds cinematic ASD callouts. The overlay projects selected/top region c
 
 ## AI Concept Note
 
-VoxelPilot currently uses local, explainable heuristic AI rather than a cloud model or trained neural network. The AI Assist workflow combines a flexible local intent parser, histogram/material heuristics, GPU transfer-function tuning, ray-based 3D hover picking, Adaptive Semantic Discovery, flood-fill segmentation, and human-confirmed annotations. Prompts are not limited to one hardcoded list: users can type intent-style requests such as `make it brighter`, `show bone`, `hide below 0.3`, `switch to quality GPU rendering`, or `reset view`, and VoxelPilot maps them to safe local actions. The AI Transfer Advisor adds an explainable recommendation layer: it says why a volume appears background-dominant, high-density, or already balanced before the user applies any settings. This makes the demo transparent and offline-friendly while leaving a clean path for future model-backed 3D segmentation with ONNX, MONAI, or SAM-style medical models.
+VoxelPilot currently uses local, explainable heuristic AI rather than a cloud model or trained neural network. The AI Assist workflow combines a flexible local intent parser, histogram/material heuristics, dataset health diagnostics, GPU transfer-function tuning, ray-based 3D hover picking, Adaptive Semantic Discovery, flood-fill segmentation, and human-confirmed annotations. Prompts are not limited to one hardcoded list: users can type intent-style requests such as `make it brighter`, `show bone`, `hide below 0.3`, `switch to quality GPU rendering`, or `reset view`, and VoxelPilot maps them to safe local actions. The AI Transfer Advisor adds an explainable recommendation layer: it says why a volume appears background-dominant, high-density, or already balanced before the user applies any settings. This makes the demo transparent and offline-friendly while leaving a clean path for future model-backed 3D segmentation with ONNX, MONAI, or SAM-style medical models.
 
 
 ## Additional Test Dataset

@@ -160,6 +160,9 @@ typedef struct {
     float         hist_max_value;
     float         hist_peak_count;
     int           histogram_ready;
+    VoxelPilotDatasetHealthResult dataset_health;
+    int           dataset_health_ready;
+    char          dataset_health_status[512];
     float         ai_focus_slice;
     float         ai_focus_score;
     char          ai_assist_status[256];
@@ -635,6 +638,57 @@ static void update_histogram(StandaloneApp *app)
     app->histogram_ready = 1;
 }
 
+static const char *dataset_health_level_label(int level)
+{
+    if (level == VOXELPILOT_DATASET_HEALTH_ATTENTION) return "Attention";
+    if (level == VOXELPILOT_DATASET_HEALTH_WATCH) return "Watch";
+    return "Healthy";
+}
+
+static void update_dataset_health(StandaloneApp *app)
+{
+    size_t estimated_bytes;
+
+    if (!app || !app->histogram_ready || app->renderer.W < 1 ||
+        app->renderer.H < 1 || app->renderer.D < 1) {
+        if (app) {
+            app->dataset_health_ready = 0;
+            snprintf(app->dataset_health_status,
+                     sizeof(app->dataset_health_status),
+                     "Dataset Health needs a loaded volume histogram.");
+        }
+        return;
+    }
+
+    estimated_bytes = (size_t)app->renderer.W *
+                      (size_t)app->renderer.H *
+                      (size_t)app->renderer.D * sizeof(float);
+    if (!voxelpilot_compute_dataset_health(
+            app->histogram,
+            HISTOGRAM_BINS,
+            app->renderer.W,
+            app->renderer.H,
+            app->renderer.D,
+            app->hist_min_value,
+            app->hist_max_value,
+            estimated_bytes,
+            &app->dataset_health)) {
+        app->dataset_health_ready = 0;
+        snprintf(app->dataset_health_status,
+                 sizeof(app->dataset_health_status),
+                 "Dataset Health could not summarize this volume.");
+        return;
+    }
+
+    app->dataset_health_ready = 1;
+    snprintf(app->dataset_health_status,
+             sizeof(app->dataset_health_status),
+             "%s (%.0f/100): %s",
+             dataset_health_level_label(app->dataset_health.level),
+             app->dataset_health.score,
+             app->dataset_health.summary);
+}
+
 static float measurement_distance(const StandaloneApp *app)
 {
     float dx = (app->measure_b[0] - app->measure_a[0]) * (float)app->renderer.W;
@@ -846,6 +900,10 @@ static void reset_workspace(StandaloneApp *app)
     snprintf(app->quant_metrics_status,
              sizeof(app->quant_metrics_status),
              "Click Refresh Quant Metrics to summarize the active volume.");
+    app->dataset_health_ready = 0;
+    memset(&app->dataset_health, 0, sizeof(app->dataset_health));
+    snprintf(app->dataset_health_status, sizeof(app->dataset_health_status),
+             "Dataset Health needs a loaded volume histogram.");
     snprintf(app->report_status, sizeof(app->report_status),
              "No report exported yet.");
     snprintf(app->report_path, sizeof(app->report_path),
@@ -2999,6 +3057,7 @@ static void draw_controls_panel(StandaloneApp *app)
                 (int)spec.height,
                 (int)spec.depth);
             update_histogram(app);
+            update_dataset_health(app);
             apply_auto_enhance_on_load_if_safe(app, "Loaded volume");
             app->slice_preview_dirty = 1;
             free(app->label_mask);
@@ -4088,6 +4147,29 @@ static void draw_ai_assist_panel(StandaloneApp *app)
                     app->hist_max_value);
     }
 
+    ImGui::Separator();
+    ImGui::Text("Dataset Health Check");
+    ImGui::TextWrapped("Local diagnostic: checks dimensions, histogram shape, dynamic range, and working-set size before optional AI review.");
+    if (has_volume && app->histogram_ready && !app->dataset_health_ready) {
+        update_dataset_health(app);
+    }
+    if (ImGui::Button("Refresh Health Check")) {
+        update_dataset_health(app);
+    }
+    if (app->dataset_health_ready) {
+        ImGui::Text("Level: %s | Score: %.0f/100",
+                    dataset_health_level_label(app->dataset_health.level),
+                    app->dataset_health.score);
+        ImGui::TextWrapped("Summary: %s", app->dataset_health.summary);
+        ImGui::TextWrapped("Recommendation: %s", app->dataset_health.recommendation);
+        ImGui::Text("Background: %.1f%% | Active bins: %.1f%% | Range: %.4f",
+                    app->dataset_health.background_ratio * 100.0f,
+                    app->dataset_health.active_bin_ratio * 100.0f,
+                    app->dataset_health.dynamic_range);
+    } else {
+        ImGui::TextWrapped("%s", app->dataset_health_status);
+    }
+
     draw_performance_safety_block(app);
 
     ImGui::Separator();
@@ -4497,6 +4579,14 @@ static void draw_metadata_panel(StandaloneApp *app)
                 app->voxel_spacing[2]);
     ImGui::Text("Transfer Palette: %s", k_tf_palette_labels[app->tf_palette]);
     ImGui::Text("Clipping State: %s", clipping_is_active(app) ? "Active" : "Full Volume");
+    if (app->dataset_health_ready) {
+        ImGui::Text("Health: %s %.0f/100",
+                    dataset_health_level_label(app->dataset_health.level),
+                    app->dataset_health.score);
+        ImGui::TextWrapped("Health summary: %s", app->dataset_health.summary);
+    } else {
+        ImGui::TextWrapped("Health summary: %s", app->dataset_health_status);
+    }
     ImGui::TextWrapped("Dataset status: %s", app->upload_status);
     ImGui::End();
 }
@@ -5524,6 +5614,9 @@ int main(int argc, char **argv)
     strcpy(app.screenshot_path, "volume_snapshot.png");
     strcpy(app.preset_status, "No preset loaded");
     strcpy(app.preset_path, "workspace.vpilot");
+    memset(&app.dataset_health, 0, sizeof(app.dataset_health));
+    app.dataset_health_ready = 0;
+    strcpy(app.dataset_health_status, "Dataset Health needs a loaded volume histogram.");
     app.ai_focus_slice = 0.5f;
     app.ai_focus_score = 0.0f;
     strcpy(app.ai_prompt, "show high-density shell");
@@ -5616,6 +5709,7 @@ int main(int argc, char **argv)
             (int)startup_spec.height,
             (int)startup_spec.depth);
         update_histogram(&app);
+        update_dataset_health(&app);
         apply_auto_enhance_on_load_if_safe(&app, "Startup volume");
         app.slice_preview_dirty = 1;
         free(app.label_mask);
@@ -5636,6 +5730,7 @@ int main(int argc, char **argv)
         startup_volume_data = NULL;
     } else {
         update_histogram(&app);
+        update_dataset_health(&app);
         if (volume_path && startup_error[0]) {
             snprintf(app.upload_status,
                      sizeof(app.upload_status),

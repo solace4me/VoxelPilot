@@ -653,6 +653,182 @@ static int test_auto_enhance_transfer_boosts_sparse_visible_histograms(void)
         "auto-enhance helper should boost opacity for sparse visible samples");
 }
 
+static int test_dataset_health_warns_for_tiny_volume(void)
+{
+    float histogram[8] = { 0.0f };
+    VoxelPilotDatasetHealthResult health;
+
+    histogram[1] = 10.0f;
+    histogram[2] = 20.0f;
+    histogram[3] = 10.0f;
+
+    if (!expect_true(
+            voxelpilot_compute_dataset_health(
+                histogram,
+                8,
+                33,
+                41,
+                25,
+                0.0f,
+                1.0f,
+                (size_t)33 * 41 * 25,
+                &health) == 1,
+            "dataset health should accept a tiny populated volume")) {
+        return 0;
+    }
+
+    if (!expect_true(
+            health.level == VOXELPILOT_DATASET_HEALTH_WATCH &&
+            (health.flags & VOXELPILOT_DATASET_HEALTH_TINY_VOLUME) != 0,
+            "tiny app-ready datasets should produce a watch warning, not a failure")) {
+        return 0;
+    }
+
+    return expect_true(
+        strstr(health.recommendation, "semantic") != NULL,
+        "tiny dataset health should explain semantic-review limitations");
+}
+
+static int test_dataset_health_flags_flat_histogram(void)
+{
+    float histogram[8] = { 0.0f };
+    VoxelPilotDatasetHealthResult health;
+
+    histogram[0] = 1024.0f;
+
+    if (!expect_true(
+            voxelpilot_compute_dataset_health(
+                histogram,
+                8,
+                128,
+                128,
+                64,
+                0.42f,
+                0.42f,
+                (size_t)128 * 128 * 64,
+                &health) == 1,
+            "dataset health should summarize flat histograms")) {
+        return 0;
+    }
+
+    if (!expect_true(
+            health.level == VOXELPILOT_DATASET_HEALTH_ATTENTION &&
+            (health.flags & VOXELPILOT_DATASET_HEALTH_FLAT_RANGE) != 0,
+            "flat histograms should require attention")) {
+        return 0;
+    }
+
+    return expect_true(
+        strstr(health.summary, "flat") != NULL || strstr(health.summary, "constant") != NULL,
+        "flat dataset health should explain the constant-value issue");
+}
+
+static int test_dataset_health_flags_background_dominant_import(void)
+{
+    float histogram[16] = { 0.0f };
+    VoxelPilotDatasetHealthResult health;
+
+    histogram[0] = 9000.0f;
+    histogram[3] = 450.0f;
+    histogram[5] = 100.0f;
+    histogram[9] = 50.0f;
+
+    if (!expect_true(
+            voxelpilot_compute_dataset_health(
+                histogram,
+                16,
+                256,
+                256,
+                128,
+                0.0f,
+                1.0f,
+                (size_t)256 * 256 * 128,
+                &health) == 1,
+            "dataset health should summarize background-dominant imports")) {
+        return 0;
+    }
+
+    if (!expect_true(
+            health.level == VOXELPILOT_DATASET_HEALTH_ATTENTION &&
+            (health.flags & VOXELPILOT_DATASET_HEALTH_BACKGROUND_DOMINANT) != 0,
+            "background-dominant imports should request attention")) {
+        return 0;
+    }
+
+    return expect_true(
+        strstr(health.recommendation, "Transfer Advisor") != NULL,
+        "background-dominant health should point users to the transfer advisor");
+}
+
+static int test_dataset_health_warns_for_large_working_set(void)
+{
+    float histogram[16] = { 0.0f };
+    VoxelPilotDatasetHealthResult health;
+    int bin_index;
+
+    for (bin_index = 2; bin_index < 14; ++bin_index) {
+        histogram[bin_index] = 100.0f;
+    }
+
+    if (!expect_true(
+            voxelpilot_compute_dataset_health(
+                histogram,
+                16,
+                768,
+                768,
+                512,
+                0.0f,
+                1.0f,
+                (size_t)768 * 768 * 512 * sizeof(float),
+                &health) == 1,
+            "dataset health should summarize large working sets")) {
+        return 0;
+    }
+
+    return expect_true(
+        health.level == VOXELPILOT_DATASET_HEALTH_WATCH &&
+        (health.flags & VOXELPILOT_DATASET_HEALTH_LARGE_VOLUME) != 0 &&
+        strstr(health.recommendation, "Performance Safety") != NULL,
+        "large working sets should warn through Performance Safety guidance");
+}
+
+static int test_dataset_health_preserves_healthy_foot_sized_volume(void)
+{
+    float histogram[32] = { 0.0f };
+    VoxelPilotDatasetHealthResult health;
+    int bin_index;
+
+    for (bin_index = 4; bin_index <= 24; ++bin_index) {
+        histogram[bin_index] = 800.0f + (float)(bin_index % 5) * 40.0f;
+    }
+
+    if (!expect_true(
+            voxelpilot_compute_dataset_health(
+                histogram,
+                32,
+                256,
+                256,
+                256,
+                0.0f,
+                1.0f,
+                (size_t)256 * 256 * 256,
+                &health) == 1,
+            "dataset health should accept healthy foot-sized volumes")) {
+        return 0;
+    }
+
+    if (!expect_true(
+            health.level == VOXELPILOT_DATASET_HEALTH_OK &&
+            health.flags == 0,
+            "healthy 256^3 volumes should not be degraded by the health check")) {
+        return 0;
+    }
+
+    return expect_true(
+        health.score >= 85.0f && strstr(health.summary, "healthy") != NULL,
+        "healthy dataset health should report a high confidence score");
+}
+
 static int test_transfer_advisor_recommends_dark_sparse_enhancement(void)
 {
     float histogram[16] = { 0.0f };
@@ -1867,6 +2043,11 @@ int main(void)
     passed &= test_prompt_reset_uses_visible_default_opacity();
     passed &= test_prompt_parser_recognizes_visibility_and_quality_intents();
     passed &= test_auto_enhance_transfer_boosts_sparse_visible_histograms();
+    passed &= test_dataset_health_warns_for_tiny_volume();
+    passed &= test_dataset_health_flags_flat_histogram();
+    passed &= test_dataset_health_flags_background_dominant_import();
+    passed &= test_dataset_health_warns_for_large_working_set();
+    passed &= test_dataset_health_preserves_healthy_foot_sized_volume();
     passed &= test_transfer_advisor_recommends_dark_sparse_enhancement();
     passed &= test_transfer_advisor_recommends_high_density_shell();
     passed &= test_transfer_advisor_keeps_balanced_volume_stable();
