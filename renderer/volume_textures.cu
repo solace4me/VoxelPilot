@@ -12,14 +12,16 @@
    Local CUDA Error Helper
    ============================================================ */
 
-static void check_cuda_tex(cudaError_t err, const char *msg)
+static int check_cuda_tex(cudaError_t err, const char *msg)
 {
-    if (err != cudaSuccess) {
-        fprintf(stderr,
-                "CUDA Error [volume_textures] at %s: %s\n",
-                msg, cudaGetErrorString(err));
-        exit(-1);
+    if (err == cudaSuccess) {
+        return 1;
     }
+    fprintf(stderr,
+            "CUDA Error [volume_textures] at %s: %s\n",
+            msg, cudaGetErrorString(err));
+    cudaGetLastError();
+    return 0;
 }
 
 
@@ -74,7 +76,7 @@ void release_volume_resources(VolumeResources *res)
    objects to device symbols used by the kernel.
    ============================================================ */
 
-void create_volume_and_gradient_textures(
+int create_volume_and_gradient_textures(
     const float     *volume_data,
     int              W,
     int              H,
@@ -87,15 +89,15 @@ void create_volume_and_gradient_textures(
     cudaMemcpy3DParms       copyParams;
     cudaResourceDesc        resDesc;
     cudaTextureDesc         texDesc;
-    float4                 *gradHost;
+    float4                 *gradHost = NULL;
     size_t                  voxels;
     int                     x, y, z;
 
     /* ---- Release any previously held resources ---- */
 
-    release_volume_resources(res);
+    if (!res || !volume_data || W < 1 || H < 1 || D < 1) return 0;
 
-    if (!res) return;
+    release_volume_resources(res);
 
     res->width  = W;
     res->height = H;
@@ -112,11 +114,14 @@ void create_volume_and_gradient_textures(
         32, 0, 0, 0,
         cudaChannelFormatKindFloat);
 
-    check_cuda_tex(
-        cudaMalloc3DArray(&res->volArray,
-                          &volChannelDesc,
-                          extent),
-        "cudaMalloc3DArray(volume)");
+    if (!check_cuda_tex(
+            cudaMalloc3DArray(&res->volArray,
+                              &volChannelDesc,
+                              extent),
+            "cudaMalloc3DArray(volume)")) {
+        release_volume_resources(res);
+        return 0;
+    }
 
     /* Copy volume data into 3D array */
 
@@ -132,9 +137,12 @@ void create_volume_and_gradient_textures(
     copyParams.extent   = extent;
     copyParams.kind     = cudaMemcpyHostToDevice;
 
-    check_cuda_tex(
-        cudaMemcpy3D(&copyParams),
-        "cudaMemcpy3D(volume)");
+    if (!check_cuda_tex(
+            cudaMemcpy3D(&copyParams),
+            "cudaMemcpy3D(volume)")) {
+        release_volume_resources(res);
+        return 0;
+    }
 
     /* Volume texture object
        normalizedCoords = 0 because kernel passes texel
@@ -153,12 +161,15 @@ void create_volume_and_gradient_textures(
     texDesc.readMode        = cudaReadModeElementType;
     texDesc.normalizedCoords = 0;
 
-    check_cuda_tex(
-        cudaCreateTextureObject(&res->volTex,
-                                &resDesc,
-                                &texDesc,
-                                NULL),
-        "cudaCreateTextureObject(volume)");
+    if (!check_cuda_tex(
+            cudaCreateTextureObject(&res->volTex,
+                                    &resDesc,
+                                    &texDesc,
+                                    NULL),
+            "cudaCreateTextureObject(volume)")) {
+        release_volume_resources(res);
+        return 0;
+    }
 
     /* ============================================================
        Compute Normalized Gradients on Host
@@ -172,7 +183,8 @@ void create_volume_and_gradient_textures(
         fprintf(stderr,
                 "Failed to allocate gradient buffer (%zu bytes)\n",
                 voxels * sizeof(float4));
-        exit(-1);
+        release_volume_resources(res);
+        return 0;
     }
 
     for (z = 0; z < D; ++z) {
@@ -200,12 +212,19 @@ void create_volume_and_gradient_textures(
                          - volume_data[zm * W * H + y  * W + x];
 
                 /* Normalize */
-                float len = sqrtf(gx*gx + gy*gy + gz*gz) + 1e-6f;
+                float len = sqrtf(gx*gx + gy*gy + gz*gz);
 
-                gradHost[idx].x = gx / len;
-                gradHost[idx].y = gy / len;
-                gradHost[idx].z = gz / len;
-                gradHost[idx].w = 0.0f;
+                if (len < 1e-6f) {
+                    gradHost[idx].x = 0.0f;
+                    gradHost[idx].y = 0.0f;
+                    gradHost[idx].z = 0.0f;
+                    gradHost[idx].w = 0.0f;
+                } else {
+                    gradHost[idx].x = gx / len;
+                    gradHost[idx].y = gy / len;
+                    gradHost[idx].z = gz / len;
+                    gradHost[idx].w = 0.0f;
+                }
             }
         }
     }
@@ -219,11 +238,15 @@ void create_volume_and_gradient_textures(
         32, 32, 32, 32,
         cudaChannelFormatKindFloat);
 
-    check_cuda_tex(
-        cudaMalloc3DArray(&res->gradArray,
-                          &gradChannelDesc,
-                          extent),
-        "cudaMalloc3DArray(gradient)");
+    if (!check_cuda_tex(
+            cudaMalloc3DArray(&res->gradArray,
+                              &gradChannelDesc,
+                              extent),
+            "cudaMalloc3DArray(gradient)")) {
+        free(gradHost);
+        release_volume_resources(res);
+        return 0;
+    }
 
     /* Copy gradient data into 3D array */
 
@@ -239,9 +262,13 @@ void create_volume_and_gradient_textures(
     copyParams.extent   = extent;
     copyParams.kind     = cudaMemcpyHostToDevice;
 
-    check_cuda_tex(
-        cudaMemcpy3D(&copyParams),
-        "cudaMemcpy3D(gradient)");
+    if (!check_cuda_tex(
+            cudaMemcpy3D(&copyParams),
+            "cudaMemcpy3D(gradient)")) {
+        free(gradHost);
+        release_volume_resources(res);
+        return 0;
+    }
 
     /* Gradient texture object (same settings as volume) */
 
@@ -257,12 +284,16 @@ void create_volume_and_gradient_textures(
     texDesc.readMode        = cudaReadModeElementType;
     texDesc.normalizedCoords = 0;
 
-    check_cuda_tex(
-        cudaCreateTextureObject(&res->gradTex,
-                                &resDesc,
-                                &texDesc,
-                                NULL),
-        "cudaCreateTextureObject(gradient)");
+    if (!check_cuda_tex(
+            cudaCreateTextureObject(&res->gradTex,
+                                    &resDesc,
+                                    &texDesc,
+                                    NULL),
+            "cudaCreateTextureObject(gradient)")) {
+        free(gradHost);
+        release_volume_resources(res);
+        return 0;
+    }
 
     /* ---- Free host gradient buffer ---- */
 
@@ -273,6 +304,7 @@ void create_volume_and_gradient_textures(
            (unsigned long long)res->volTex);
     printf("  Gradient tex obj: %llu\n",
            (unsigned long long)res->gradTex);
+    return 1;
 }
 
 #endif /* NO_CUDA */

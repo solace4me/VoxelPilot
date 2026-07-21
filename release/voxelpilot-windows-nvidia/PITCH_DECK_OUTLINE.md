@@ -36,7 +36,7 @@ Use this outline for a short slide deck when presenting the project.
 - Branded startup splash
 - Demo mode banner
 - One-click guided walkthrough
-- In-app Help and About panels
+- In-app walkthrough overlay and help cues
 - Packaged launcher and laptop-ready release folder
 
 ## Slide 6: What Makes It Stand Out

@@ -39,7 +39,7 @@ The result is a system that supports:
 - Workspace session save/load with `.vpilot` files
 - Branded startup splash
 - Demo mode banner and guided walkthrough overlay
-- In-app Help and About panels
+- In-app walkthrough overlay and help cues
 - Packaged Windows launcher and laptop-ready release kit
 
 ## What Makes It Stand Out
@@ -58,7 +58,7 @@ Measurement, clipping, transfer tuning, snapshots, and workspace presets make th
 
 ### 4. It is presentation-ready
 
-The splash screen, demo banner, guided walkthrough, launcher flow, help panel, about panel, and release package make the application easy to present live.
+The splash screen, demo banner, guided walkthrough, launcher flow, help cues, and release package make the application easy to present live.
 
 ### 5. It is built for local NVIDIA hardware
 

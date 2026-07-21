@@ -37,7 +37,7 @@ Then test in this order:
 3. Confirm the main window opens and stays open.
 4. Confirm the demo banner and guided walkthrough are available.
 5. Confirm the main render view updates.
-6. Confirm Controls, Insights, Metadata, Help, About, and Status are visible.
+6. Confirm Controls, Insights, Metadata, and Status are visible.
 
 ## First Functional Checks
 

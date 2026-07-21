@@ -55,6 +55,28 @@ typedef struct {
     char   primary_reason[VOXELPILOT_GOVERNOR_TEXT_MAX];
     char   recommendation[VOXELPILOT_GOVERNOR_TEXT_MAX];
 } VoxelPilotPerformanceResult;
+#define VOXELPILOT_ADAPTIVE_QUALITY_TEXT_MAX 192
+
+typedef struct {
+    int   enabled;
+    int   interaction_active;
+    int   cinematic_enabled;
+    float base_step_size;
+    float base_skip_mult;
+    float current_multiplier;
+    float render_ms_last;
+    float render_ms_average;
+} VoxelPilotAdaptiveQualityInputs;
+
+typedef struct {
+    int   active;
+    int   pressure;
+    int   recovering;
+    float multiplier;
+    float step_size;
+    float skip_mult;
+    char  status[VOXELPILOT_ADAPTIVE_QUALITY_TEXT_MAX];
+} VoxelPilotAdaptiveQualityResult;
 
 static inline const char *voxelpilot_governor_status_label(int status)
 {
@@ -86,6 +108,98 @@ static inline float voxelpilot_update_render_ms_average(
     return previous_average * 0.85f + latest_ms * 0.15f;
 }
 
+static inline void voxelpilot_adaptive_quality_inputs_defaults(
+    VoxelPilotAdaptiveQualityInputs *inputs)
+{
+    if (!inputs) return;
+    memset(inputs, 0, sizeof(*inputs));
+    inputs->enabled = 1;
+    inputs->base_step_size = 0.0020f;
+    inputs->base_skip_mult = 1.50f;
+    inputs->current_multiplier = 1.0f;
+}
+
+static inline int voxelpilot_update_adaptive_quality(
+    const VoxelPilotAdaptiveQualityInputs *inputs,
+    VoxelPilotAdaptiveQualityResult       *result)
+{
+    float base_step;
+    float base_skip;
+    float multiplier;
+    float next_multiplier;
+    float render_ms;
+
+    if (!inputs || !result) return 0;
+
+    memset(result, 0, sizeof(*result));
+    base_step = voxelpilot_ai_clampf(inputs->base_step_size, 0.0005f, 0.0100f);
+    base_skip = voxelpilot_ai_clampf(inputs->base_skip_mult, 1.0f, 8.0f);
+    multiplier = voxelpilot_ai_clampf(inputs->current_multiplier, 1.0f, 3.0f);
+    render_ms = inputs->render_ms_average > 0.0f
+                    ? inputs->render_ms_average
+                    : inputs->render_ms_last;
+    if (render_ms < 0.0f) render_ms = 0.0f;
+
+    if (!inputs->enabled) {
+        result->multiplier = 1.0f;
+        result->step_size = base_step;
+        result->skip_mult = base_skip;
+        snprintf(result->status, sizeof(result->status),
+                 "Adaptive quality disabled: using the selected GPU preset.");
+        return 1;
+    }
+
+    next_multiplier = multiplier;
+    if (render_ms > 140.0f) {
+        next_multiplier += 0.65f;
+        result->pressure = 1;
+    } else if (render_ms > 90.0f) {
+        next_multiplier += 0.50f;
+        result->pressure = 1;
+    } else if (inputs->interaction_active && render_ms > 55.0f) {
+        next_multiplier += 0.35f;
+        result->pressure = 1;
+    } else if (inputs->cinematic_enabled && render_ms > 50.0f) {
+        next_multiplier += 0.25f;
+        result->pressure = 1;
+    } else if (multiplier > 1.0f) {
+        if (render_ms < 30.0f) {
+            next_multiplier -= 0.12f;
+            result->recovering = 1;
+        } else if (!inputs->interaction_active && render_ms < 42.0f) {
+            next_multiplier -= 0.06f;
+            result->recovering = 1;
+        }
+    }
+
+    next_multiplier = voxelpilot_ai_clampf(next_multiplier, 1.0f, 3.0f);
+    result->multiplier = next_multiplier;
+    result->step_size = voxelpilot_ai_clampf(base_step * next_multiplier, base_step, 0.0100f);
+    result->skip_mult = voxelpilot_ai_clampf(base_skip + (next_multiplier - 1.0f) * 0.50f, base_skip, 8.0f);
+    result->active = next_multiplier > 1.0001f;
+
+    if (result->pressure) {
+        snprintf(result->status, sizeof(result->status),
+                 "Adaptive quality %.2fx: render average %.1f ms, using wider ray steps while %s.",
+                 next_multiplier,
+                 render_ms,
+                 inputs->interaction_active ? "navigating" : "under load");
+    } else if (result->recovering) {
+        snprintf(result->status, sizeof(result->status),
+                 "Adaptive quality %.2fx: frame time %.1f ms, gradually restoring detail.",
+                 next_multiplier,
+                 render_ms);
+    } else if (result->active) {
+        snprintf(result->status, sizeof(result->status),
+                 "Adaptive quality %.2fx: holding temporary ray-step adjustment.",
+                 next_multiplier);
+    } else {
+        snprintf(result->status, sizeof(result->status),
+                 "Adaptive quality ready: using the selected GPU preset.");
+    }
+
+    return 1;
+}
 static inline void voxelpilot_performance_inputs_defaults(
     VoxelPilotPerformanceInputs *inputs)
 {

@@ -14,7 +14,7 @@
 - PNG snapshot export, AI review bundles, lightweight HTML insight reports, and `.vpilot` workspace save/load
 - AI Assist prompts, Adaptive Semantic Discovery, local object identification, slice annotations, cinematic callouts, 3D label overlays, hover explanations, and brick-cache telemetry
 - Local Performance Safety Governor that watches render time, estimated GPU memory pressure, labels, callouts, and optional AI workload before recommending user-approved safe actions
-- Demo splash, guided walkthrough, and About panel
+- Demo splash, guided walkthrough, and in-app help cues
 
 ## Quick Start
 
@@ -108,7 +108,7 @@ Generate an opt-in Cinematic Lite snapshot without changing the default renderer
 - Use a Windows laptop with an NVIDIA GPU and a working display driver.
 - Confirm `nvidia-smi` responds before launch.
 - Start the packaged demo with `release/voxelpilot-windows-nvidia/Run_VoxelPilot.bat`.
-- Confirm `Controls`, `Insights`, `AI Assist`, `Metadata`, `About`, and `Status` are visible.
+- Confirm `Controls`, `Insights`, `AI Assist`, `Metadata`, and `Status` are visible.
 - If no dataset is loaded yet, the app should still open on the synthetic fallback volume.
 
 ## Quick Demo Flow

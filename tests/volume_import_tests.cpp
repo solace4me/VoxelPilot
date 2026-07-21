@@ -4,10 +4,18 @@
 #include <string.h>
 
 #include "../common/volume_import.h"
+#include "../common/cli_options.h"
+#include "../common/json_utils.h"
+#include "../common/cuda_device_policy.h"
 #include "../common/ui_state_helpers.h"
+#include "../common/default_state.h"
+#include "../common/histogram_profile.h"
 #include "../common/ai_features.h"
 #include "../common/semantic_discovery.h"
 #include "../common/performance_governor.h"
+#include "../common/render_command_builder.h"
+#include "../common/ai_review_bundle.h"
+#include "../common/insight_report.h"
 
 static int expect_true(int condition, const char *message)
 {
@@ -57,6 +65,32 @@ static int write_temp_file(
     return 1;
 }
 
+static int read_text_file(const char *path, char *buffer, size_t buffer_size)
+{
+    FILE *fp;
+    size_t byte_count;
+
+    if (!path || !buffer || buffer_size == 0) {
+        return 0;
+    }
+
+    fp = fopen(path, "rb");
+    if (!fp) {
+        fprintf(stderr, "FAIL: could not open text file %s\n", path);
+        return 0;
+    }
+
+    byte_count = fread(buffer, 1, buffer_size - 1, fp);
+    if (ferror(fp)) {
+        fclose(fp);
+        fprintf(stderr, "FAIL: could not read text file %s\n", path);
+        return 0;
+    }
+
+    buffer[byte_count] = '\0';
+    fclose(fp);
+    return 1;
+}
 static int test_expected_bytes_non_cubic_uint16(void)
 {
     VolumeImportSpec spec = { 256, 128, 64, VOLUME_DATA_UINT16 };
@@ -411,6 +445,434 @@ static int test_review_bundle_paths_reject_overlong_output(void)
     return expect_true(
         voxelpilot_make_review_bundle_paths(long_folder, "bundle", &paths) == 0,
         "review bundle path builder should reject truncated paths");
+}
+
+
+static int test_ai_review_bundle_stem_uses_source_basename(void)
+{
+    char stem[128];
+
+    memset(stem, 0, sizeof(stem));
+    if (!expect_true(
+            voxelpilot_make_ai_review_bundle_stem_from_source(
+                "C:\\data\\Bonsai CT.sample.raw",
+                stem,
+                sizeof(stem)) == 1,
+            "AI review bundle stem should build from source path")) {
+        return 0;
+    }
+    if (!expect_true(
+            strcmp(stem, "Bonsai CT.sample") == 0,
+            "AI review bundle stem should use basename without extension")) {
+        return 0;
+    }
+
+    memset(stem, 0, sizeof(stem));
+    if (!expect_true(
+            voxelpilot_make_ai_review_bundle_stem_from_source(
+                NULL,
+                stem,
+                sizeof(stem)) == 1,
+            "AI review bundle stem should accept a missing source path")) {
+        return 0;
+    }
+    return expect_true(
+        strcmp(stem, "voxelpilot_ai_review") == 0,
+        "AI review bundle stem should use a deterministic default");
+}
+
+static int test_ai_review_bundle_writes_regions_json(void)
+{
+    const char *path = "build\\ai_review_regions_test.json";
+    char text[4096];
+    VoxelPilotAiReviewBundleContent content;
+    VoxelPilotSemanticRegion region;
+
+    voxelpilot_ai_review_bundle_content_defaults(&content);
+    memset(&region, 0, sizeof(region));
+    content.volume_width = 2;
+    content.volume_height = 3;
+    content.volume_depth = 4;
+    content.selected_label_id = 7;
+    content.regions = &region;
+    content.region_count = 1;
+    region.label_id = 7;
+    strcpy(region.name, "Dense \"core\"");
+    strcpy(region.archetype, "blob");
+    strcpy(region.category, "A&B");
+    strcpy(region.description, "line\nbreak");
+    region.voxel_count = 42;
+    region.confidence = 0.75f;
+    region.stability_score = 0.5f;
+    region.importance_score = 0.25f;
+
+    if (!expect_true(
+            voxelpilot_ai_review_write_regions_json(&content, path) == 1,
+            "AI review bundle should write regions JSON")) {
+        return 0;
+    }
+    if (!read_text_file(path, text, sizeof(text))) {
+        return 0;
+    }
+    if (!expect_true(
+            strstr(text, "\"selectedLabelId\": 7") != NULL,
+            "regions JSON should include selected label id")) {
+        return 0;
+    }
+    if (!expect_true(
+            strstr(text, "Dense \\\"core\\\"") != NULL,
+            "regions JSON should escape quotes")) {
+        return 0;
+    }
+    return expect_true(
+        strstr(text, "line\\nbreak") != NULL,
+        "regions JSON should escape newlines");
+}
+
+static int test_ai_review_bundle_writes_relationships_and_label_mask(void)
+{
+    const char *relationships_path = "build\\ai_review_relationships_test.json";
+    const char *mask_path = "build\\ai_review_mask_test.raw";
+    unsigned char mask[] = { 1, 2, 3, 4 };
+    unsigned char written_mask[4] = { 0, 0, 0, 0 };
+    char text[4096];
+    FILE *fp;
+    VoxelPilotAiReviewBundleContent content;
+    VoxelPilotRegionRelation relation;
+
+    voxelpilot_ai_review_bundle_content_defaults(&content);
+    memset(&relation, 0, sizeof(relation));
+    content.relations = &relation;
+    content.relation_count = 1;
+    content.label_mask = mask;
+    content.label_mask_width = 2;
+    content.label_mask_height = 2;
+    content.label_mask_depth = 1;
+    relation.region_a = 1;
+    relation.region_b = 2;
+    relation.type = VOXELPILOT_REGION_RELATION_ADJACENT;
+    strcpy(relation.description, "near & stable");
+    relation.confidence = 0.875f;
+
+    if (!expect_true(
+            voxelpilot_ai_review_write_relationships_json(
+                &content,
+                relationships_path) == 1,
+            "AI review bundle should write relationships JSON")) {
+        return 0;
+    }
+    if (!read_text_file(relationships_path, text, sizeof(text))) {
+        return 0;
+    }
+    if (!expect_true(
+            strstr(text, "\"regionA\": 1") != NULL,
+            "relationships JSON should include source region")) {
+        return 0;
+    }
+    if (!expect_true(
+            strstr(text, "near & stable") != NULL,
+            "relationships JSON should include escaped description")) {
+        return 0;
+    }
+
+    if (!expect_true(
+            voxelpilot_ai_review_write_label_mask(&content, mask_path) == 1,
+            "AI review bundle should write label mask")) {
+        return 0;
+    }
+    fp = fopen(mask_path, "rb");
+    if (!expect_true(fp != NULL, "AI review label mask output should exist")) {
+        return 0;
+    }
+    if (!expect_true(
+            fread(written_mask, 1, sizeof(written_mask), fp) == sizeof(written_mask),
+            "AI review label mask should contain the full mask")) {
+        fclose(fp);
+        return 0;
+    }
+    if (!expect_true(
+            fgetc(fp) == EOF,
+            "AI review label mask should not write trailing bytes")) {
+        fclose(fp);
+        return 0;
+    }
+    fclose(fp);
+    return expect_true(
+        memcmp(mask, written_mask, sizeof(mask)) == 0,
+        "AI review label mask should preserve byte values");
+}
+
+static int test_insight_report_writer_escapes_content_and_annotations(void)
+{
+    VoxelPilotInsightReportContent content;
+    VoxelPilotInsightAnnotation annotations[1];
+    VoxelPilotQuantMetrics metrics;
+    VoxelPilotObjectSummary summary;
+    char path[256];
+    char html[8192];
+
+    snprintf(path, sizeof(path), "build\\insight_report_writer_test.html");
+    memset(&metrics, 0, sizeof(metrics));
+    memset(&summary, 0, sizeof(summary));
+    memset(annotations, 0, sizeof(annotations));
+    voxelpilot_insight_report_content_defaults(&content);
+
+    metrics.visible_ratio = 0.42f;
+    metrics.percentile_50 = 0.50f;
+    metrics.percentile_95 = 0.95f;
+    metrics.mean_intensity = 0.48f;
+    metrics.low_density_ratio = 0.25f;
+    metrics.mid_density_ratio = 0.50f;
+    metrics.high_density_ratio = 0.25f;
+    snprintf(metrics.summary, sizeof(metrics.summary), "metrics <ready>");
+
+    snprintf(summary.primary_material, sizeof(summary.primary_material), "Bone <shell>");
+    snprintf(summary.description, sizeof(summary.description), "summary <safe>");
+
+    annotations[0].active = 1;
+    annotations[0].label_id = 7;
+    annotations[0].name = "ROI <danger>";
+    annotations[0].voxel_count = 12;
+    annotations[0].min_intensity = 0.10f;
+    annotations[0].max_intensity = 0.90f;
+
+    content.volume_width = 2;
+    content.volume_height = 3;
+    content.volume_depth = 4;
+    content.hist_min_value = 0.10f;
+    content.hist_max_value = 0.95f;
+    content.voxel_spacing[0] = 1.0f;
+    content.voxel_spacing[1] = 2.0f;
+    content.voxel_spacing[2] = 3.0f;
+    content.source_path = "scan <raw>.raw";
+    content.quant_metrics = &metrics;
+    content.quant_metrics_status = metrics.summary;
+    content.object_summary = &summary;
+    content.object_summary_status = "object <summary>";
+    content.measure_a[0] = 0.1f;
+    content.measure_a[1] = 0.2f;
+    content.measure_a[2] = 0.3f;
+    content.measure_b[0] = 0.4f;
+    content.measure_b[1] = 0.5f;
+    content.measure_b[2] = 0.6f;
+    content.measurement_distance_voxels = 10.0f;
+    content.measurement_distance_world = 20.0f;
+    content.annotations = annotations;
+    content.annotation_count = 1;
+    content.last_render_ms = 16.5f;
+    content.gui_fps = 60.0f;
+    content.streaming_visible_bricks = 2;
+    content.streaming_resident_candidates = 3;
+    content.streaming_stream_now = 1;
+    content.streaming_queue = 4;
+    content.streaming_evictable = 5;
+
+    if (!expect_true(
+            voxelpilot_insight_write_report(&content, path) == 1,
+            "insight report writer should write html")) {
+        return 0;
+    }
+    if (!expect_true(read_text_file(path, html, sizeof(html)),
+            "insight report output should be readable")) {
+        return 0;
+    }
+    if (!expect_true(strstr(html, "VoxelPilot Insight Report") != NULL,
+            "insight report should include title")) {
+        return 0;
+    }
+    if (!expect_true(strstr(html, "scan &lt;raw&gt;.raw") != NULL,
+            "insight report should escape source path")) {
+        return 0;
+    }
+    if (!expect_true(strstr(html, "ROI &lt;danger&gt;") != NULL,
+            "insight report should escape annotation names")) {
+        return 0;
+    }
+    return expect_true(strstr(html, "2 x 3 x 4") != NULL,
+        "insight report should include dimensions");
+}
+static int test_ai_review_bundle_report_references_artifacts(void)
+{
+    const char *path = "build\\ai_review_report_test.html";
+    char text[4096];
+    VoxelPilotAiReviewBundleContent content;
+    VoxelPilotReviewBundlePaths paths;
+    VoxelPilotSemanticRegion region;
+    VoxelPilotRegionRelation relation;
+
+    voxelpilot_ai_review_bundle_content_defaults(&content);
+    memset(&paths, 0, sizeof(paths));
+    memset(&region, 0, sizeof(region));
+    memset(&relation, 0, sizeof(relation));
+
+    content.volume_width = 8;
+    content.volume_height = 9;
+    content.volume_depth = 10;
+    content.object_summary_status = "Object <summary>";
+    content.regions = &region;
+    content.region_count = 1;
+    content.relations = &relation;
+    content.relation_count = 1;
+    region.label_id = 4;
+    strcpy(region.name, "Region <A>");
+    strcpy(region.archetype, "shell");
+    relation.region_a = 4;
+    relation.region_b = 5;
+    strcpy(relation.description, "A <touches> B");
+    strcpy(paths.snapshot_png, "C:\\tmp\\snap.png");
+    strcpy(paths.regions_json, "C:\\tmp\\regions.json");
+    strcpy(paths.relationships_json, "C:\\tmp\\relationships.json");
+    strcpy(paths.label_mask_raw, "C:\\tmp\\mask.raw");
+
+    if (!expect_true(
+            voxelpilot_ai_review_write_bundle_report(&content, &paths, path) == 1,
+            "AI review bundle should write HTML report")) {
+        return 0;
+    }
+    if (!read_text_file(path, text, sizeof(text))) {
+        return 0;
+    }
+    if (!expect_true(
+            strstr(text, "VoxelPilot AI Review Bundle") != NULL,
+            "AI review report should include title")) {
+        return 0;
+    }
+    if (!expect_true(
+            strstr(text, "Object &lt;summary&gt;") != NULL,
+            "AI review report should escape object summary")) {
+        return 0;
+    }
+    if (!expect_true(
+            strstr(text, "snap.png") != NULL,
+            "AI review report should reference snapshot artifact")) {
+        return 0;
+    }
+    return expect_true(
+        strstr(text, "A &lt;touches&gt; B") != NULL,
+        "AI review report should escape relationship description");
+}
+static int test_cli_export_plan_runs_snapshot_and_review_bundle(void)
+{
+    VoxelPilotCliExportPlan plan;
+    memset(&plan, 0, sizeof(plan));
+
+    if (!expect_true(
+            voxelpilot_cli_make_export_plan(
+                "build\\requested_snapshot.png",
+                "build\\review-bundle",
+                &plan) == 1,
+            "CLI export planner should accept snapshot and review bundle together")) {
+        return 0;
+    }
+
+    if (!expect_true(plan.run_snapshot == 1,
+                     "CLI export planner should run explicit snapshot export")) {
+        return 0;
+    }
+    return expect_true(
+        plan.run_review_bundle == 1,
+        "CLI export planner should run review bundle export");
+}
+
+
+static int test_cli_prepare_export_folder_creates_missing_directory(void)
+{
+    const char *folder = "build\\voxelpilot_cli_created_bundle_dir";
+    const char *probe_path = "build\\voxelpilot_cli_created_bundle_dir\\probe.txt";
+    char error[128];
+    FILE *fp;
+
+    memset(error, 0, sizeof(error));
+
+    if (!expect_true(
+            voxelpilot_cli_prepare_export_folder(folder, error, sizeof(error)) == 1,
+            "CLI export folder preparation should create a missing bundle directory")) {
+        return 0;
+    }
+
+    fp = fopen(probe_path, "wb");
+    if (!fp) {
+        fprintf(stderr, "FAIL: prepared export folder was not writable: %s\n", error);
+        return 0;
+    }
+    fputs("ok", fp);
+    fclose(fp);
+    return 1;
+}
+
+static int test_json_utils_write_escaped_control_chars(void)
+{
+    const char *path = "build\\json_escape_test.txt";
+    const char *expected = "quote\\\" slash\\\\\\n\\r\\t\\u0001";
+    char buffer[128];
+    FILE *fp;
+    size_t read_count;
+
+    fp = fopen(path, "wb");
+    if (!fp) {
+        fprintf(stderr, "FAIL: could not create JSON escape test file\n");
+        return 0;
+    }
+    voxelpilot_json_write_escaped(fp, "quote\" slash\\\n\r\t\001");
+    fclose(fp);
+
+    memset(buffer, 0, sizeof(buffer));
+    fp = fopen(path, "rb");
+    if (!fp) {
+        fprintf(stderr, "FAIL: could not reopen JSON escape test file\n");
+        return 0;
+    }
+    read_count = fread(buffer, 1, sizeof(buffer) - 1, fp);
+    fclose(fp);
+    buffer[read_count] = '\0';
+
+    return expect_true(
+        strcmp(buffer, expected) == 0,
+        "JSON escape helper should preserve valid text and escape control characters");
+}
+
+static int test_json_utils_extracts_typed_fields(void)
+{
+    const char *line = "{\"name\": \"dense rod\", \"densityClass\": 3, \"meanIntensity\": 0.875}";
+    char name[32];
+    int density_class = 0;
+    float mean_intensity = 0.0f;
+
+    memset(name, 0, sizeof(name));
+
+    if (!expect_true(
+            voxelpilot_json_extract_string_field(line, "name", name, sizeof(name)) == 1 &&
+            strcmp(name, "dense rod") == 0,
+            "JSON string extractor should return the requested string field")) {
+        return 0;
+    }
+    if (!expect_true(
+            voxelpilot_json_extract_int_field(line, "densityClass", &density_class) == 1 &&
+            density_class == 3,
+            "JSON int extractor should return the requested integer field")) {
+        return 0;
+    }
+    return expect_true(
+        voxelpilot_json_extract_float_field(line, "meanIntensity", &mean_intensity) == 1 &&
+        mean_intensity > 0.874f && mean_intensity < 0.876f,
+        "JSON float extractor should return the requested floating-point field");
+}
+
+static int test_cuda_hint_policy_accepts_only_valid_devices(void)
+{
+    if (!expect_true(
+            voxelpilot_cuda_hint_device_is_valid(0, 1) == 1,
+            "CUDA hint policy should accept the first available device")) {
+        return 0;
+    }
+    if (!expect_true(
+            voxelpilot_cuda_hint_device_is_valid(1, 1) == 0,
+            "CUDA hint policy should reject device ids beyond device count")) {
+        return 0;
+    }
+    return expect_true(
+        voxelpilot_cuda_hint_device_is_valid(-1, 1) == 0,
+        "CUDA hint policy should reject negative active device ids");
 }
 
 static int test_render_target_sync_respects_match_window_mode(void)
@@ -1301,6 +1763,52 @@ static int test_object_summary_identifies_high_density_dominance(void)
         "object summary should report useful confidence for dominant material");
 }
 
+static int test_histogram_profile_handles_flat_and_ranged_volumes(void)
+{
+    float flat_volume[5] = { 0.25f, 0.25f, 0.25f, 0.25f, 0.25f };
+    float range_volume[4] = { 0.0f, 0.5f, 1.0f, 1.0f };
+    float histogram[4];
+    VoxelPilotHistogramProfile profile;
+
+    if (!expect_true(
+            voxelpilot_compute_histogram_profile(
+                flat_volume,
+                1,
+                1,
+                5,
+                histogram,
+                4,
+                &profile) == 1,
+            "histogram profile should accept flat volumes")) {
+        return 0;
+    }
+
+    if (!expect_true(profile.ready == 1, "flat histogram profile should be ready")) return 0;
+    if (!expect_float_close(profile.min_value, 0.25f, "flat profile should keep min value")) return 0;
+    if (!expect_float_close(profile.max_value, 0.25f, "flat profile should keep max value")) return 0;
+    if (!expect_float_close(profile.peak_count, 5.0f, "flat profile should put all samples in one bin")) return 0;
+    if (!expect_float_close(histogram[0], 5.0f, "flat histogram should use the first bin")) return 0;
+
+    if (!expect_true(
+            voxelpilot_compute_histogram_profile(
+                range_volume,
+                2,
+                1,
+                2,
+                histogram,
+                4,
+                &profile) == 1,
+            "histogram profile should accept ranged volumes")) {
+        return 0;
+    }
+
+    if (!expect_float_close(profile.min_value, 0.0f, "range profile should keep min value")) return 0;
+    if (!expect_float_close(profile.max_value, 1.0f, "range profile should keep max value")) return 0;
+    if (!expect_float_close(profile.peak_count, 2.0f, "range profile should track the busiest bin")) return 0;
+    if (!expect_float_close(histogram[0], 1.0f, "range histogram should count low samples")) return 0;
+    if (!expect_float_close(histogram[1], 1.0f, "range histogram should count mid samples")) return 0;
+    return expect_float_close(histogram[3], 2.0f, "range histogram should count high samples");
+}
 static int test_quant_metrics_summarize_histogram_without_volume_scan(void)
 {
     float histogram[10] = { 0.0f };
@@ -1410,6 +1918,170 @@ static int test_brick_cache_plan_reports_queue_and_eviction_pressure(void)
         "cache planner should identify non-resident bricks as evictable");
 }
 
+static int test_render_command_builder_maps_view_state(void)
+{
+    VoxelPilotRenderCommandConfig config;
+    RendererInput cmd;
+
+    voxelpilot_render_command_config_defaults(&config);
+    config.cam_pos[0] = 0.25f;
+    config.cam_pos[1] = 0.50f;
+    config.cam_pos[2] = -1.25f;
+    config.cam_dir[0] = 0.10f;
+    config.cam_dir[1] = 0.20f;
+    config.cam_dir[2] = 0.97f;
+    config.cam_up[0] = 0.0f;
+    config.cam_up[1] = 1.0f;
+    config.cam_up[2] = 0.0f;
+    config.fov_y_degrees = 60.0f;
+    config.light_pos[0] = 1.5f;
+    config.light_pos[1] = 1.0f;
+    config.light_pos[2] = -0.5f;
+    config.step_size = 0.0027f;
+    config.threshold = 0.96f;
+    config.empty_space_skip_mult = 1.75f;
+    config.tf_center = 0.55f;
+    config.tf_width = 0.25f;
+    config.tf_opacity_scale = 2.25f;
+    config.tf_palette = 2;
+    config.tf_invert = 1;
+    config.cinematic_enabled = 1;
+    config.cinematic_rim_strength = 0.52f;
+    config.cinematic_glow_strength = 0.40f;
+    config.cinematic_contrast = 1.18f;
+    config.clip_min[0] = 0.10f;
+    config.clip_min[1] = 0.20f;
+    config.clip_min[2] = 0.30f;
+    config.clip_max[0] = 0.90f;
+    config.clip_max[1] = 0.80f;
+    config.clip_max[2] = 0.70f;
+    config.render_width = 1280;
+    config.render_height = 720;
+
+    if (!expect_true(
+            voxelpilot_build_renderer_input(&config, &cmd) == 1,
+            "render command builder should accept valid config")) {
+        return 0;
+    }
+    if (!expect_float_close(cmd.cam_pos[2], -1.25f,
+            "render command builder should copy camera position")) return 0;
+    if (!expect_float_close(cmd.fov_y, 1.0471976f,
+            "render command builder should convert fov degrees to radians")) return 0;
+    if (!expect_float_close(cmd.step_size, 0.0027f,
+            "render command builder should use effective adaptive step size")) return 0;
+    if (!expect_float_close(cmd.empty_space_skip_mult, 1.75f,
+            "render command builder should use effective adaptive skip multiplier")) return 0;
+    if (!expect_float_close(cmd.tf_opacity_scale, 2.25f,
+            "render command builder should copy transfer opacity")) return 0;
+    if (!expect_true(cmd.tf_palette == 2 && cmd.tf_invert == 1,
+            "render command builder should copy transfer palette flags")) return 0;
+    if (!expect_float_close(cmd.cinematic_contrast, 1.18f,
+            "render command builder should copy cinematic settings")) return 0;
+    if (!expect_float_close(cmd.clip_min[1], 0.20f,
+            "render command builder should copy clip minimums")) return 0;
+    if (!expect_true(cmd.img_width == 1280u && cmd.img_height == 720u,
+            "render command builder should copy render target size")) return 0;
+    return expect_true(cmd.label_mask == NULL && cmd.labels.enabled == 0,
+        "render command builder should leave label overlays for the caller seam");
+}
+
+static int test_render_command_builder_attaches_label_overlay(void)
+{
+    VoxelPilotRenderCommandConfig config;
+    VoxelPilotRenderLabelOverlayConfig labels;
+    RendererInput cmd;
+    unsigned char mask[8] = { 0 };
+
+    voxelpilot_render_command_config_defaults(&config);
+    if (!expect_true(voxelpilot_build_renderer_input(&config, &cmd) == 1,
+            "render command should build before labels attach")) return 0;
+
+    voxelpilot_render_label_overlay_config_defaults(&labels);
+    labels.visible = 1;
+    labels.label_mask = mask;
+    labels.label_mask_width = 2;
+    labels.label_mask_height = 2;
+    labels.label_mask_depth = 2;
+    labels.renderer_width = 2;
+    labels.renderer_height = 2;
+    labels.renderer_depth = 2;
+    labels.label_count = 2;
+    labels.alpha = 0.55f;
+    labels.revision = 7;
+    labels.selected_enabled = 1;
+    labels.selected_label_id = 2;
+    labels.selected_emphasis = 0.66f;
+    labels.colors[0] = 0.10f;
+    labels.colors[1] = 0.20f;
+    labels.colors[2] = 0.30f;
+    labels.colors[3] = 0.40f;
+    labels.colors[4] = 0.50f;
+    labels.colors[5] = 0.60f;
+
+    if (!expect_true(
+            voxelpilot_attach_label_overlay_to_renderer_input(&labels, &cmd) == 1,
+            "render command builder should attach valid label overlay")) {
+        return 0;
+    }
+    if (!expect_true(cmd.label_mask == mask && cmd.labels.enabled == 1,
+            "label overlay attach should enable renderer labels with mask")) return 0;
+    if (!expect_true(cmd.labels.width == 2 && cmd.labels.height == 2 && cmd.labels.depth == 2,
+            "label overlay attach should copy label dimensions")) return 0;
+    if (!expect_true(cmd.labels.label_count == 2 && cmd.labels.revision == 7,
+            "label overlay attach should copy label count and revision")) return 0;
+    if (!expect_float_close(cmd.labels.alpha, 0.55f,
+            "label overlay attach should copy alpha")) return 0;
+    if (!expect_true(cmd.labels.selected_label_id == 2,
+            "label overlay attach should copy selected label id")) return 0;
+    if (!expect_float_close(cmd.labels.selected_emphasis, 0.66f,
+            "label overlay attach should copy selected emphasis")) return 0;
+    return expect_float_close(cmd.labels.colors[5], 0.60f,
+        "label overlay attach should copy label colors");
+}
+
+static int test_render_command_builder_rejects_mismatched_label_overlay(void)
+{
+    VoxelPilotRenderCommandConfig config;
+    VoxelPilotRenderLabelOverlayConfig labels;
+    RendererInput cmd;
+    unsigned char mask[8] = { 0 };
+
+    voxelpilot_render_command_config_defaults(&config);
+    if (!expect_true(voxelpilot_build_renderer_input(&config, &cmd) == 1,
+            "render command should build before rejected label attach")) return 0;
+
+    voxelpilot_render_label_overlay_config_defaults(&labels);
+    labels.visible = 1;
+    labels.label_mask = mask;
+    labels.label_mask_width = 2;
+    labels.label_mask_height = 2;
+    labels.label_mask_depth = 2;
+    labels.renderer_width = 2;
+    labels.renderer_height = 3;
+    labels.renderer_depth = 2;
+    labels.label_count = 1;
+
+    if (!expect_true(
+            voxelpilot_attach_label_overlay_to_renderer_input(&labels, &cmd) == 0,
+            "render command builder should reject mismatched label dimensions")) {
+        return 0;
+    }
+    return expect_true(cmd.label_mask == NULL && cmd.labels.enabled == 0,
+        "rejected label overlay should leave renderer labels disabled");
+}
+static int test_render_command_builder_rejects_invalid_target_size(void)
+{
+    VoxelPilotRenderCommandConfig config;
+    RendererInput cmd;
+
+    voxelpilot_render_command_config_defaults(&config);
+    config.render_width = 0;
+    config.render_height = 720;
+
+    return expect_true(
+        voxelpilot_build_renderer_input(&config, &cmd) == 0,
+        "render command builder should reject invalid render target dimensions");
+}
 static int test_performance_governor_small_volume_is_healthy(void)
 {
     VoxelPilotPerformanceInputs inputs;
@@ -1534,6 +2206,86 @@ static int test_performance_governor_moving_average_is_stable(void)
 }
 
 
+static int test_adaptive_quality_degrades_during_slow_interaction(void)
+{
+    VoxelPilotAdaptiveQualityInputs inputs;
+    VoxelPilotAdaptiveQualityResult result;
+
+    voxelpilot_adaptive_quality_inputs_defaults(&inputs);
+    inputs.enabled = 1;
+    inputs.base_step_size = 0.0020f;
+    inputs.base_skip_mult = 1.50f;
+    inputs.current_multiplier = 1.0f;
+    inputs.render_ms_average = 72.0f;
+    inputs.interaction_active = 1;
+    inputs.cinematic_enabled = 1;
+
+    if (!expect_true(
+            voxelpilot_update_adaptive_quality(&inputs, &result) == 1,
+            "adaptive quality should evaluate valid inputs")) {
+        return 0;
+    }
+    if (!expect_true(result.active == 1,
+            "slow interaction should activate adaptive quality")) return 0;
+    if (!expect_float_close(result.multiplier, 1.35f,
+            "slow interaction should raise the quality multiplier quickly")) return 0;
+    if (!expect_float_close(result.step_size, 0.0027f,
+            "adaptive step should be the base step multiplied by the quality multiplier")) return 0;
+    return expect_true(strstr(result.status, "Adaptive quality") != NULL,
+        "adaptive quality status should describe the automatic adjustment");
+}
+
+static int test_adaptive_quality_recovers_slowly_when_frame_time_is_low(void)
+{
+    VoxelPilotAdaptiveQualityInputs inputs;
+    VoxelPilotAdaptiveQualityResult result;
+
+    voxelpilot_adaptive_quality_inputs_defaults(&inputs);
+    inputs.enabled = 1;
+    inputs.base_step_size = 0.0020f;
+    inputs.base_skip_mult = 1.50f;
+    inputs.current_multiplier = 2.0f;
+    inputs.render_ms_average = 24.0f;
+    inputs.interaction_active = 0;
+
+    if (!expect_true(
+            voxelpilot_update_adaptive_quality(&inputs, &result) == 1,
+            "adaptive quality should evaluate recovery inputs")) {
+        return 0;
+    }
+    if (!expect_float_close(result.multiplier, 1.88f,
+            "low frame time should recover quality gradually")) return 0;
+    if (!expect_float_close(result.step_size, 0.00376f,
+            "recovered adaptive step should still derive from the base step")) return 0;
+    return expect_true(result.active == 1,
+        "quality should remain active until multiplier returns to one");
+}
+
+static int test_adaptive_quality_disabled_uses_base_quality(void)
+{
+    VoxelPilotAdaptiveQualityInputs inputs;
+    VoxelPilotAdaptiveQualityResult result;
+
+    voxelpilot_adaptive_quality_inputs_defaults(&inputs);
+    inputs.enabled = 0;
+    inputs.base_step_size = 0.00125f;
+    inputs.base_skip_mult = 1.0f;
+    inputs.current_multiplier = 2.5f;
+    inputs.render_ms_average = 155.0f;
+    inputs.interaction_active = 1;
+
+    if (!expect_true(
+            voxelpilot_update_adaptive_quality(&inputs, &result) == 1,
+            "adaptive quality should evaluate disabled inputs")) {
+        return 0;
+    }
+    if (!expect_float_close(result.multiplier, 1.0f,
+            "disabled adaptive quality should reset the multiplier")) return 0;
+    if (!expect_float_close(result.step_size, 0.00125f,
+            "disabled adaptive quality should preserve base step size")) return 0;
+    return expect_true(result.active == 0,
+        "disabled adaptive quality should not report an active adjustment");
+}
 static int test_asd_rejects_invalid_inputs(void)
 {
     unsigned char label_mask[8] = { 0 };
@@ -2034,6 +2786,16 @@ int main(void)
     passed &= test_render_target_sync_respects_match_window_mode();
     passed &= test_review_bundle_paths_sanitize_stem_and_join_folder();
     passed &= test_review_bundle_paths_reject_overlong_output();
+    passed &= test_ai_review_bundle_stem_uses_source_basename();
+    passed &= test_ai_review_bundle_writes_regions_json();
+    passed &= test_ai_review_bundle_writes_relationships_and_label_mask();
+    passed &= test_ai_review_bundle_report_references_artifacts();
+    passed &= test_insight_report_writer_escapes_content_and_annotations();
+    passed &= test_cli_export_plan_runs_snapshot_and_review_bundle();
+    passed &= test_cli_prepare_export_folder_creates_missing_directory();
+    passed &= test_json_utils_write_escaped_control_chars();
+    passed &= test_json_utils_extracts_typed_fields();
+    passed &= test_cuda_hint_policy_accepts_only_valid_devices();
     passed &= test_cinematic_params_default_disabled();
     passed &= test_cinematic_params_clamp_safe_ranges();
     passed &= test_semantic_demo_defaults_enable_visible_asd_callouts();
@@ -2064,11 +2826,18 @@ int main(void)
     passed &= test_quant_metrics_summarize_histogram_without_volume_scan();
     passed &= test_streaming_estimate_counts_visible_nonempty_bricks();
     passed &= test_brick_cache_plan_reports_queue_and_eviction_pressure();
+    passed &= test_render_command_builder_maps_view_state();
+    passed &= test_render_command_builder_attaches_label_overlay();
+    passed &= test_render_command_builder_rejects_mismatched_label_overlay();
+    passed &= test_render_command_builder_rejects_invalid_target_size();
     passed &= test_performance_governor_small_volume_is_healthy();
     passed &= test_performance_governor_high_render_time_suggests_interactive();
     passed &= test_performance_governor_memory_pressure_suggests_streaming();
     passed &= test_performance_governor_callout_pressure_suggests_limit();
     passed &= test_performance_governor_moving_average_is_stable();
+    passed &= test_adaptive_quality_degrades_during_slow_interaction();
+    passed &= test_adaptive_quality_recovers_slowly_when_frame_time_is_low();
+    passed &= test_adaptive_quality_disabled_uses_base_quality();
     passed &= test_asd_rejects_invalid_inputs();
     passed &= test_asd_discovers_high_density_connected_region();
     passed &= test_asd_assigns_archetype_stability_and_importance();

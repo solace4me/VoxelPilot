@@ -27,9 +27,13 @@ extern "C" {
 
 typedef struct { float x, y, z; } float3;
 typedef struct { float x, y, z, w; } float4;
+typedef struct { unsigned char x, y, z, w; } uchar4;
 
 typedef void* cudaArray_t;
 typedef void* cudaTextureObject_t;
+typedef void* cudaGraphicsResource_t;
+typedef void* cudaEvent_t;
+typedef void* cudaStream_t;
 
 #endif
 

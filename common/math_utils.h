@@ -63,7 +63,8 @@ __host__ __device__ static inline float3 f3_cross(float3 a, float3 b)
 
 __host__ __device__ static inline float3 f3_normalize(float3 a)
 {
-    float len = sqrtf(a.x*a.x + a.y*a.y + a.z*a.z) + 1e-6f;
+    float len = sqrtf(a.x*a.x + a.y*a.y + a.z*a.z);
+    if (len < 1e-6f) return f3_make(0.0f, 0.0f, 0.0f);
     return f3_make(a.x/len, a.y/len, a.z/len);
 }
 

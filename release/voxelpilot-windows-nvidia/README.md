@@ -47,14 +47,14 @@ This folder contains the polished standalone demo build of `VoxelPilot`.
 - Transfer mapping, clipping, histogram insight, and render controls.
 - Measurement tools with voxel and world-unit distance readouts.
 - PNG snapshot export and workspace session save/load.
-- In-app Help and About panels for guided presentation use.
+- In-app walkthrough overlay and help cues for guided presentation use.
 
 ## Top Selling Points
 
 - It is more than a renderer:
   VoxelPilot is a complete interactive review workstation, not just a CUDA visualization prototype.
 - It is demo-ready:
-  The splash screen, help panel, about panel, walkthrough overlay, launcher flow, and packaged release make it easy to present live.
+  The splash screen, walkthrough overlay, help cues, launcher flow, and packaged release make it easy to present live.
 - It combines 3D and 2D understanding:
   Users can inspect the volume in the main 3D view while cross-checking axial, coronal, and sagittal slices.
 - It supports practical review tasks:

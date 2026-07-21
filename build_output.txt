@@ -1,0 +1,192 @@
+VoxelPilot Windows Build
+========================
+Repo Root : C:\Users\akola\Desktop\HomeProject\VoxelPilot\
+CUDA Home : C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.3
+VS DevCmd : C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\Tools\VsDevCmd.bat
+CUDA Arch : sm_75
+
+[build] renderer\renderer.cu
+renderer.cu
+tmpxft_00005bec_00000000-7_renderer.cudafe1.cpp
+[build] renderer\raymarch_kernel.cu
+raymarch_kernel.cu
+tmpxft_00006d28_00000000-7_raymarch_kernel.cudafe1.cpp
+[build] renderer\volume_textures.cu
+volume_textures.cu
+tmpxft_00003d00_00000000-7_volume_textures.cudafe1.cpp
+[build] standalone_main.cu
+standalone_main.cu(1632): warning #177-D: function "save_semantic_memory" was declared but never referenced
+  static int save_semantic_memory(StandaloneApp *app, const char *path)
+             ^
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+standalone_main.cu(1668): warning #177-D: function "load_semantic_memory" was declared but never referenced
+  static int load_semantic_memory(StandaloneApp *app, const char *path)
+             ^
+
+standalone_main.cu(1602): warning #177-D: function "upsert_semantic_correction" was declared but never referenced
+  static int upsert_semantic_correction(
+             ^
+
+standalone_main.cu(1798): warning #177-D: function "export_annotation_mask" was declared but never referenced
+  static void export_annotation_mask(StandaloneApp *app)
+              ^
+
+standalone_main.cu(4126): warning #177-D: function "draw_performance_safety_block" was declared but never referenced
+  static void draw_performance_safety_block(StandaloneApp *app)
+              ^
+
+standalone_main.cu
+tmpxft_00007f48_00000000-7_standalone_main.cudafe1.cpp
+[build] imgui\imgui.cpp
+imgui.cpp
+tmpxft_00007b90_00000000-7_imgui.cudafe1.cpp
+[build] imgui\imgui_draw.cpp
+C:\Users\akola\Desktop\HomeProject\VoxelPilot\imgui\imgui_draw.cpp(4614): warning #186-D: pointless comparison of unsigned integer with zero
+                  ((void)( (!!(r.x >= 0 && r.y >= 0)) || (_wassert(L"r.x >= 0 && r.y >= 0", L"C:\\Users\\akola\\Desktop\\HomeProject\\VoxelPilot\\imgui\\imgui_draw.cpp", (unsigned)(4614)), 0)) );
+                                   ^
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+C:\Users\akola\Desktop\HomeProject\VoxelPilot\imgui\imgui_draw.cpp(4614): warning #186-D: pointless comparison of unsigned integer with zero
+                  ((void)( (!!(r.x >= 0 && r.y >= 0)) || (_wassert(L"r.x >= 0 && r.y >= 0", L"C:\\Users\\akola\\Desktop\\HomeProject\\VoxelPilot\\imgui\\imgui_draw.cpp", (unsigned)(4614)), 0)) );
+                                               ^
+
+C:\Users\akola\Desktop\HomeProject\VoxelPilot\imgui\imgui_draw.cpp(4614): warning #186-D: pointless comparison of unsigned integer with zero
+                  ((void)( (!!(r.x >= 0 && r.y >= 0)) || (_wassert(L"r.x >= 0 && r.y >= 0", L"C:\\Users\\akola\\Desktop\\HomeProject\\VoxelPilot\\imgui\\imgui_draw.cpp", (unsigned)(4614)), 0)) );
+                                   ^
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+C:\Users\akola\Desktop\HomeProject\VoxelPilot\imgui\imgui_draw.cpp(4614): warning #186-D: pointless comparison of unsigned integer with zero
+                  ((void)( (!!(r.x >= 0 && r.y >= 0)) || (_wassert(L"r.x >= 0 && r.y >= 0", L"C:\\Users\\akola\\Desktop\\HomeProject\\VoxelPilot\\imgui\\imgui_draw.cpp", (unsigned)(4614)), 0)) );
+                                               ^
+
+imgui_draw.cpp
+tmpxft_000077c0_00000000-7_imgui_draw.cudafe1.cpp
+[build] imgui\imgui_tables.cpp
+imgui_tables.cpp
+tmpxft_00009064_00000000-7_imgui_tables.cudafe1.cpp
+[build] imgui\imgui_widgets.cpp
+C:\Users\akola\Desktop\HomeProject\VoxelPilot\imgui\imgui_widgets.cpp(5859): warning #550-D: variable "r" was set but never used
+              int r;
+                  ^
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+C:\Users\akola\Desktop\HomeProject\VoxelPilot\imgui\imgui_internal.h(511): warning #186-D: pointless comparison of unsigned integer with zero
+  template<typename T> T ImAddClampOverflow(T a, T b, T mn, T mx)         { if (b < 0 && (a < mn - b)) return mn; if (b > 0 && (a > mx - b)) return mx; return a + b; }
+                                                                                  ^
+          detected during instantiation of "T ImAddClampOverflow(T, T, T, T) [with T=ImU8]" at line 2287 of C:\Users\akola\Desktop\HomeProject\VoxelPilot\imgui\imgui_widgets.cpp
+
+C:\Users\akola\Desktop\HomeProject\VoxelPilot\imgui\imgui_internal.h(512): warning #186-D: pointless comparison of unsigned integer with zero
+  template<typename T> T ImSubClampOverflow(T a, T b, T mn, T mx)         { if (b > 0 && (a < mn + b)) return mn; if (b < 0 && (a > mx + b)) return mx; return a - b; }
+                                                                                                                        ^
+          detected during instantiation of "T ImSubClampOverflow(T, T, T, T) [with T=ImU8]" at line 2288 of C:\Users\akola\Desktop\HomeProject\VoxelPilot\imgui\imgui_widgets.cpp
+
+C:\Users\akola\Desktop\HomeProject\VoxelPilot\imgui\imgui_internal.h(511): warning #186-D: pointless comparison of unsigned integer with zero
+  template<typename T> T ImAddClampOverflow(T a, T b, T mn, T mx)         { if (b < 0 && (a < mn - b)) return mn; if (b > 0 && (a > mx - b)) return mx; return a + b; }
+                                                                                  ^
+          detected during instantiation of "T ImAddClampOverflow(T, T, T, T) [with T=ImU16]" at line 2295 of C:\Users\akola\Desktop\HomeProject\VoxelPilot\imgui\imgui_widgets.cpp
+
+C:\Users\akola\Desktop\HomeProject\VoxelPilot\imgui\imgui_internal.h(512): warning #186-D: pointless comparison of unsigned integer with zero
+  template<typename T> T ImSubClampOverflow(T a, T b, T mn, T mx)         { if (b > 0 && (a < mn + b)) return mn; if (b < 0 && (a > mx + b)) return mx; return a - b; }
+                                                                                                                        ^
+          detected during instantiation of "T ImSubClampOverflow(T, T, T, T) [with T=ImU16]" at line 2296 of C:\Users\akola\Desktop\HomeProject\VoxelPilot\imgui\imgui_widgets.cpp
+
+C:\Users\akola\Desktop\HomeProject\VoxelPilot\imgui\imgui_internal.h(511): warning #186-D: pointless comparison of unsigned integer with zero
+  template<typename T> T ImAddClampOverflow(T a, T b, T mn, T mx)         { if (b < 0 && (a < mn - b)) return mn; if (b > 0 && (a > mx - b)) return mx; return a + b; }
+                                                                                  ^
+          detected during instantiation of "T ImAddClampOverflow(T, T, T, T) [with T=ImU32]" at line 2303 of C:\Users\akola\Desktop\HomeProject\VoxelPilot\imgui\imgui_widgets.cpp
+
+C:\Users\akola\Desktop\HomeProject\VoxelPilot\imgui\imgui_internal.h(512): warning #186-D: pointless comparison of unsigned integer with zero
+  template<typename T> T ImSubClampOverflow(T a, T b, T mn, T mx)         { if (b > 0 && (a < mn + b)) return mn; if (b < 0 && (a > mx + b)) return mx; return a - b; }
+                                                                                                                        ^
+          detected during instantiation of "T ImSubClampOverflow(T, T, T, T) [with T=ImU32]" at line 2304 of C:\Users\akola\Desktop\HomeProject\VoxelPilot\imgui\imgui_widgets.cpp
+
+C:\Users\akola\Desktop\HomeProject\VoxelPilot\imgui\imgui_internal.h(511): warning #186-D: pointless comparison of unsigned integer with zero
+  template<typename T> T ImAddClampOverflow(T a, T b, T mn, T mx)         { if (b < 0 && (a < mn - b)) return mn; if (b > 0 && (a > mx - b)) return mx; return a + b; }
+                                                                                  ^
+          detected during instantiation of "T ImAddClampOverflow(T, T, T, T) [with T=ImU64]" at line 2311 of C:\Users\akola\Desktop\HomeProject\VoxelPilot\imgui\imgui_widgets.cpp
+
+C:\Users\akola\Desktop\HomeProject\VoxelPilot\imgui\imgui_internal.h(512): warning #186-D: pointless comparison of unsigned integer with zero
+  template<typename T> T ImSubClampOverflow(T a, T b, T mn, T mx)         { if (b > 0 && (a < mn + b)) return mn; if (b < 0 && (a > mx + b)) return mx; return a - b; }
+                                                                                                                        ^
+          detected during instantiation of "T ImSubClampOverflow(T, T, T, T) [with T=ImU64]" at line 2312 of C:\Users\akola\Desktop\HomeProject\VoxelPilot\imgui\imgui_widgets.cpp
+
+imgui_widgets.cpp
+tmpxft_00001ea0_00000000-7_imgui_widgets.cudafe1.cpp
+[build] imgui\backends\imgui_impl_glfw.cpp
+imgui_impl_glfw.cpp
+tmpxft_000064a0_00000000-7_imgui_impl_glfw.cudafe1.cpp
+[build] imgui\backends\imgui_impl_opengl3.cpp
+imgui_impl_opengl3.cpp
+tmpxft_00005150_00000000-7_imgui_impl_opengl3.cudafe1.cpp
+[build] third_party\tinyfiledialogs\tinyfiledialogs.c
+C:\Users\akola\Desktop\HomeProject\VoxelPilot\third_party\tinyfiledialogs\tinyfiledialogs.c(666): warning #2464-D: conversion from a string literal to "char *" is deprecated
+  	char * pDefaultCMD = "CMD.EXE";
+  	                     ^
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+C:\Users\akola\Desktop\HomeProject\VoxelPilot\third_party\tinyfiledialogs\tinyfiledialogs.c(724): warning #2465-D: conversion from a string literal to pointer-to-character (non-const) is deprecated
+  	wchar_t * pDefaultCMD = L"CMD.EXE";
+  	                        ^
+
+C:\Users\akola\Desktop\HomeProject\VoxelPilot\third_party\tinyfiledialogs\tinyfiledialogs.c(666): warning #2464-D: conversion from a string literal to "char *" is deprecated
+  	char * pDefaultCMD = "CMD.EXE";
+  	                     ^
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+C:\Users\akola\Desktop\HomeProject\VoxelPilot\third_party\tinyfiledialogs\tinyfiledialogs.c(724): warning #2465-D: conversion from a string literal to pointer-to-character (non-const) is deprecated
+  	wchar_t * pDefaultCMD = L"CMD.EXE";
+  	                        ^
+
+C:\Users\akola\Desktop\HomeProject\VoxelPilot\third_party\tinyfiledialogs\tinyfiledialogs.c(128): warning #177-D: variable "tinyfd_verbose" was declared but never referenced
+  static int tinyfd_verbose = 0 ; 
+             ^
+
+tinyfiledialogs.c
+tmpxft_000084ac_00000000-7_tinyfiledialogs.cudafe1.cpp
+C:\Users\akola\Desktop\HomeProject\VoxelPilot\third_party\tinyfiledialogs\tinyfiledialogs.c(329): warning C4267: 'initializing': conversion from 'size_t' to 'int', possible loss of data
+C:\Users\akola\Desktop\HomeProject\VoxelPilot\third_party\tinyfiledialogs\tinyfiledialogs.c(399): warning C4267: '=': conversion from 'size_t' to 'int', possible loss of data
+C:\Users\akola\Desktop\HomeProject\VoxelPilot\third_party\tinyfiledialogs\tinyfiledialogs.c(408): warning C4244: '=': conversion from '__int64' to 'int', possible loss of data
+C:\Users\akola\Desktop\HomeProject\VoxelPilot\third_party\tinyfiledialogs\tinyfiledialogs.c(421): warning C4267: '=': conversion from 'size_t' to 'int', possible loss of data
+C:\Users\akola\Desktop\HomeProject\VoxelPilot\third_party\tinyfiledialogs\tinyfiledialogs.c(677): warning C4267: '=': conversion from 'size_t' to 'int', possible loss of data
+C:\Users\akola\Desktop\HomeProject\VoxelPilot\third_party\tinyfiledialogs\tinyfiledialogs.c(734): warning C4267: '=': conversion from 'size_t' to 'int', possible loss of data
+C:\Users\akola\Desktop\HomeProject\VoxelPilot\third_party\tinyfiledialogs\tinyfiledialogs.c(884): warning C4267: '=': conversion from 'size_t' to 'int', possible loss of data
+C:\Users\akola\Desktop\HomeProject\VoxelPilot\third_party\tinyfiledialogs\tinyfiledialogs.c(885): warning C4267: '=': conversion from 'size_t' to 'int', possible loss of data
+[build] common\volume_import.cpp
+volume_import.cpp
+[build] third_party\glew-2.2.0\src\glew.c
+glew.c
+[link] volume_renderer_standalone.exe
+renderer.obj
+raymarch_kernel.obj
+volume_textures.obj
+standalone_main.obj
+glew.obj
+imgui.obj
+imgui_draw.obj
+imgui_tables.obj
+imgui_widgets.obj
+imgui_impl_glfw.obj
+imgui_impl_opengl3.obj
+tinyfiledialogs.obj
+volume_import.obj
+opengl32.lib
+gdi32.lib
+user32.lib
+shell32.lib
+comdlg32.lib
+ole32.lib
+glfw3.lib
+LINK : warning LNK4217: symbol 'vsnprintf' defined in 'renderer.obj' is imported by 'glfw3.lib(init.obj)' in function '_glfwInputError'
+LINK : warning LNK4286: symbol 'vsnprintf' defined in 'renderer.obj' is imported by 'MSVCRT.lib(vsnprintf.obj)'
+LINK : warning LNK4217: symbol 'sscanf' defined in 'imgui.obj' is imported by 'glfw3.lib(context.obj)' in function 'parseVersionString'
+LINK : warning LNK4286: symbol '_vsnprintf' defined in 'imgui.obj' is imported by 'MSVCRT.lib(vsnprintf.obj)'
+
+Build complete:
+  C:\Users\akola\Desktop\HomeProject\VoxelPilot\volume_renderer_standalone.exe

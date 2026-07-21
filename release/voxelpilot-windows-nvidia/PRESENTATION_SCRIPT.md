@@ -16,7 +16,7 @@ Use this as a short 3 to 5 minute presentation script for the NVIDIA laptop demo
 
 ## Main Interface
 
-"The main workspace is organized around a real-time CUDA render view, supported by a control panel, slice review, metadata, help, and about panels. So instead of jumping between separate tools, everything needed for the demo is already in one place."
+"The main workspace is organized around a real-time CUDA render view, supported by a control panel, slice review, metadata, and in-app help cues. So instead of jumping between separate tools, everything needed for the demo is already in one place."
 
 ## Volume Loading
 

@@ -34,24 +34,31 @@
 #include "common/volume_structs.h"
 #include "common/math_utils.h"
 #include "common/renderer_api.h"
+#include "common/default_state.h"
+#include "common/histogram_profile.h"
+#include "common/render_command_builder.h"
+#include "common/ai_review_bundle.h"
+#include "common/insight_report.h"
 #include "common/ui_state_helpers.h"
 #include "common/ai_features.h"
 #include "common/volume_import.h"
+#include "common/cli_options.h"
+#include "common/json_utils.h"
 #include "common/semantic_discovery.h"
 #include "common/performance_governor.h"
 
 /* ============================================================
    Constants
    ============================================================ */
-#define DEFAULT_WIN_W    1600
-#define DEFAULT_WIN_H    900
-#define DEFAULT_RENDER_W 512
-#define DEFAULT_RENDER_H 512
+#define DEFAULT_WIN_W    VOXELPILOT_DEFAULT_WIN_W
+#define DEFAULT_WIN_H    VOXELPILOT_DEFAULT_WIN_H
+#define DEFAULT_RENDER_W VOXELPILOT_DEFAULT_RENDER_W
+#define DEFAULT_RENDER_H VOXELPILOT_DEFAULT_RENDER_H
 #define MAX_PATH_BUF     1024
 #define BRAND_TITLE      "VoxelPilot v2"
 #define BRAND_SUBTITLE   "Cinematic AI Preview | NVIDIA Volume Explorer"
 #define HISTOGRAM_BINS   128
-#define MAX_ANNOTATIONS  8
+#define MAX_ANNOTATIONS  VOXELPILOT_DEFAULT_MAX_ANNOTATIONS
 #define ANNOTATION_NAME_MAX 64
 
 typedef struct {
@@ -116,6 +123,12 @@ typedef struct {
     int           render_h;
     int           render_match_window;
     int           render_quality_mode;
+    int           adaptive_quality_enabled;
+    int           adaptive_quality_active;
+    float         adaptive_quality_multiplier;
+    float         adaptive_step_size;
+    float         adaptive_skip_mult;
+    char          adaptive_quality_status[256];
 
     /* UI: Control */
     int           paused;
@@ -166,6 +179,11 @@ typedef struct {
     float         ai_focus_slice;
     float         ai_focus_score;
     char          ai_assist_status[256];
+    float         transfer_undo_center;
+    float         transfer_undo_width;
+    float         transfer_undo_opacity_scale;
+    int           transfer_undo_available;
+    char          ui_toast[256];
     char          ai_prompt[256];
     int           annotation_mode;
     char          annotation_name[ANNOTATION_NAME_MAX];
@@ -238,10 +256,22 @@ typedef struct {
     double        last_mouse_y;
     float         pending_scroll;
     int           orbit_drag_active;
+    int           camera_motion_active;
     int           dock_layout_ready;
     float         dock_layout_viewport_w;
     float         dock_layout_viewport_h;
+    int           controls_visible;
+    int           insights_visible;
+    int           ai_visible;
+    int           metadata_visible;
+    int           ribbon_expanded;
+    int           ribbon_active_tab;
     int           demo_mode_enabled;
+    int           demo_auto_enabled;
+    double        demo_auto_start_time;
+    double        demo_auto_duration_sec;
+    int           demo_auto_enhance_applied;
+    char          demo_auto_status[192];
     int           walkthrough_visible;
     int           walkthrough_step;
     int           guided_review_visible;
@@ -290,6 +320,23 @@ static const char *k_render_quality_labels[] = {
     "Interactive GPU",
     "Balanced GPU",
     "Quality GPU"
+};
+
+enum {
+    VOXELPILOT_RIBBON_HOME = 0,
+    VOXELPILOT_RIBBON_VIEW = 1,
+    VOXELPILOT_RIBBON_AI = 2,
+    VOXELPILOT_RIBBON_ANALYSIS = 3,
+    VOXELPILOT_RIBBON_EXPORT = 4,
+    VOXELPILOT_RIBBON_COUNT = 5
+};
+
+static const char *k_ribbon_tab_labels[] = {
+    "Home",
+    "View",
+    "AI Assist",
+    "Analysis",
+    "Export"
 };
 
 static void apply_render_quality_preset(StandaloneApp *app, int quality_mode);
@@ -403,6 +450,9 @@ static int select_guided_review_region(StandaloneApp *app, int direction);
 static void start_guided_review(StandaloneApp *app);
 static void draw_guided_review_overlay(StandaloneApp *app);
 static void update_render_performance_average(StandaloneApp *app);
+static void update_quant_metrics(StandaloneApp *app);
+static void reset_default_layout(StandaloneApp *app);
+static void refresh_adaptive_quality_for_frame(StandaloneApp *app);
 static void refresh_performance_governor(StandaloneApp *app);
 static void export_ai_review_bundle(StandaloneApp *app);
 static void refresh_semantic_annotation_overlays(StandaloneApp *app);
@@ -578,66 +628,32 @@ static void upload_gray_texture(
 
 static void update_histogram(StandaloneApp *app)
 {
-    size_t voxel_count;
-    size_t i;
-    float min_v;
-    float max_v;
-    float range;
-    float peak_count;
+    VoxelPilotHistogramProfile profile;
 
-    memset(app->histogram, 0, sizeof(app->histogram));
-    app->histogram_ready = 0;
-    app->hist_peak_count = 0.0f;
-
-    if (!app->renderer.volume_data ||
-        app->renderer.W < 1 ||
-        app->renderer.H < 1 ||
-        app->renderer.D < 1) {
+    if (!app) {
         return;
     }
 
-    voxel_count = (size_t)app->renderer.W *
-                  (size_t)app->renderer.H *
-                  (size_t)app->renderer.D;
-    if (voxel_count == 0) {
+    if (!voxelpilot_compute_histogram_profile(
+            app->renderer.volume_data,
+            app->renderer.W,
+            app->renderer.H,
+            app->renderer.D,
+            app->histogram,
+            HISTOGRAM_BINS,
+            &profile)) {
+        app->histogram_ready = 0;
+        app->hist_min_value = 0.0f;
+        app->hist_max_value = 0.0f;
+        app->hist_peak_count = 0.0f;
         return;
     }
 
-    min_v = app->renderer.volume_data[0];
-    max_v = app->renderer.volume_data[0];
-
-    for (i = 1; i < voxel_count; ++i) {
-        float v = app->renderer.volume_data[i];
-        if (v < min_v) min_v = v;
-        if (v > max_v) max_v = v;
-    }
-
-    range = max_v - min_v;
-    if (range < 1e-6f) {
-        app->histogram[0] = (float)voxel_count;
-    } else {
-        for (i = 0; i < voxel_count; ++i) {
-            float normalized = (app->renderer.volume_data[i] - min_v) / range;
-            int bin = (int)(normalized * (float)(HISTOGRAM_BINS - 1));
-            if (bin < 0) bin = 0;
-            if (bin >= HISTOGRAM_BINS) bin = HISTOGRAM_BINS - 1;
-            app->histogram[bin] += 1.0f;
-        }
-    }
-
-    peak_count = 0.0f;
-    for (i = 0; i < HISTOGRAM_BINS; ++i) {
-        if (app->histogram[i] > peak_count) {
-            peak_count = app->histogram[i];
-        }
-    }
-
-    app->hist_min_value = min_v;
-    app->hist_max_value = max_v;
-    app->hist_peak_count = peak_count;
-    app->histogram_ready = 1;
+    app->hist_min_value = profile.min_value;
+    app->hist_max_value = profile.max_value;
+    app->hist_peak_count = profile.peak_count;
+    app->histogram_ready = profile.ready;
 }
-
 static const char *dataset_health_level_label(int level)
 {
     if (level == VOXELPILOT_DATASET_HEALTH_ATTENTION) return "Attention";
@@ -832,62 +848,96 @@ static void apply_render_quality_preset(StandaloneApp *app, int quality_mode)
         app->threshold = 0.96f;
         app->skip_mult = 1.50f;
     }
+
+    app->adaptive_quality_multiplier = 1.0f;
+    app->adaptive_quality_active = 0;
+    app->adaptive_step_size = app->step_size;
+    app->adaptive_skip_mult = app->skip_mult;
+    snprintf(app->adaptive_quality_status,
+             sizeof(app->adaptive_quality_status),
+             app->adaptive_quality_enabled
+                 ? "Adaptive quality ready: using the selected GPU preset."
+                 : "Adaptive quality disabled: using the selected GPU preset.");
 }
 
-static void reset_workspace(StandaloneApp *app)
+static void apply_default_workspace_state(StandaloneApp *app, int include_window_defaults)
 {
-    app->render_w = DEFAULT_RENDER_W;
-    app->render_h = DEFAULT_RENDER_H;
-    app->render_match_window = 1;
-    apply_render_quality_preset(app, VOXELPILOT_RENDER_QUALITY_BALANCED);
-    app->paused = 0;
-    app->fov_y_deg = 45.0f;
-    app->light_pos[0] = 1.5f;
-    app->light_pos[1] = 1.5f;
-    app->light_pos[2] = -1.0f;
-    {
-        VoxelPilotCinematicParams cinematic;
-        voxelpilot_cinematic_defaults(&cinematic);
-        app->cinematic_enabled = cinematic.enabled;
-        app->cinematic_rim_strength = cinematic.rim_strength;
-        app->cinematic_glow_strength = cinematic.glow_strength;
-        app->cinematic_contrast = cinematic.contrast;
+    VoxelPilotDefaultState defaults;
+
+    if (!app) {
+        return;
     }
-    app->tf_center = 0.45f;
-    app->tf_width = 0.35f;
-    app->tf_opacity_scale = 1.8f;
-    app->tf_palette = 0;
-    app->tf_invert = 0;
-    voxelpilot_set_default_clip_bounds(app->clip_min, app->clip_max);
-    app->slice_x = 0.5f;
-    app->slice_y = 0.5f;
-    app->slice_z = 0.5f;
-    app->measure_a[0] = 0.25f;
-    app->measure_a[1] = 0.50f;
-    app->measure_a[2] = 0.50f;
-    app->measure_b[0] = 0.75f;
-    app->measure_b[1] = 0.50f;
-    app->measure_b[2] = 0.50f;
-    app->measurement_visible = 1;
-    app->measurement_target = 0;
-    app->annotation_mode = 0;
-    app->annotation_tolerance = 0.035f;
-    app->annotation_color[0] = 0.95f;
-    app->annotation_color[1] = 0.28f;
-    app->annotation_color[2] = 0.16f;
-    app->label_overlay_visible = 1;
-    app->label_overlay_alpha = 0.55f;
-    app->label_selected_emphasis_enabled = 1;
-    app->label_selected_emphasis_strength = 0.65f;
-    app->semantic_max_regions = MAX_ANNOTATIONS;
-    app->semantic_min_region_voxels = 128;
-    app->semantic_sensitivity = 0.55f;
-    app->semantic_cinematic_emphasis = 1;
-    app->semantic_callouts_enabled = 1;
-    app->semantic_callout_top_regions = 3;
-    app->semantic_callout_selected_only = 0;
-    app->semantic_callout_opacity = 0.88f;
-    reset_semantic_discovery(app);
+
+    voxelpilot_default_state_init(&defaults);
+
+    if (include_window_defaults) {
+        app->win_w = defaults.window_width;
+        app->win_h = defaults.window_height;
+        app->layout_refit_next_frame = defaults.layout_refit_next_frame;
+        app->window_was_maximized = defaults.window_was_maximized;
+    }
+
+    app->render_w = defaults.render_width;
+    app->render_h = defaults.render_height;
+    app->render_match_window = defaults.render_match_window;
+    app->selected_resolution = defaults.selected_resolution;
+    app->ribbon_expanded = defaults.ribbon_expanded;
+    app->ribbon_active_tab = defaults.ribbon_active_tab;
+    app->controls_visible = 1;
+    app->insights_visible = 1;
+    app->ai_visible = 1;
+    app->metadata_visible = 1;
+    app->adaptive_quality_enabled = defaults.adaptive_quality_enabled;
+    apply_render_quality_preset(app, VOXELPILOT_RENDER_QUALITY_BALANCED);
+
+    app->paused = defaults.paused;
+    app->fov_y_deg = defaults.fov_y_degrees;
+    memcpy(app->light_pos, defaults.light_pos, sizeof(app->light_pos));
+    app->cinematic_enabled = defaults.cinematic_enabled;
+    app->cinematic_rim_strength = defaults.cinematic_rim_strength;
+    app->cinematic_glow_strength = defaults.cinematic_glow_strength;
+    app->cinematic_contrast = defaults.cinematic_contrast;
+    app->tf_center = defaults.tf_center;
+    app->tf_width = defaults.tf_width;
+    app->tf_opacity_scale = defaults.tf_opacity_scale;
+    app->tf_palette = defaults.tf_palette;
+    app->tf_invert = defaults.tf_invert;
+    memcpy(app->clip_min, defaults.clip_min, sizeof(app->clip_min));
+    memcpy(app->clip_max, defaults.clip_max, sizeof(app->clip_max));
+    app->slice_x = defaults.slice[0];
+    app->slice_y = defaults.slice[1];
+    app->slice_z = defaults.slice[2];
+    memcpy(app->measure_a, defaults.measure_a, sizeof(app->measure_a));
+    memcpy(app->measure_b, defaults.measure_b, sizeof(app->measure_b));
+    app->measurement_visible = defaults.measurement_visible;
+    app->measurement_target = defaults.measurement_target;
+    app->annotation_mode = defaults.annotation_mode;
+    snprintf(app->annotation_name, sizeof(app->annotation_name), "Region");
+    app->annotation_tolerance = defaults.annotation_tolerance;
+    memcpy(app->annotation_color, defaults.annotation_color, sizeof(app->annotation_color));
+    app->label_overlay_visible = defaults.label_overlay_visible;
+    app->label_overlay_alpha = defaults.label_overlay_alpha;
+    app->label_selected_emphasis_enabled = defaults.label_selected_emphasis_enabled;
+    app->label_selected_emphasis_strength = defaults.label_selected_emphasis_strength;
+    app->semantic_max_regions = defaults.semantic_max_regions;
+    app->semantic_min_region_voxels = defaults.semantic_min_region_voxels;
+    app->semantic_sensitivity = defaults.semantic_sensitivity;
+    app->semantic_cinematic_emphasis = defaults.semantic_cinematic_emphasis;
+    app->semantic_callouts_enabled = defaults.semantic_callouts_enabled;
+    app->semantic_callout_top_regions = defaults.semantic_callout_top_regions;
+    app->semantic_callout_selected_only = defaults.semantic_callout_selected_only;
+    app->semantic_callout_opacity = defaults.semantic_callout_opacity;
+
+    if (include_window_defaults) {
+        reset_semantic_discovery(app);
+        app->annotation_count = 0;
+        app->selected_annotation = -1;
+        snprintf(app->annotation_status, sizeof(app->annotation_status),
+                 "No annotation regions yet.");
+    } else {
+        reset_annotations(app);
+    }
+
     app->guided_review_visible = 0;
     memset(&app->guided_review_step, 0, sizeof(app->guided_review_step));
     snprintf(app->guided_review_status, sizeof(app->guided_review_status),
@@ -919,31 +969,27 @@ static void reset_workspace(StandaloneApp *app)
     snprintf(app->main_hover_description,
              sizeof(app->main_hover_description),
              "Hover over the 3D render for a direct pick explanation.");
-    snprintf(app->annotation_name, sizeof(app->annotation_name), "Region");
-    reset_annotations(app);
-    app->voxel_spacing[0] = 1.0f;
-    app->voxel_spacing[1] = 1.0f;
-    app->voxel_spacing[2] = 1.0f;
-    app->orbit_target[0] = 0.5f;
-    app->orbit_target[1] = 0.5f;
-    app->orbit_target[2] = 0.5f;
-    app->orbit_yaw = 0.0f;
-    app->orbit_pitch = 0.0f;
-    app->orbit_radius = 1.2f;
+    memcpy(app->voxel_spacing, defaults.voxel_spacing, sizeof(app->voxel_spacing));
+    memcpy(app->orbit_target, defaults.orbit_target, sizeof(app->orbit_target));
     sync_resolution_selection(app);
     set_camera_preset(app,
-        -0.35f, 0.95f, -0.35f,
-        0.7f, -0.35f, 0.7f,
-        0.0f, 1.0f, 0.0f);
+        defaults.camera_pos[0], defaults.camera_pos[1], defaults.camera_pos[2],
+        defaults.camera_dir[0], defaults.camera_dir[1], defaults.camera_dir[2],
+        defaults.camera_up[0], defaults.camera_up[1], defaults.camera_up[2]);
+}
+
+static void reset_workspace(StandaloneApp *app)
+{
+    apply_default_workspace_state(app, 0);
     strcpy(app->screenshot_status, "Workspace reset");
     strcpy(app->preset_status, "Workspace reset");
 }
-
 static void process_mouse_camera_controls(StandaloneApp *app)
 {
     ImGuiIO *io;
     double mouse_x, mouse_y;
     int left_down;
+    int motion_active = 0;
 
     io = &ImGui::GetIO();
     glfwGetCursorPos(app->window, &mouse_x, &mouse_y);
@@ -959,6 +1005,9 @@ static void process_mouse_camera_controls(StandaloneApp *app)
 
         app->orbit_yaw += dx * 0.01f;
         app->orbit_pitch += dy * 0.01f;
+        if (fabsf(dx) > 0.001f || fabsf(dy) > 0.001f) {
+            motion_active = 1;
+        }
         if (app->orbit_pitch > 1.45f) app->orbit_pitch = 1.45f;
         if (app->orbit_pitch < -1.45f) app->orbit_pitch = -1.45f;
         apply_orbit_camera(app);
@@ -971,6 +1020,11 @@ static void process_mouse_camera_controls(StandaloneApp *app)
         if (app->orbit_radius < 0.25f) app->orbit_radius = 0.25f;
         if (app->orbit_radius > 6.0f) app->orbit_radius = 6.0f;
         apply_orbit_camera(app);
+        motion_active = 1;
+    }
+
+    if (motion_active) {
+        app->camera_motion_active = 1;
     }
 
     app->pending_scroll = 0.0f;
@@ -1471,29 +1525,6 @@ static const char *semantic_relationship_note(
     return empty_note;
 }
 
-static void write_json_escaped(FILE *fp, const char *text)
-{
-    const unsigned char *cursor = (const unsigned char *)(text ? text : "");
-    while (*cursor) {
-        unsigned char ch = *cursor++;
-        if (ch == '"' || ch == '\\') {
-            fputc('\\', fp);
-            fputc((int)ch, fp);
-        } else if (ch == '\n') {
-            fputs("\\n", fp);
-        } else if (ch == '\r') {
-            fputs("\\r", fp);
-        } else if (ch == '\t') {
-            fputs("\\t", fp);
-        } else if (ch < 32) {
-            fprintf(fp, "\\u%04x", (unsigned int)ch);
-        } else {
-            fputc((int)ch, fp);
-        }
-    }
-}
-
-
 static void clear_label_from_mask(
     StandaloneApp *app,
     unsigned char  label_id)
@@ -1598,52 +1629,6 @@ static int upsert_semantic_correction(
     return 1;
 }
 
-static const char *json_field_value(const char *line, const char *field)
-{
-    static char pattern[80];
-    snprintf(pattern, sizeof(pattern), "\"%s\":", field);
-    return strstr(line, pattern);
-}
-
-static int json_extract_string_field(const char *line, const char *field, char *out, size_t out_size)
-{
-    const char *cursor = json_field_value(line, field);
-    const char *end;
-    size_t length;
-    if (!cursor || !out || out_size == 0) return 0;
-    cursor = strchr(cursor, ':');
-    if (!cursor) return 0;
-    cursor = strchr(cursor, '"');
-    if (!cursor) return 0;
-    cursor++;
-    end = cursor;
-    while (*end && !(*end == '"' && end[-1] != '\\')) end++;
-    if (*end != '"') return 0;
-    length = (size_t)(end - cursor);
-    if (length >= out_size) length = out_size - 1;
-    memcpy(out, cursor, length);
-    out[length] = '\0';
-    return 1;
-}
-
-static int json_extract_int_field(const char *line, const char *field, int *out)
-{
-    const char *cursor = json_field_value(line, field);
-    if (!cursor || !out) return 0;
-    cursor = strchr(cursor, ':');
-    if (!cursor) return 0;
-    return sscanf(cursor + 1, "%d", out) == 1;
-}
-
-static int json_extract_float_field(const char *line, const char *field, float *out)
-{
-    const char *cursor = json_field_value(line, field);
-    if (!cursor || !out) return 0;
-    cursor = strchr(cursor, ':');
-    if (!cursor) return 0;
-    return sscanf(cursor + 1, "%f", out) == 1;
-}
-
 static int save_semantic_memory(StandaloneApp *app, const char *path)
 {
     FILE *fp;
@@ -1658,9 +1643,9 @@ static int save_semantic_memory(StandaloneApp *app, const char *path)
     for (i = 0; i < app->semantic_correction_count; ++i) {
         VoxelPilotSemanticCorrection *correction = &app->semantic_corrections[i];
         fprintf(fp, "    {\"name\": \"");
-        write_json_escaped(fp, correction->name);
+        voxelpilot_json_write_escaped(fp, correction->name);
         fprintf(fp, "\", \"archetype\": \"");
-        write_json_escaped(fp, correction->archetype);
+        voxelpilot_json_write_escaped(fp, correction->archetype);
         fprintf(fp, "\", \"densityClass\": %d, \"meanIntensity\": %.6f, \"minIntensity\": %.6f, \"maxIntensity\": %.6f, \"compactness\": %.6f, \"elongation\": %.6f, \"sizeRatio\": %.8f, \"confirmed\": %d, \"rejected\": %d}%s\n",
                 (int)correction->density_class,
                 correction->mean_intensity,
@@ -1698,18 +1683,18 @@ static int load_semantic_memory(StandaloneApp *app, const char *path)
         int density_class = 0;
         if (!strstr(line, "\"name\"") || !strstr(line, "\"archetype\"")) continue;
         memset(&correction, 0, sizeof(correction));
-        if (!json_extract_string_field(line, "name", correction.name, sizeof(correction.name))) continue;
-        json_extract_string_field(line, "archetype", correction.archetype, sizeof(correction.archetype));
-        json_extract_int_field(line, "densityClass", &density_class);
+        if (!voxelpilot_json_extract_string_field(line, "name", correction.name, sizeof(correction.name))) continue;
+        voxelpilot_json_extract_string_field(line, "archetype", correction.archetype, sizeof(correction.archetype));
+        voxelpilot_json_extract_int_field(line, "densityClass", &density_class);
         correction.density_class = (VoxelPilotDensityClass)density_class;
-        json_extract_float_field(line, "meanIntensity", &correction.mean_intensity);
-        json_extract_float_field(line, "minIntensity", &correction.min_intensity);
-        json_extract_float_field(line, "maxIntensity", &correction.max_intensity);
-        json_extract_float_field(line, "compactness", &correction.compactness);
-        json_extract_float_field(line, "elongation", &correction.elongation);
-        json_extract_float_field(line, "sizeRatio", &correction.size_ratio);
-        json_extract_int_field(line, "confirmed", &correction.confirmed);
-        json_extract_int_field(line, "rejected", &correction.rejected);
+        voxelpilot_json_extract_float_field(line, "meanIntensity", &correction.mean_intensity);
+        voxelpilot_json_extract_float_field(line, "minIntensity", &correction.min_intensity);
+        voxelpilot_json_extract_float_field(line, "maxIntensity", &correction.max_intensity);
+        voxelpilot_json_extract_float_field(line, "compactness", &correction.compactness);
+        voxelpilot_json_extract_float_field(line, "elongation", &correction.elongation);
+        voxelpilot_json_extract_float_field(line, "sizeRatio", &correction.size_ratio);
+        voxelpilot_json_extract_int_field(line, "confirmed", &correction.confirmed);
+        voxelpilot_json_extract_int_field(line, "rejected", &correction.rejected);
         app->semantic_corrections[loaded++] = correction;
     }
     fclose(fp);
@@ -1881,7 +1866,7 @@ static void export_annotation_mask(StandaloneApp *app)
                 fprintf(meta,
                         "    {\"id\": %u, \"name\": \"",
                         (unsigned int)region->label_id);
-                write_json_escaped(meta, region->name);
+                voxelpilot_json_write_escaped(meta, region->name);
                 fprintf(meta,
                         "\", \"voxels\": %zu, \"seed\": [%.6f, %.6f, %.6f], \"tolerance\": %.6f, \"intensityRange\": [%.6f, %.6f]",
                         region->voxel_count,
@@ -1898,9 +1883,9 @@ static void export_annotation_mask(StandaloneApp *app)
                             semantic->stability_score,
                             semantic->importance_score,
                             semantic->importance_rank);
-                    write_json_escaped(meta, semantic->archetype);
+                    voxelpilot_json_write_escaped(meta, semantic->archetype);
                     fprintf(meta, "\", \"description\": \"");
-                    write_json_escaped(meta, semantic->description);
+                    voxelpilot_json_write_escaped(meta, semantic->description);
                     fprintf(meta, "\"}");
                 }
                 fprintf(meta, "}");
@@ -1922,7 +1907,7 @@ static void export_annotation_mask(StandaloneApp *app)
                         (int)relation->type,
                         relation->centroid_distance,
                         relation->confidence);
-                write_json_escaped(meta, relation->description);
+                voxelpilot_json_write_escaped(meta, relation->description);
                 fprintf(meta, "\"}");
                 emitted++;
             }
@@ -2147,6 +2132,12 @@ static int save_workspace_preset(StandaloneApp *app, const char *path)
     fprintf(fp, "render_h %d\n", app->render_h);
     fprintf(fp, "render_match_window %d\n", app->render_match_window);
     fprintf(fp, "render_quality_mode %d\n", app->render_quality_mode);
+    fprintf(fp, "ribbon_expanded %d\n", app->ribbon_expanded);
+    fprintf(fp, "ribbon_active_tab %d\n", app->ribbon_active_tab);
+    fprintf(fp, "controls_visible %d\n", app->controls_visible);
+    fprintf(fp, "insights_visible %d\n", app->insights_visible);
+    fprintf(fp, "ai_visible %d\n", app->ai_visible);
+    fprintf(fp, "metadata_visible %d\n", app->metadata_visible);
     fprintf(fp, "step_size %.9f\n", app->step_size);
     fprintf(fp, "threshold %.9f\n", app->threshold);
     fprintf(fp, "skip_mult %.9f\n", app->skip_mult);
@@ -2192,6 +2183,12 @@ static int load_workspace_preset(StandaloneApp *app, const char *path)
         else if (strcmp(key, "render_h") == 0) fscanf(fp, "%d", &app->render_h);
         else if (strcmp(key, "render_match_window") == 0) fscanf(fp, "%d", &app->render_match_window);
         else if (strcmp(key, "render_quality_mode") == 0) fscanf(fp, "%d", &app->render_quality_mode);
+        else if (strcmp(key, "ribbon_expanded") == 0) fscanf(fp, "%d", &app->ribbon_expanded);
+        else if (strcmp(key, "ribbon_active_tab") == 0) fscanf(fp, "%d", &app->ribbon_active_tab);
+        else if (strcmp(key, "controls_visible") == 0) fscanf(fp, "%d", &app->controls_visible);
+        else if (strcmp(key, "insights_visible") == 0) fscanf(fp, "%d", &app->insights_visible);
+        else if (strcmp(key, "ai_visible") == 0) fscanf(fp, "%d", &app->ai_visible);
+        else if (strcmp(key, "metadata_visible") == 0) fscanf(fp, "%d", &app->metadata_visible);
         else if (strcmp(key, "step_size") == 0) fscanf(fp, "%f", &app->step_size);
         else if (strcmp(key, "threshold") == 0) fscanf(fp, "%f", &app->threshold);
         else if (strcmp(key, "skip_mult") == 0) fscanf(fp, "%f", &app->skip_mult);
@@ -2222,6 +2219,14 @@ static int load_workspace_preset(StandaloneApp *app, const char *path)
     }
 
     fclose(fp);
+    app->ribbon_expanded = app->ribbon_expanded ? 1 : 0;
+    if (app->ribbon_active_tab < 0 || app->ribbon_active_tab >= VOXELPILOT_RIBBON_COUNT) {
+        app->ribbon_active_tab = VOXELPILOT_RIBBON_HOME;
+    }
+    app->controls_visible = app->controls_visible ? 1 : 0;
+    app->insights_visible = app->insights_visible ? 1 : 0;
+    app->ai_visible = app->ai_visible ? 1 : 0;
+    app->metadata_visible = app->metadata_visible ? 1 : 0;
     clamp_cinematic_settings(app);
     sync_resolution_selection(app);
     return 0;
@@ -2289,71 +2294,98 @@ static void save_screenshot(StandaloneApp *app)
         app->screenshot_path);
 }
 
+static void attach_label_overlay_to_render_command(
+    StandaloneApp  *app,
+    RendererInput  *cmd)
+{
+    VoxelPilotRenderLabelOverlayConfig labels;
+    int i;
+    int color_count;
+
+    if (!app || !cmd) return;
+
+    voxelpilot_render_label_overlay_config_defaults(&labels);
+    labels.visible = app->label_overlay_visible;
+    labels.label_mask = app->label_mask;
+    labels.label_mask_width = app->label_mask_W;
+    labels.label_mask_height = app->label_mask_H;
+    labels.label_mask_depth = app->label_mask_D;
+    labels.renderer_width = app->renderer.W;
+    labels.renderer_height = app->renderer.H;
+    labels.renderer_depth = app->renderer.D;
+    labels.label_count = app->annotation_count;
+    labels.alpha = app->label_overlay_alpha;
+    labels.revision = app->label_mask_revision;
+
+    if (app->label_selected_emphasis_enabled &&
+        app->selected_annotation >= 0 &&
+        app->selected_annotation < app->annotation_count) {
+        labels.selected_enabled = 1;
+        labels.selected_label_id = app->annotations[app->selected_annotation].label_id;
+        labels.selected_emphasis = app->label_selected_emphasis_strength;
+    }
+
+    color_count = MAX_ANNOTATIONS < RENDERER_MAX_LABELS
+                      ? MAX_ANNOTATIONS
+                      : RENDERER_MAX_LABELS;
+    for (i = 0; i < color_count; ++i) {
+        labels.colors[i * 3 + 0] = app->annotations[i].color[0];
+        labels.colors[i * 3 + 1] = app->annotations[i].color[1];
+        labels.colors[i * 3 + 2] = app->annotations[i].color[2];
+    }
+
+    voxelpilot_attach_label_overlay_to_renderer_input(&labels, cmd);
+}
+static int build_current_renderer_input(
+    StandaloneApp *app,
+    RendererInput *cmd)
+{
+    VoxelPilotRenderCommandConfig config;
+
+    if (!app || !cmd) return 0;
+
+    refresh_adaptive_quality_for_frame(app);
+    voxelpilot_render_command_config_defaults(&config);
+
+    memcpy(config.cam_pos, app->cam_pos, sizeof(config.cam_pos));
+    memcpy(config.cam_dir, app->cam_dir, sizeof(config.cam_dir));
+    memcpy(config.cam_up, app->cam_up, sizeof(config.cam_up));
+    memcpy(config.light_pos, app->light_pos, sizeof(config.light_pos));
+    memcpy(config.clip_min, app->clip_min, sizeof(config.clip_min));
+    memcpy(config.clip_max, app->clip_max, sizeof(config.clip_max));
+
+    config.fov_y_degrees = app->fov_y_deg;
+    config.step_size = app->adaptive_step_size;
+    config.threshold = app->threshold;
+    config.empty_space_skip_mult = app->adaptive_skip_mult;
+    config.tf_center = app->tf_center;
+    config.tf_width = app->tf_width;
+    config.tf_opacity_scale = app->tf_opacity_scale;
+    config.tf_palette = app->tf_palette;
+    config.tf_invert = app->tf_invert;
+    config.cinematic_enabled = app->cinematic_enabled;
+    config.cinematic_rim_strength = app->cinematic_rim_strength;
+    config.cinematic_glow_strength = app->cinematic_glow_strength;
+    config.cinematic_contrast = app->cinematic_contrast;
+    config.render_width = app->render_w;
+    config.render_height = app->render_h;
+
+    if (!voxelpilot_build_renderer_input(&config, cmd)) {
+        return 0;
+    }
+
+    attach_label_overlay_to_render_command(app, cmd);
+    return 1;
+}
 /* ============================================================
    Render one frame to the CUDA output buffer only (no GL window)
    ============================================================ */
 static void render_frame_gpu_snapshot(StandaloneApp *app)
 {
     RendererInput cmd;
-    memset(&cmd, 0, sizeof(cmd));
 
-    cmd.cam_pos[0] = app->cam_pos[0];
-    cmd.cam_pos[1] = app->cam_pos[1];
-    cmd.cam_pos[2] = app->cam_pos[2];
-    cmd.cam_dir[0] = app->cam_dir[0];
-    cmd.cam_dir[1] = app->cam_dir[1];
-    cmd.cam_dir[2] = app->cam_dir[2];
-    cmd.cam_up[0]  = app->cam_up[0];
-    cmd.cam_up[1]  = app->cam_up[1];
-    cmd.cam_up[2]  = app->cam_up[2];
-    cmd.fov_y      = app->fov_y_deg * 3.14159265f / 180.0f;
-    cmd.light_pos[0] = app->light_pos[0];
-    cmd.light_pos[1] = app->light_pos[1];
-    cmd.light_pos[2] = app->light_pos[2];
-    cmd.step_size             = app->step_size;
-    cmd.threshold             = app->threshold;
-    cmd.empty_space_skip_mult = app->skip_mult;
-    cmd.tf_center             = app->tf_center;
-    cmd.tf_width              = app->tf_width;
-    cmd.tf_opacity_scale      = app->tf_opacity_scale;
-    cmd.tf_palette            = app->tf_palette;
-    cmd.tf_invert             = app->tf_invert;
-    cmd.cinematic_enabled       = app->cinematic_enabled;
-    cmd.cinematic_rim_strength  = app->cinematic_rim_strength;
-    cmd.cinematic_glow_strength = app->cinematic_glow_strength;
-    cmd.cinematic_contrast      = app->cinematic_contrast;
-    memcpy(cmd.clip_min, app->clip_min, sizeof(cmd.clip_min));
-    memcpy(cmd.clip_max, app->clip_max, sizeof(cmd.clip_max));
-    cmd.img_width  = (uint32_t)app->render_w;
-    cmd.img_height = (uint32_t)app->render_h;
-    if (app->label_overlay_visible &&
-        app->label_mask &&
-        app->annotation_count > 0 &&
-        app->label_mask_W == app->renderer.W &&
-        app->label_mask_H == app->renderer.H &&
-        app->label_mask_D == app->renderer.D) {
-        int i;
-
-        cmd.label_mask = app->label_mask;
-        cmd.labels.enabled = 1;
-        cmd.labels.width = app->label_mask_W;
-        cmd.labels.height = app->label_mask_H;
-        cmd.labels.depth = app->label_mask_D;
-        cmd.labels.label_count = app->annotation_count;
-        cmd.labels.alpha = app->label_overlay_alpha;
-        cmd.labels.revision = app->label_mask_revision;
-        if (app->label_selected_emphasis_enabled &&
-            app->selected_annotation >= 0 &&
-            app->selected_annotation < app->annotation_count) {
-            cmd.labels.selected_label_id = app->annotations[app->selected_annotation].label_id;
-            cmd.labels.selected_emphasis = app->label_selected_emphasis_strength;
-        }
-
-        for (i = 0; i < MAX_ANNOTATIONS; ++i) {
-            cmd.labels.colors[i * 3 + 0] = app->annotations[i].color[0];
-            cmd.labels.colors[i * 3 + 1] = app->annotations[i].color[1];
-            cmd.labels.colors[i * 3 + 2] = app->annotations[i].color[2];
-        }
+    if (!build_current_renderer_input(app, &cmd)) {
+        return;
     }
 
     apply_render_command(&app->renderer, &cmd);
@@ -2368,65 +2400,9 @@ static void render_frame_gpu_snapshot(StandaloneApp *app)
 static void render_frame_standalone(StandaloneApp *app)
 {
     RendererInput cmd;
-    memset(&cmd, 0, sizeof(cmd));
 
-    cmd.cam_pos[0] = app->cam_pos[0];
-    cmd.cam_pos[1] = app->cam_pos[1];
-    cmd.cam_pos[2] = app->cam_pos[2];
-    cmd.cam_dir[0] = app->cam_dir[0];
-    cmd.cam_dir[1] = app->cam_dir[1];
-    cmd.cam_dir[2] = app->cam_dir[2];
-    cmd.cam_up[0]  = app->cam_up[0];
-    cmd.cam_up[1]  = app->cam_up[1];
-    cmd.cam_up[2]  = app->cam_up[2];
-    cmd.fov_y      = app->fov_y_deg * 3.14159265f / 180.0f;
-    cmd.light_pos[0] = app->light_pos[0];
-    cmd.light_pos[1] = app->light_pos[1];
-    cmd.light_pos[2] = app->light_pos[2];
-    cmd.step_size             = app->step_size;
-    cmd.threshold             = app->threshold;
-    cmd.empty_space_skip_mult = app->skip_mult;
-    cmd.tf_center             = app->tf_center;
-    cmd.tf_width              = app->tf_width;
-    cmd.tf_opacity_scale      = app->tf_opacity_scale;
-    cmd.tf_palette            = app->tf_palette;
-    cmd.tf_invert             = app->tf_invert;
-    cmd.cinematic_enabled       = app->cinematic_enabled;
-    cmd.cinematic_rim_strength  = app->cinematic_rim_strength;
-    cmd.cinematic_glow_strength = app->cinematic_glow_strength;
-    cmd.cinematic_contrast      = app->cinematic_contrast;
-    memcpy(cmd.clip_min, app->clip_min, sizeof(cmd.clip_min));
-    memcpy(cmd.clip_max, app->clip_max, sizeof(cmd.clip_max));
-    cmd.img_width  = (uint32_t)app->render_w;
-    cmd.img_height = (uint32_t)app->render_h;
-    if (app->label_overlay_visible &&
-        app->label_mask &&
-        app->annotation_count > 0 &&
-        app->label_mask_W == app->renderer.W &&
-        app->label_mask_H == app->renderer.H &&
-        app->label_mask_D == app->renderer.D) {
-        int i;
-
-        cmd.label_mask = app->label_mask;
-        cmd.labels.enabled = 1;
-        cmd.labels.width = app->label_mask_W;
-        cmd.labels.height = app->label_mask_H;
-        cmd.labels.depth = app->label_mask_D;
-        cmd.labels.label_count = app->annotation_count;
-        cmd.labels.alpha = app->label_overlay_alpha;
-        cmd.labels.revision = app->label_mask_revision;
-        if (app->label_selected_emphasis_enabled &&
-            app->selected_annotation >= 0 &&
-            app->selected_annotation < app->annotation_count) {
-            cmd.labels.selected_label_id = app->annotations[app->selected_annotation].label_id;
-            cmd.labels.selected_emphasis = app->label_selected_emphasis_strength;
-        }
-
-        for (i = 0; i < MAX_ANNOTATIONS; ++i) {
-            cmd.labels.colors[i * 3 + 0] = app->annotations[i].color[0];
-            cmd.labels.colors[i * 3 + 1] = app->annotations[i].color[1];
-            cmd.labels.colors[i * 3 + 2] = app->annotations[i].color[2];
-        }
+    if (!build_current_renderer_input(app, &cmd)) {
+        return;
     }
 
     /* Apply directly to renderer - NO NETWORK */
@@ -2472,7 +2448,12 @@ static void draw_fullscreen_quad(StandaloneApp *app)
     glUseProgram(0);
 }
 
-static void draw_dockspace(void)
+static float voxelpilot_ribbon_height(const StandaloneApp *app)
+{
+    return (app && app->ribbon_expanded) ? 122.0f : 38.0f;
+}
+
+static void draw_dockspace(StandaloneApp *app)
 {
 #ifdef IMGUI_HAS_DOCK
     ImGuiDockNodeFlags dockspace_flags = ImGuiDockNodeFlags_PassthruCentralNode;
@@ -2485,13 +2466,16 @@ static void draw_dockspace(void)
         ImGuiWindowFlags_NoBringToFrontOnFocus |
         ImGuiWindowFlags_NoNavFocus;
     const ImGuiViewport *viewport = ImGui::GetMainViewport();
+    float ribbon_height = voxelpilot_ribbon_height(app);
+    ImVec2 dock_pos = ImVec2(viewport->Pos.x, viewport->Pos.y + ribbon_height);
+    ImVec2 dock_size = ImVec2(viewport->Size.x, fmaxf(120.0f, viewport->Size.y - ribbon_height));
 
     if (dockspace_flags & ImGuiDockNodeFlags_PassthruCentralNode) {
         window_flags |= ImGuiWindowFlags_NoBackground;
     }
 
-    ImGui::SetNextWindowPos(viewport->Pos);
-    ImGui::SetNextWindowSize(viewport->Size);
+    ImGui::SetNextWindowPos(dock_pos);
+    ImGui::SetNextWindowSize(dock_size);
     ImGui::SetNextWindowViewport(viewport->ID);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
@@ -2511,10 +2495,9 @@ static void ensure_default_dock_layout(StandaloneApp *app)
     ImGuiID dock_left_id;
     ImGuiID dock_right_id;
     ImGuiID dock_bottom_id;
-    ImGuiID dock_right_ai_id;
-    ImGuiID dock_right_mid_id;
-    ImGuiID dock_right_bottom_id;
     const ImGuiViewport *viewport = ImGui::GetMainViewport();
+    float ribbon_height = voxelpilot_ribbon_height(app);
+    ImVec2 dock_size = ImVec2(viewport->Size.x, fmaxf(120.0f, viewport->Size.y - ribbon_height));
 
     dockspace_id = ImGui::GetID("VoxelPilotDockspace");
 
@@ -2522,34 +2505,30 @@ static void ensure_default_dock_layout(StandaloneApp *app)
         !voxelpilot_should_rebuild_dock_layout(
             app->dock_layout_viewport_w,
             app->dock_layout_viewport_h,
-            viewport->Size.x,
-            viewport->Size.y)) {
+            dock_size.x,
+            dock_size.y)) {
         return;
     }
 
-    app->dock_layout_viewport_w = viewport->Size.x;
-    app->dock_layout_viewport_h = viewport->Size.y;
+    app->dock_layout_viewport_w = dock_size.x;
+    app->dock_layout_viewport_h = dock_size.y;
 
     ImGui::DockBuilderRemoveNode(dockspace_id);
     ImGui::DockBuilderAddNode(
         dockspace_id,
         ImGuiDockNodeFlags_DockSpace |
         ImGuiDockNodeFlags_PassthruCentralNode);
-    ImGui::DockBuilderSetNodeSize(dockspace_id, viewport->Size);
+    ImGui::DockBuilderSetNodeSize(dockspace_id, dock_size);
 
     dock_main_id = dockspace_id;
-    dock_left_id = ImGui::DockBuilderSplitNode(dock_main_id, ImGuiDir_Left, 0.28f, NULL, &dock_main_id);
-    dock_right_id = ImGui::DockBuilderSplitNode(dock_main_id, ImGuiDir_Right, 0.30f, NULL, &dock_main_id);
     dock_bottom_id = ImGui::DockBuilderSplitNode(dock_main_id, ImGuiDir_Down, 0.12f, NULL, &dock_main_id);
-    dock_right_bottom_id = ImGui::DockBuilderSplitNode(dock_right_id, ImGuiDir_Down, 0.24f, NULL, &dock_right_id);
-    dock_right_mid_id = ImGui::DockBuilderSplitNode(dock_right_id, ImGuiDir_Down, 0.18f, NULL, &dock_right_id);
-    dock_right_ai_id = ImGui::DockBuilderSplitNode(dock_right_id, ImGuiDir_Down, 0.50f, NULL, &dock_right_id);
+    dock_left_id = ImGui::DockBuilderSplitNode(dock_main_id, ImGuiDir_Left, 0.26f, NULL, &dock_main_id);
+    dock_right_id = ImGui::DockBuilderSplitNode(dock_main_id, ImGuiDir_Right, 0.30f, NULL, &dock_main_id);
 
     ImGui::DockBuilderDockWindow("Controls", dock_left_id);
+    ImGui::DockBuilderDockWindow("AI Assist", dock_right_id);
     ImGui::DockBuilderDockWindow("Insights", dock_right_id);
-    ImGui::DockBuilderDockWindow("AI Assist", dock_right_ai_id);
-    ImGui::DockBuilderDockWindow("Metadata", dock_right_mid_id);
-    ImGui::DockBuilderDockWindow("About", dock_right_bottom_id);
+    ImGui::DockBuilderDockWindow("Metadata", dock_right_id);
     ImGui::DockBuilderDockWindow("Status", dock_bottom_id);
     ImGui::DockBuilderFinish(dockspace_id);
 
@@ -2558,7 +2537,6 @@ static void ensure_default_dock_layout(StandaloneApp *app)
     (void)app;
 #endif
 }
-
 static void set_default_window_layout(
     const StandaloneApp *app,
     const char          *name)
@@ -2571,31 +2549,29 @@ static void set_default_window_layout(
             : ImGuiCond_FirstUseEver;
     float left_width;
     float right_width;
+    float ribbon_height;
     float bottom_height;
     float main_height;
     float right_top_height;
     float right_ai_height;
     float right_mid_height;
-    float right_bottom_height;
 
-    (void)app;
-
-    left_width = viewport->Size.x * 0.28f;
-    right_width = viewport->Size.x * 0.30f;
+    ribbon_height = voxelpilot_ribbon_height(app);
+    left_width = fminf(380.0f, fmaxf(280.0f, viewport->Size.x * 0.26f));
+    right_width = fminf(440.0f, fmaxf(300.0f, viewport->Size.x * 0.30f));
     bottom_height = viewport->Size.y * 0.12f;
-    main_height = viewport->Size.y - bottom_height;
-    right_top_height = main_height * 0.22f;
-    right_ai_height = main_height * 0.43f;
-    right_mid_height = main_height * 0.16f;
-    right_bottom_height =
+    main_height = viewport->Size.y - ribbon_height - bottom_height;
+    right_top_height = main_height * 0.24f;
+    right_ai_height = main_height * 0.42f;
+    right_mid_height =
         main_height -
         right_top_height -
-        right_ai_height -
-        right_mid_height;
+        right_ai_height;
 
     if (strcmp(name, "Controls") == 0) {
         ImGui::SetNextWindowPos(
-            ImVec2(viewport->Pos.x, viewport->Pos.y),
+            ImVec2(viewport->Pos.x,
+                   viewport->Pos.y + ribbon_height),
             layout_cond);
         ImGui::SetNextWindowSize(
             ImVec2(left_width, main_height),
@@ -2603,7 +2579,7 @@ static void set_default_window_layout(
     } else if (strcmp(name, "Insights") == 0) {
         ImGui::SetNextWindowPos(
             ImVec2(viewport->Pos.x + viewport->Size.x - right_width,
-                   viewport->Pos.y),
+                   viewport->Pos.y + ribbon_height),
             layout_cond);
         ImGui::SetNextWindowSize(
             ImVec2(right_width, right_top_height),
@@ -2611,7 +2587,7 @@ static void set_default_window_layout(
     } else if (strcmp(name, "AI Assist") == 0) {
         ImGui::SetNextWindowPos(
             ImVec2(viewport->Pos.x + viewport->Size.x - right_width,
-                   viewport->Pos.y + right_top_height),
+                   viewport->Pos.y + ribbon_height + right_top_height),
             layout_cond);
         ImGui::SetNextWindowSize(
             ImVec2(right_width, right_ai_height),
@@ -2619,18 +2595,10 @@ static void set_default_window_layout(
     } else if (strcmp(name, "Metadata") == 0) {
         ImGui::SetNextWindowPos(
             ImVec2(viewport->Pos.x + viewport->Size.x - right_width,
-                   viewport->Pos.y + right_top_height + right_ai_height),
+                   viewport->Pos.y + ribbon_height + right_top_height + right_ai_height),
             layout_cond);
         ImGui::SetNextWindowSize(
             ImVec2(right_width, right_mid_height),
-            layout_cond);
-    } else if (strcmp(name, "About") == 0) {
-        ImGui::SetNextWindowPos(
-            ImVec2(viewport->Pos.x + viewport->Size.x - right_width,
-                   viewport->Pos.y + right_top_height + right_ai_height + right_mid_height),
-            layout_cond);
-        ImGui::SetNextWindowSize(
-            ImVec2(right_width, right_bottom_height),
             layout_cond);
     } else if (strcmp(name, "Status") == 0) {
         ImGui::SetNextWindowPos(
@@ -2646,12 +2614,367 @@ static void set_default_window_layout(
     (void)name;
 #endif
 }
+static void draw_ribbon_tab(StandaloneApp *app, int tab_index)
+{
+    int active = app && app->ribbon_active_tab == tab_index;
+    if (active) {
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.32f, 0.35f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.22f, 0.38f, 0.42f, 1.0f));
+    }
+    if (ImGui::Button(k_ribbon_tab_labels[tab_index], ImVec2(92.0f, 0.0f)) && app) {
+        app->ribbon_active_tab = tab_index;
+        if (tab_index == VOXELPILOT_RIBBON_AI) {
+            app->ai_visible = 1;
+        }
+    }
+    if (active) {
+        ImGui::PopStyleColor(2);
+    }
+}
 
+static void draw_top_ribbon(StandaloneApp *app)
+{
+    const ImGuiViewport *viewport = ImGui::GetMainViewport();
+    float height = voxelpilot_ribbon_height(app);
+    ImGuiWindowFlags flags =
+        ImGuiWindowFlags_NoTitleBar |
+        ImGuiWindowFlags_NoCollapse |
+        ImGuiWindowFlags_NoResize |
+        ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoSavedSettings;
+#ifdef IMGUI_HAS_DOCK
+    flags |= ImGuiWindowFlags_NoDocking;
+#endif
+    int tab;
+
+    ImGui::SetNextWindowPos(viewport->Pos, ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(viewport->Size.x, height), ImGuiCond_Always);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12.0f, 8.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 6.0f));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.055f, 0.070f, 0.085f, 0.98f));
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.20f, 0.28f, 0.33f, 0.70f));
+    ImGui::Begin("VoxelPilot Ribbon", NULL, flags);
+    ImGui::PopStyleVar(4);
+    ImGui::PopStyleColor(2);
+
+    if (ImGui::BeginTable("RibbonLayout", 2, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_NoPadOuterX)) {
+        ImGui::TableSetupColumn("Brand", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("Actions", ImGuiTableColumnFlags_WidthFixed, 460.0f);
+
+        ImGui::TableNextRow(ImGuiTableRowFlags_None, 28.0f);
+        ImGui::TableSetColumnIndex(0);
+        ImGui::TextColored(ImVec4(0.40f, 0.88f, 0.78f, 1.0f), "%s", BRAND_TITLE);
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(0.72f, 0.78f, 0.86f, 1.0f), "%s", BRAND_SUBTITLE);
+
+        ImGui::TableSetColumnIndex(1);
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 1.0f);
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.12f, 0.20f, 0.24f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.18f, 0.30f, 0.34f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.22f, 0.38f, 0.40f, 1.0f));
+        if (ImGui::Button(app && app->ribbon_expanded ? "Collapse" : "Expand", ImVec2(90.0f, 0.0f)) && app) {
+            app->ribbon_expanded = app->ribbon_expanded ? 0 : 1;
+            app->dock_layout_ready = 0;
+        }
+        ImGui::PopStyleColor(3);
+        ImGui::SameLine();
+        ImGui::BeginGroup();
+        for (tab = 0; tab < VOXELPILOT_RIBBON_COUNT; ++tab) {
+            if (tab != 0) {
+                ImGui::SameLine();
+            }
+            draw_ribbon_tab(app, tab);
+        }
+        ImGui::EndGroup();
+
+        ImGui::EndTable();
+    }
+
+    if (app && app->ribbon_expanded) {
+        ImGui::Separator();
+        if (app->ribbon_active_tab == VOXELPILOT_RIBBON_HOME) {
+            if (ImGui::Button("Reset Workspace")) reset_workspace(app);
+            ImGui::SameLine();
+            if (ImGui::Button("Guided Walkthrough")) {
+                app->walkthrough_visible = 1;
+                app->walkthrough_step = 0;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Reset Layout")) reset_default_layout(app);
+            ImGui::SameLine();
+            ImGui::Text("GPU %.2f ms | FPS %.1f", app->last_render_ms, app->gui_fps);
+            ImGui::SameLine();
+            ImGui::Text("Right rail:");
+            {
+                bool insights_visible = app->insights_visible != 0;
+                bool ai_visible = app->ai_visible != 0;
+                bool metadata_visible = app->metadata_visible != 0;
+                ImGui::SameLine();
+                if (ImGui::Checkbox("Insights##panel_insights", &insights_visible)) {
+                    app->insights_visible = insights_visible ? 1 : 0;
+                }
+                ImGui::SameLine();
+                if (ImGui::Checkbox("AI Assist##panel_ai", &ai_visible)) {
+                    app->ai_visible = ai_visible ? 1 : 0;
+                }
+                ImGui::SameLine();
+                if (ImGui::Checkbox("Metadata##panel_metadata", &metadata_visible)) {
+                    app->metadata_visible = metadata_visible ? 1 : 0;
+                }
+            }
+        } else if (app->ribbon_active_tab == VOXELPILOT_RIBBON_VIEW) {
+            bool cinematic_enabled = app->cinematic_enabled != 0;
+            if (ImGui::Checkbox("Cinematic", &cinematic_enabled)) {
+                app->cinematic_enabled = cinematic_enabled ? 1 : 0;
+                clamp_cinematic_settings(app);
+            }
+            ImGui::SameLine();
+            ImGui::Text("Quality: %s", k_render_quality_labels[app->render_quality_mode]);
+            ImGui::SameLine();
+            ImGui::Text("Render: %d x %d", app->render_w, app->render_h);
+            if (app->cinematic_enabled) {
+                ImGui::SliderFloat("Rim##ribbon_cinematic_rim", &app->cinematic_rim_strength, 0.0f, 1.0f);
+                ImGui::SameLine();
+                ImGui::SliderFloat("Glow##ribbon_cinematic_glow", &app->cinematic_glow_strength, 0.0f, 1.0f);
+                ImGui::SameLine();
+                ImGui::SliderFloat("Contrast##ribbon_cinematic_contrast", &app->cinematic_contrast, 0.8f, 1.6f);
+                clamp_cinematic_settings(app);
+            }
+        } else if (app->ribbon_active_tab == VOXELPILOT_RIBBON_AI) {
+            if (!app->ai_visible) {
+                if (ImGui::Button("Open AI Assist Panel")) {
+                    app->ai_visible = 1;
+                }
+                ImGui::SameLine();
+            }
+            ImGui::TextWrapped("AI Assist lives on the right rail. Use Discover Regions, Auto Enhance View, Health Check, and export helpers there.");
+            ImGui::Text("Panel visible: %s", app->ai_visible ? "Yes" : "No");
+        } else if (app->ribbon_active_tab == VOXELPILOT_RIBBON_ANALYSIS) {
+            ImGui::Text("Dataset: %d x %d x %d | Health: %s",
+                        app->renderer.W,
+                        app->renderer.H,
+                        app->renderer.D,
+                        app->dataset_health_status);
+        } else if (app->ribbon_active_tab == VOXELPILOT_RIBBON_EXPORT) {
+            ImGui::Text("Snapshot: %s", app->screenshot_status);
+            ImGui::SameLine();
+            ImGui::Text("Report: %s", app->report_status);
+        }
+    }
+
+    ImGui::End();
+}
+
+static void set_ui_toast(StandaloneApp *app, const char *message)
+{
+    if (!app) return;
+    snprintf(app->ui_toast, sizeof(app->ui_toast), "%s", message ? message : "");
+}
+
+static void capture_transfer_undo(StandaloneApp *app)
+{
+    if (!app) return;
+    app->transfer_undo_center = app->tf_center;
+    app->transfer_undo_width = app->tf_width;
+    app->transfer_undo_opacity_scale = app->tf_opacity_scale;
+    app->transfer_undo_available = 1;
+}
+
+static void apply_transfer_settings_with_undo(
+    StandaloneApp *app,
+    float          center,
+    float          width,
+    float          opacity_scale,
+    const char    *label)
+{
+    if (!app) return;
+    capture_transfer_undo(app);
+    app->tf_center = center;
+    app->tf_width = width;
+    app->tf_opacity_scale = opacity_scale;
+    snprintf(app->ai_assist_status,
+             sizeof(app->ai_assist_status),
+             "%s applied: center %.3f, width %.3f, opacity %.2f.",
+             label && label[0] ? label : "Transfer",
+             app->tf_center,
+             app->tf_width,
+             app->tf_opacity_scale);
+    set_ui_toast(app, "Transfer applied. Undo is available.");
+    update_quant_metrics(app);
+}
+
+static int undo_transfer_settings(StandaloneApp *app)
+{
+    if (!app || !app->transfer_undo_available) return 0;
+    app->tf_center = app->transfer_undo_center;
+    app->tf_width = app->transfer_undo_width;
+    app->tf_opacity_scale = app->transfer_undo_opacity_scale;
+    app->transfer_undo_available = 0;
+    snprintf(app->ai_assist_status,
+             sizeof(app->ai_assist_status),
+             "Restored previous transfer settings.");
+    set_ui_toast(app, "Transfer reverted.");
+    update_quant_metrics(app);
+    return 1;
+}
+
+static void reset_default_layout(StandaloneApp *app)
+{
+    if (!app) return;
+    app->controls_visible = 1;
+    app->insights_visible = 1;
+    app->ai_visible = 1;
+    app->metadata_visible = 1;
+    app->dock_layout_ready = 0;
+    app->layout_refit_next_frame = 1;
+    snprintf(app->preset_status, sizeof(app->preset_status), "Layout reset to default.");
+    set_ui_toast(app, "Layout reset.");
+}
+
+static void draw_help_marker(const char *description)
+{
+    ImGui::SameLine();
+    ImGui::TextDisabled("?");
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("%s", description ? description : "More information");
+    }
+}
+
+static int browse_volume_file(StandaloneApp *app)
+{
+    const char *filter_patterns[] = { "*.raw", "*.bin", "*.dat", "*" };
+    const char *selected;
+
+    if (!app) return 0;
+    selected = tinyfd_openFileDialog(
+        "Select Volume File",
+        "",
+        4,
+        filter_patterns,
+        "Volume Files (*.raw *.bin *.dat)",
+        0);
+    if (!selected) return 0;
+
+    strncpy(app->upload_path, selected, sizeof(app->upload_path) - 1);
+    app->upload_path[sizeof(app->upload_path) - 1] = '\0';
+    refresh_upload_file_details(app);
+    strcpy(app->upload_status,
+           "File selected. Review import settings, then load volume.");
+    set_ui_toast(app, "Volume file selected.");
+    return 1;
+}
+
+static int load_selected_volume(StandaloneApp *app)
+{
+    VolumeImportSpec spec;
+    float *temp = NULL;
+    size_t voxel_count = 0;
+    char error[256];
+    size_t expected = 0;
+
+    if (!app) return 0;
+    spec.width = (uint32_t)clamp_import_dimension(app->upload_width);
+    spec.height = (uint32_t)clamp_import_dimension(app->upload_height);
+    spec.depth = (uint32_t)clamp_import_dimension(app->upload_depth);
+    spec.data_type = (VolumeDataType)app->upload_data_type;
+
+    app->upload_width = (int)spec.width;
+    app->upload_height = (int)spec.height;
+    app->upload_depth = (int)spec.depth;
+
+    if (!app->upload_path[0]) {
+        strcpy(app->upload_status, "Select a raw volume file before loading.");
+        set_ui_toast(app, "Select a volume file first.");
+        return 0;
+    }
+
+    if (volume_import_load(
+            app->upload_path,
+            &spec,
+            &temp,
+            &voxel_count,
+            error,
+            sizeof(error)) != 0) {
+        snprintf(app->upload_status, sizeof(app->upload_status), "%s", error);
+        set_ui_toast(app, "Volume load failed.");
+        return 0;
+    }
+
+    volume_import_expected_bytes(&spec, &expected);
+    strcpy(app->upload_status, "Loading to GPU...");
+    reload_volume(
+        &app->renderer,
+        temp,
+        (int)spec.width,
+        (int)spec.height,
+        (int)spec.depth);
+    update_histogram(app);
+    update_dataset_health(app);
+    apply_auto_enhance_on_load_if_safe(app, "Loaded volume");
+    app->slice_preview_dirty = 1;
+    free(app->label_mask);
+    app->label_mask = NULL;
+    app->label_mask_W = 0;
+    app->label_mask_H = 0;
+    app->label_mask_D = 0;
+    reset_annotations(app);
+    app->object_summary_ready = 0;
+    snprintf(app->object_summary_status,
+             sizeof(app->object_summary_status),
+             "Click Analyze Loaded Volume to generate a local object summary.");
+    app->quant_metrics_ready = 0;
+    snprintf(app->quant_metrics_status,
+             sizeof(app->quant_metrics_status),
+             "Click Refresh Quant Metrics to summarize the active volume.");
+    snprintf(app->upload_status,
+             sizeof(app->upload_status),
+             "Loaded: %ux%ux%u %s (%zu voxels, %.1f MB)",
+             spec.width,
+             spec.height,
+             spec.depth,
+             volume_import_data_type_label(spec.data_type),
+             voxel_count,
+             (double)expected / (1024.0 * 1024.0));
+    volume_import_free(temp);
+    set_ui_toast(app, "Volume loaded.");
+    return 1;
+}
+
+static void handle_keyboard_shortcuts(StandaloneApp *app)
+{
+    ImGuiIO *io;
+
+    if (!app) return;
+    io = &ImGui::GetIO();
+    if (!io->KeyCtrl || io->WantTextInput) return;
+
+    if (ImGui::IsKeyPressed(ImGuiKey_O)) {
+        browse_volume_file(app);
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_L)) {
+        load_selected_volume(app);
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_S)) {
+        save_screenshot(app);
+        set_ui_toast(app, "Snapshot saved.");
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_T)) {
+        app->cinematic_enabled = app->cinematic_enabled ? 0 : 1;
+        clamp_cinematic_settings(app);
+        set_ui_toast(app, app->cinematic_enabled ? "Cinematic on." : "Cinematic off.");
+    }
+}
 static void draw_controls_panel(StandaloneApp *app)
 {
+    if (!app->controls_visible) {
+        return;
+    }
+
     set_default_window_layout(app, "Controls");
-    ImGui::Begin("Controls");
-    {
+    bool controls_open = app->controls_visible != 0;
+    if (ImGui::Begin("Controls", &controls_open)) {
         float measurement_voxels = measurement_distance(app);
 
     /* Status */
@@ -2693,6 +3016,20 @@ static void draw_controls_panel(StandaloneApp *app)
         }
     }
     ImGui::TextWrapped("Balanced keeps the NVIDIA laptop responsive; Quality keeps the full viewport and uses finer CUDA ray steps.");
+    {
+        bool adaptive_quality = app->adaptive_quality_enabled != 0;
+        if (ImGui::Checkbox("Adaptive GPU Quality", &adaptive_quality)) {
+            app->adaptive_quality_enabled = adaptive_quality ? 1 : 0;
+            app->adaptive_quality_multiplier = 1.0f;
+            refresh_adaptive_quality_for_frame(app);
+        }
+    }
+    ImGui::TextWrapped("%s", app->adaptive_quality_status);
+    if (app->adaptive_quality_active) {
+        ImGui::Text("Effective step %.4f | skip %.2f",
+                    app->adaptive_step_size,
+                    app->adaptive_skip_mult);
+    }
     ImGui::SliderFloat("Step Size",
                        &app->step_size,    0.0005f, 0.01f);
     ImGui::SliderFloat("Opacity Threshold",
@@ -2756,9 +3093,6 @@ static void draw_controls_panel(StandaloneApp *app)
     ImGui::SliderFloat("Center", &app->tf_center, 0.0f, 1.0f);
     ImGui::SliderFloat("Width", &app->tf_width, 0.02f, 1.0f);
     ImGui::SliderFloat("Opacity Scale", &app->tf_opacity_scale, 0.1f, 3.0f);
-    if (ImGui::Button("Auto Enhance View")) {
-        apply_auto_enhance_transfer(app, "Controls panel");
-    }
     ImGui::Combo("Palette", &app->tf_palette, k_tf_palette_labels, 4);
     {
         bool invert_transfer = (app->tf_invert != 0);
@@ -2909,22 +3243,7 @@ static void draw_controls_panel(StandaloneApp *app)
     ImGui::Text("Lighting");
     ImGui::SliderFloat3("Light Pos", app->light_pos,
                         -3.0f, 3.0f);
-    {
-        bool cinematic_enabled = (app->cinematic_enabled != 0);
-        if (ImGui::Checkbox("Cinematic Mode", &cinematic_enabled)) {
-            app->cinematic_enabled = cinematic_enabled ? 1 : 0;
-            clamp_cinematic_settings(app);
-        }
-    }
-    if (app->cinematic_enabled) {
-        ImGui::SliderFloat("Cinematic Rim", &app->cinematic_rim_strength, 0.0f, 1.0f);
-        ImGui::SliderFloat("Cinematic Glow", &app->cinematic_glow_strength, 0.0f, 1.0f);
-        ImGui::SliderFloat("Cinematic Contrast", &app->cinematic_contrast, 0.8f, 1.6f);
-        clamp_cinematic_settings(app);
-        ImGui::TextWrapped("Cinematic Lite is a GPU lighting style for demos; default rendering remains available by toggling this off.");
-    }
-
-    ImGui::Separator();
+ImGui::Separator();
 
     /* Pause */
     {
@@ -2938,6 +3257,7 @@ static void draw_controls_panel(StandaloneApp *app)
 
     /* ---- Volume Upload (direct, no network) ---- */
     ImGui::Text("Volume Import");
+    draw_help_marker("Choose RAW/BIN/DAT dimensions and data type, then load the selected volume to the GPU.");
 
     if (ImGui::InputInt("Width", &app->upload_width)) {
         app->upload_width = clamp_import_dimension(app->upload_width);
@@ -2982,29 +3302,8 @@ static void draw_controls_panel(StandaloneApp *app)
 
     ImGui::TextWrapped("Import hint: %s", app->upload_hint_status);
 
-    /* Browse button - opens native file dialog */
-    if (ImGui::Button("Browse..."))
-    {
-        const char *filter_patterns[] = {
-            "*.raw", "*.bin", "*.dat", "*"
-        };
-        const char *selected = tinyfd_openFileDialog(
-            "Select Volume File",
-            "",
-            4,
-            filter_patterns,
-            "Volume Files (*.raw *.bin *.dat)",
-            0
-        );
-        if (selected != NULL) {
-            strncpy(app->upload_path, selected,
-                    sizeof(app->upload_path) - 1);
-            app->upload_path[
-                sizeof(app->upload_path)-1] = '\0';
-            refresh_upload_file_details(app);
-            strcpy(app->upload_status,
-                   "File selected. Review the import settings, then click Load Volume.");
-        }
+    if (ImGui::Button("Browse...")) {
+        browse_volume_file(app);
     }
 
     ImGui::SameLine();
@@ -3014,76 +3313,8 @@ static void draw_controls_panel(StandaloneApp *app)
                      sizeof(app->upload_path),
                      ImGuiInputTextFlags_ReadOnly);
 
-    /* Load button - loads DIRECTLY to GPU, no network */
-    if (ImGui::Button("Load Volume"))
-    {
-        VolumeImportSpec spec = {
-            (uint32_t)clamp_import_dimension(app->upload_width),
-            (uint32_t)clamp_import_dimension(app->upload_height),
-            (uint32_t)clamp_import_dimension(app->upload_depth),
-            (VolumeDataType)app->upload_data_type
-        };
-        float *temp = NULL;
-        size_t voxel_count = 0;
-        char error[256];
-        size_t expected = 0;
-
-        app->upload_width = (int)spec.width;
-        app->upload_height = (int)spec.height;
-        app->upload_depth = (int)spec.depth;
-
-        if (!app->upload_path[0]) {
-            strcpy(app->upload_status,
-                   "Select a raw volume file before loading.");
-        } else if (volume_import_load(
-                       app->upload_path,
-                       &spec,
-                       &temp,
-                       &voxel_count,
-                       error,
-                       sizeof(error)) != 0) {
-            snprintf(app->upload_status,
-                     sizeof(app->upload_status),
-                     "%s",
-                     error);
-        } else {
-            volume_import_expected_bytes(&spec, &expected);
-            strcpy(app->upload_status,
-                   "Loading to GPU...");
-            reload_volume(
-                &app->renderer,
-                temp,
-                (int)spec.width,
-                (int)spec.height,
-                (int)spec.depth);
-            update_histogram(app);
-            update_dataset_health(app);
-            apply_auto_enhance_on_load_if_safe(app, "Loaded volume");
-            app->slice_preview_dirty = 1;
-            free(app->label_mask);
-            app->label_mask = NULL;
-            app->label_mask_W = 0;
-            app->label_mask_H = 0;
-            app->label_mask_D = 0;
-            reset_annotations(app);
-            app->object_summary_ready = 0;
-            snprintf(app->object_summary_status,
-                     sizeof(app->object_summary_status),
-                     "Click Analyze Loaded Volume to generate a local object summary.");
-            app->quant_metrics_ready = 0;
-            snprintf(app->quant_metrics_status,
-                     sizeof(app->quant_metrics_status),
-                     "Click Refresh Quant Metrics to summarize the active volume.");
-            snprintf(app->upload_status,
-                     sizeof(app->upload_status),
-                     "Loaded: %ux%ux%u %s (%zu voxels, %.1f MB)",
-                     spec.width, spec.height, spec.depth,
-                     volume_import_data_type_label(spec.data_type),
-                     voxel_count,
-                     (double)expected / (1024.0 * 1024.0));
-            volume_import_free(temp);
-            temp = NULL;
-        }
+    if (ImGui::Button("Load Volume")) {
+        load_selected_volume(app);
     }
 
     ImGui::Separator();
@@ -3094,18 +3325,25 @@ static void draw_controls_panel(StandaloneApp *app)
     ImGui::Text("Capture & Export");
     if (ImGui::Button("Save Snapshot")) {
         save_screenshot(app);
+        set_ui_toast(app, "Snapshot saved.");
     }
     ImGui::TextWrapped("Snapshot status: %s",
                        app->screenshot_status);
 
     }
+    app->controls_visible = controls_open ? 1 : 0;
     ImGui::End();
 }
 
 static void draw_insights_panel(StandaloneApp *app)
 {
+    if (!app->insights_visible) {
+        return;
+    }
+
     set_default_window_layout(app, "Insights");
-    ImGui::Begin("Insights");
+    bool insights_open = app->insights_visible != 0;
+    if (ImGui::Begin("Insights", &insights_open)) {
 
     ImGui::Text("Orthogonal Slice Review");
     ImGui::SliderFloat("Sagittal X", &app->slice_x, 0.0f, 1.0f);
@@ -3147,6 +3385,8 @@ static void draw_insights_panel(StandaloneApp *app)
         ImGui::TextWrapped("Histogram becomes available after a volume is loaded.");
     }
 
+    }
+    app->insights_visible = insights_open ? 1 : 0;
     ImGui::End();
 }
 
@@ -3200,10 +3440,12 @@ static int apply_auto_enhance_transfer(StandaloneApp *app, const char *reason)
         return 0;
     }
 
-    app->tf_center = center;
-    app->tf_width = width;
-    app->tf_opacity_scale = opacity_scale;
-
+    apply_transfer_settings_with_undo(
+        app,
+        center,
+        width,
+        opacity_scale,
+        reason && reason[0] ? reason : "Auto enhance");
     snprintf(app->ai_assist_status,
              sizeof(app->ai_assist_status),
              "%s auto-enhanced the GPU transfer: center %.3f, width %.3f, opacity %.2f.",
@@ -3263,9 +3505,12 @@ static void apply_ai_prompt_to_app(StandaloneApp *app)
     }
 
     if (result.set_transfer) {
-        app->tf_center = result.tf_center;
-        app->tf_width = result.tf_width;
-        app->tf_opacity_scale = result.tf_opacity_scale;
+        apply_transfer_settings_with_undo(
+            app,
+            result.tf_center,
+            result.tf_width,
+            result.tf_opacity_scale,
+            "Prompt transfer");
         if (result.min_intensity >= 0.60f) {
             app->tf_palette = 1;
         }
@@ -3475,6 +3720,47 @@ static void update_render_performance_average(StandaloneApp *app)
     app->render_ms_average_ready = 1;
 }
 
+static void refresh_adaptive_quality_for_frame(StandaloneApp *app)
+{
+    VoxelPilotAdaptiveQualityInputs inputs;
+    VoxelPilotAdaptiveQualityResult result;
+
+    if (!app) return;
+
+    voxelpilot_adaptive_quality_inputs_defaults(&inputs);
+    inputs.enabled = app->adaptive_quality_enabled;
+    inputs.interaction_active = app->camera_motion_active;
+    inputs.cinematic_enabled = app->cinematic_enabled;
+    inputs.base_step_size = app->step_size;
+    inputs.base_skip_mult = app->skip_mult;
+    inputs.current_multiplier = app->adaptive_quality_multiplier > 0.0f
+                                    ? app->adaptive_quality_multiplier
+                                    : 1.0f;
+    inputs.render_ms_last = app->last_render_ms;
+    inputs.render_ms_average = app->render_ms_average_ready
+                                    ? app->render_ms_average
+                                    : app->last_render_ms;
+
+    if (!voxelpilot_update_adaptive_quality(&inputs, &result)) {
+        app->adaptive_quality_multiplier = 1.0f;
+        app->adaptive_quality_active = 0;
+        app->adaptive_step_size = app->step_size;
+        app->adaptive_skip_mult = app->skip_mult;
+        snprintf(app->adaptive_quality_status,
+                 sizeof(app->adaptive_quality_status),
+                 "Adaptive quality unavailable: using the selected GPU preset.");
+        return;
+    }
+
+    app->adaptive_quality_multiplier = result.multiplier;
+    app->adaptive_quality_active = result.active;
+    app->adaptive_step_size = result.step_size;
+    app->adaptive_skip_mult = result.skip_mult;
+    snprintf(app->adaptive_quality_status,
+             sizeof(app->adaptive_quality_status),
+             "%s",
+             result.status);
+}
 static size_t estimate_current_volume_bytes(const StandaloneApp *app)
 {
     if (!app || app->renderer.W < 1 || app->renderer.H < 1 || app->renderer.D < 1) {
@@ -3605,238 +3891,37 @@ static void update_streaming_estimate(StandaloneApp *app)
              app->streaming_evictable);
 }
 
-static void write_html_escaped(FILE *fp, const char *text)
+static void build_ai_review_bundle_content(
+    StandaloneApp                    *app,
+    VoxelPilotAiReviewBundleContent  *content)
 {
-    const unsigned char *cursor = (const unsigned char *)text;
+    voxelpilot_ai_review_bundle_content_defaults(content);
+    if (!app || !content) return;
 
-    if (!fp || !text) {
-        return;
-    }
-
-    while (*cursor) {
-        if (*cursor == '&') {
-            fputs("&amp;", fp);
-        } else if (*cursor == '<') {
-            fputs("&lt;", fp);
-        } else if (*cursor == '>') {
-            fputs("&gt;", fp);
-        } else if (*cursor == '"') {
-            fputs("&quot;", fp);
-        } else {
-            fputc(*cursor, fp);
-        }
-        ++cursor;
-    }
-}
-
-static void make_review_bundle_stem(StandaloneApp *app, char *out_stem, size_t out_stem_size)
-{
-    const char *source;
-    const char *base;
-    const char *dot;
-    size_t length;
-
-    if (!out_stem || out_stem_size == 0) return;
-
-    source = (app && app->upload_path[0]) ? app->upload_path : "voxelpilot_ai_review";
-    base = strrchr(source, '\\');
-    if (!base) base = strrchr(source, '/');
-    base = base ? base + 1 : source;
-    dot = strrchr(base, '.');
-    length = dot && dot > base ? (size_t)(dot - base) : strlen(base);
-    if (length >= out_stem_size) length = out_stem_size - 1;
-    memcpy(out_stem, base, length);
-    out_stem[length] = '\0';
-    if (!out_stem[0]) {
-        snprintf(out_stem, out_stem_size, "voxelpilot_ai_review");
-    }
-}
-
-static int write_ai_review_regions_json(StandaloneApp *app, const char *path)
-{
-    FILE *fp;
-    int i;
-
-    if (!app || !path || !path[0]) return 0;
-    fp = fopen(path, "w");
-    if (!fp) return 0;
-
-    fprintf(fp, "{\n");
-    fprintf(fp, "  \"version\": 1,\n");
-    fprintf(fp, "  \"source\": \"ASD-Lite heuristic\",\n");
-    fprintf(fp, "  \"dimensions\": [%d, %d, %d],\n", app->renderer.W, app->renderer.H, app->renderer.D);
-    fprintf(fp, "  \"selectedLabelId\": %u,\n",
-            (app->selected_annotation >= 0 && app->selected_annotation < app->annotation_count)
-                ? (unsigned int)app->annotations[app->selected_annotation].label_id
-                : 0u);
-    fprintf(fp, "  \"regions\": [\n");
-    for (i = 0; i < app->semantic_region_count; ++i) {
-        VoxelPilotSemanticRegion *region = &app->semantic_regions[i];
-        fprintf(fp, "    {\"labelId\": %u, \"name\": \"", (unsigned int)region->label_id);
-        write_json_escaped(fp, region->name);
-        fprintf(fp, "\", \"archetype\": \"");
-        write_json_escaped(fp, region->archetype);
-        fprintf(fp, "\", \"category\": \"");
-        write_json_escaped(fp, region->category);
-        fprintf(fp,
-                "\", \"voxelCount\": %zu, \"confidence\": %.6f, \"stabilityScore\": %.6f, \"importanceScore\": %.6f, \"importanceRank\": %d, \"meanIntensity\": %.6f, \"minIntensity\": %.6f, \"maxIntensity\": %.6f, \"centroid\": [%.6f, %.6f, %.6f], \"bboxMin\": [%d, %d, %d], \"bboxMax\": [%d, %d, %d], \"userConfirmed\": %d, \"rejected\": %d, \"description\": \"",
-                region->voxel_count,
-                region->confidence,
-                region->stability_score,
-                region->importance_score,
-                region->importance_rank,
-                region->mean_intensity,
-                region->min_intensity,
-                region->max_intensity,
-                region->centroid[0], region->centroid[1], region->centroid[2],
-                region->bbox_min[0], region->bbox_min[1], region->bbox_min[2],
-                region->bbox_max[0], region->bbox_max[1], region->bbox_max[2],
-                region->user_confirmed,
-                region->rejected);
-        write_json_escaped(fp, region->description);
-        fprintf(fp, "\"}%s\n", (i + 1 < app->semantic_region_count) ? "," : "");
-    }
-    fprintf(fp, "  ]\n}\n");
-    fclose(fp);
-    return 1;
-}
-
-static int write_ai_review_relationships_json(StandaloneApp *app, const char *path)
-{
-    FILE *fp;
-    int i;
-
-    if (!app || !path || !path[0]) return 0;
-    fp = fopen(path, "w");
-    if (!fp) return 0;
-
-    fprintf(fp, "{\n  \"version\": 1,\n  \"relationships\": [\n");
-    for (i = 0; i < app->semantic_relation_count; ++i) {
-        VoxelPilotRegionRelation *relation = &app->semantic_relations[i];
-        fprintf(fp,
-                "    {\"regionA\": %u, \"regionB\": %u, \"type\": %d, \"centroidDistance\": %.6f, \"confidence\": %.6f, \"description\": \"",
-                (unsigned int)relation->region_a,
-                (unsigned int)relation->region_b,
-                (int)relation->type,
-                relation->centroid_distance,
-                relation->confidence);
-        write_json_escaped(fp, relation->description);
-        fprintf(fp, "\"}%s\n", (i + 1 < app->semantic_relation_count) ? "," : "");
-    }
-    fprintf(fp, "  ]\n}\n");
-    fclose(fp);
-    return 1;
-}
-
-static int write_ai_review_label_mask(StandaloneApp *app, const char *path)
-{
-    FILE *fp;
-    size_t voxel_count;
-    size_t written;
-
-    if (!app || !path || !path[0] || !app->label_mask ||
-        app->label_mask_W < 1 || app->label_mask_H < 1 || app->label_mask_D < 1) {
-        return 0;
-    }
-
-    voxel_count =
-        (size_t)app->label_mask_W *
-        (size_t)app->label_mask_H *
-        (size_t)app->label_mask_D;
-    fp = fopen(path, "wb");
-    if (!fp) return 0;
-    written = fwrite(app->label_mask, 1, voxel_count, fp);
-    fclose(fp);
-    return written == voxel_count;
-}
-
-static const char *review_bundle_file_name(const char *path)
-{
-    const char *slash;
-    const char *backslash;
-
-    if (!path) return "";
-    slash = strrchr(path, '/');
-    backslash = strrchr(path, '\\');
-    if (!slash || (backslash && backslash > slash)) slash = backslash;
-    return slash ? slash + 1 : path;
-}
-
-static int write_ai_review_bundle_report(
-    StandaloneApp *app,
-    const VoxelPilotReviewBundlePaths *paths,
-    const char *path)
-{
-    FILE *fp;
-    int i;
-
-    if (!app || !paths || !path || !path[0]) return 0;
-    fp = fopen(path, "w");
-    if (!fp) return 0;
-
-    update_quant_metrics(app);
-    update_object_summary(app);
-    update_streaming_estimate(app);
-
-    fputs("<!doctype html><html><head><meta charset=\"utf-8\">", fp);
-    fputs("<title>VoxelPilot AI Review Bundle</title>", fp);
-    fputs("<style>body{font-family:Segoe UI,Arial,sans-serif;background:#101820;color:#eef;line-height:1.45;margin:32px;}section{border:1px solid #345;padding:16px;margin:16px 0;border-radius:10px;background:#16212b;}table{border-collapse:collapse;width:100%;}td,th{border-bottom:1px solid #345;padding:6px;text-align:left;}code{color:#8fe;}img{max-width:100%;border:1px solid #345;border-radius:8px;}</style>", fp);
-    fputs("</head><body><h1>VoxelPilot AI Review Bundle</h1>", fp);
-
-    fputs("<section><h2>Summary</h2><table>", fp);
-    fprintf(fp, "<tr><th>Dimensions</th><td>%d x %d x %d</td></tr>", app->renderer.W, app->renderer.H, app->renderer.D);
-    fprintf(fp, "<tr><th>Semantic regions</th><td>%d</td></tr>", app->semantic_region_count);
-    fprintf(fp, "<tr><th>Relationships</th><td>%d</td></tr>", app->semantic_relation_count);
-    fputs("<tr><th>AI type</th><td>Local explainable heuristic AI using histogram, connected regions, shape archetypes, stability, importance ranking, hover picking, and user-confirmed corrections. No cloud model is used.</td></tr>", fp);
-    fputs("<tr><th>Object summary</th><td>", fp);
-    write_html_escaped(fp, app->object_summary_status);
-    fputs("</td></tr></table></section>", fp);
-
-    fputs("<section><h2>Snapshot</h2><p><img src=\"", fp);
-    write_html_escaped(fp, review_bundle_file_name(paths->snapshot_png));
-    fputs("\" alt=\"VoxelPilot render snapshot\"></p></section>", fp);
-
-    fputs("<section><h2>Bundle Files</h2><ul>", fp);
-    fputs("<li>Snapshot: <code>", fp); write_html_escaped(fp, review_bundle_file_name(paths->snapshot_png)); fputs("</code></li>", fp);
-    fputs("<li>Regions JSON: <code>", fp); write_html_escaped(fp, review_bundle_file_name(paths->regions_json)); fputs("</code></li>", fp);
-    fputs("<li>Relationships JSON: <code>", fp); write_html_escaped(fp, review_bundle_file_name(paths->relationships_json)); fputs("</code></li>", fp);
-    fputs("<li>Label mask RAW: <code>", fp); write_html_escaped(fp, review_bundle_file_name(paths->label_mask_raw)); fputs("</code></li>", fp);
-    fputs("</ul></section>", fp);
-
-    fputs("<section><h2>Regions</h2><table><tr><th>ID</th><th>Name</th><th>Archetype</th><th>Confidence</th><th>Stability</th><th>Importance</th><th>Voxels</th></tr>", fp);
-    for (i = 0; i < app->semantic_region_count; ++i) {
-        VoxelPilotSemanticRegion *region = &app->semantic_regions[i];
-        fprintf(fp, "<tr><td>%u</td><td>", (unsigned int)region->label_id);
-        write_html_escaped(fp, region->name);
-        fputs("</td><td>", fp);
-        write_html_escaped(fp, region->archetype);
-        fprintf(fp, "</td><td>%.0f%%</td><td>%.0f%%</td><td>rank %d / %.0f%%</td><td>%zu</td></tr>",
-                region->confidence * 100.0f,
-                region->stability_score * 100.0f,
-                region->importance_rank,
-                region->importance_score * 100.0f,
-                region->voxel_count);
-    }
-    fputs("</table></section>", fp);
-
-    fputs("<section><h2>Relationship Notes</h2><ul>", fp);
-    for (i = 0; i < app->semantic_relation_count; ++i) {
-        fputs("<li>", fp);
-        write_html_escaped(fp, app->semantic_relations[i].description);
-        fputs("</li>", fp);
-    }
-    if (app->semantic_relation_count == 0) fputs("<li>No region relationships discovered.</li>", fp);
-    fputs("</ul></section>", fp);
-
-    fputs("</body></html>\n", fp);
-    fclose(fp);
-    return 1;
+    content->volume_width = app->renderer.W;
+    content->volume_height = app->renderer.H;
+    content->volume_depth = app->renderer.D;
+    content->selected_label_id =
+        (app->selected_annotation >= 0 && app->selected_annotation < app->annotation_count)
+            ? (unsigned int)app->annotations[app->selected_annotation].label_id
+            : 0u;
+    content->regions = app->semantic_regions;
+    content->region_count = app->semantic_region_count;
+    content->relations = app->semantic_relations;
+    content->relation_count = app->semantic_relation_count;
+    content->label_mask = app->label_mask;
+    content->label_mask_width = app->label_mask_W;
+    content->label_mask_height = app->label_mask_H;
+    content->label_mask_depth = app->label_mask_D;
+    content->object_summary_status = app->object_summary_status;
 }
 
 static int export_ai_review_bundle_to_folder(StandaloneApp *app, const char *folder)
 {
     VoxelPilotReviewBundlePaths paths;
+    VoxelPilotAiReviewBundleContent bundle_content;
     char stem[128];
+    char folder_error[256];
 
     if (!app || !app->renderer.volume_data || app->renderer.W < 1 || app->renderer.H < 1 || app->renderer.D < 1) {
         if (app) snprintf(app->report_status, sizeof(app->report_status), "Load a volume before exporting an AI review bundle.");
@@ -3844,6 +3929,13 @@ static int export_ai_review_bundle_to_folder(StandaloneApp *app, const char *fol
     }
     if (!folder || !folder[0]) {
         snprintf(app->report_status, sizeof(app->report_status), "Choose a folder for the AI review bundle.");
+        return 0;
+    }
+    if (!voxelpilot_cli_prepare_export_folder(folder, folder_error, sizeof(folder_error))) {
+        snprintf(app->report_status,
+                 sizeof(app->report_status),
+                 "Could not prepare AI review bundle folder: %s",
+                 folder_error[0] ? folder_error : folder);
         return 0;
     }
 
@@ -3856,11 +3948,16 @@ static int export_ai_review_bundle_to_folder(StandaloneApp *app, const char *fol
         return 0;
     }
 
-    make_review_bundle_stem(app, stem, sizeof(stem));
+    voxelpilot_make_ai_review_bundle_stem_from_source(app->upload_path, stem, sizeof(stem));
     if (!voxelpilot_make_review_bundle_paths(folder, stem, &paths)) {
         snprintf(app->report_status, sizeof(app->report_status), "Could not prepare AI review bundle paths.");
         return 0;
     }
+
+    update_quant_metrics(app);
+    update_object_summary(app);
+    update_streaming_estimate(app);
+    build_ai_review_bundle_content(app, &bundle_content);
 
     render_frame_gpu_snapshot(app);
     if (!app->renderer.h_out ||
@@ -3868,19 +3965,19 @@ static int export_ai_review_bundle_to_folder(StandaloneApp *app, const char *fol
         snprintf(app->report_status, sizeof(app->report_status), "Could not write AI review snapshot.");
         return 0;
     }
-    if (!write_ai_review_regions_json(app, paths.regions_json)) {
+    if (!voxelpilot_ai_review_write_regions_json(&bundle_content, paths.regions_json)) {
         snprintf(app->report_status, sizeof(app->report_status), "Could not write AI review regions JSON.");
         return 0;
     }
-    if (!write_ai_review_relationships_json(app, paths.relationships_json)) {
+    if (!voxelpilot_ai_review_write_relationships_json(&bundle_content, paths.relationships_json)) {
         snprintf(app->report_status, sizeof(app->report_status), "Could not write AI review relationships JSON.");
         return 0;
     }
-    if (!write_ai_review_label_mask(app, paths.label_mask_raw)) {
+    if (!voxelpilot_ai_review_write_label_mask(&bundle_content, paths.label_mask_raw)) {
         snprintf(app->report_status, sizeof(app->report_status), "Could not write AI review label mask.");
         return 0;
     }
-    if (!write_ai_review_bundle_report(app, &paths, paths.report_html)) {
+    if (!voxelpilot_ai_review_write_bundle_report(&bundle_content, &paths, paths.report_html)) {
         snprintf(app->report_status, sizeof(app->report_status), "Could not write AI review bundle report.");
         return 0;
     }
@@ -3902,13 +3999,64 @@ static void export_ai_review_bundle(StandaloneApp *app)
     export_ai_review_bundle_to_folder(app, folder);
 }
 
+static void build_insight_report_content(
+    StandaloneApp                    *app,
+    VoxelPilotInsightReportContent   *content,
+    VoxelPilotInsightAnnotation      *annotations,
+    int                               annotation_capacity)
+{
+    int i;
+    int count = 0;
+
+    if (!content) return;
+    voxelpilot_insight_report_content_defaults(content);
+    if (!app) return;
+
+    content->volume_width = app->renderer.W;
+    content->volume_height = app->renderer.H;
+    content->volume_depth = app->renderer.D;
+    content->hist_min_value = app->hist_min_value;
+    content->hist_max_value = app->hist_max_value;
+    memcpy(content->voxel_spacing, app->voxel_spacing, sizeof(content->voxel_spacing));
+    content->source_path = app->upload_path[0] ? app->upload_path : "startup/synthetic volume";
+    content->quant_metrics = &app->quant_metrics;
+    content->quant_metrics_status = app->quant_metrics_status;
+    content->object_summary = &app->object_summary;
+    content->object_summary_status = app->object_summary_status;
+    memcpy(content->measure_a, app->measure_a, sizeof(content->measure_a));
+    memcpy(content->measure_b, app->measure_b, sizeof(content->measure_b));
+    content->measurement_distance_voxels = measurement_distance(app);
+    content->measurement_distance_world = measurement_distance_world(app);
+    content->last_render_ms = app->last_render_ms;
+    content->gui_fps = app->gui_fps;
+    content->streaming_visible_bricks = app->streaming_visible_bricks;
+    content->streaming_resident_candidates = app->streaming_resident_candidates;
+    content->streaming_stream_now = app->streaming_stream_now;
+    content->streaming_queue = app->streaming_queue;
+    content->streaming_evictable = app->streaming_evictable;
+
+    if (annotations && annotation_capacity > 0) {
+        for (i = 0; i < app->annotation_count && count < annotation_capacity; ++i) {
+            AnnotationRegion *region = &app->annotations[i];
+            annotations[count].active = region->active;
+            annotations[count].label_id = (unsigned int)region->label_id;
+            annotations[count].name = region->name;
+            annotations[count].voxel_count = region->voxel_count;
+            annotations[count].min_intensity = region->min_intensity;
+            annotations[count].max_intensity = region->max_intensity;
+            count++;
+        }
+    }
+    content->annotations = annotations;
+    content->annotation_count = count;
+}
+
 static void export_insight_report(StandaloneApp *app)
 {
     const char *patterns[] = { "*.html" };
     const char *selected;
-    FILE *fp;
-    size_t voxel_count;
-    int i;
+    VoxelPilotInsightReportContent content;
+    VoxelPilotInsightAnnotation report_annotations[MAX_ANNOTATIONS];
 
     if (!app->renderer.volume_data || app->renderer.W < 1 || app->renderer.H < 1 || app->renderer.D < 1) {
         snprintf(app->report_status, sizeof(app->report_status),
@@ -3934,83 +4082,19 @@ static void export_insight_report(StandaloneApp *app)
         update_object_summary(app);
     }
     update_streaming_estimate(app);
+    build_insight_report_content(app, &content, report_annotations, MAX_ANNOTATIONS);
 
-    fp = fopen(selected, "w");
-    if (!fp) {
+    if (!voxelpilot_insight_write_report(&content, selected)) {
         snprintf(app->report_status, sizeof(app->report_status),
                  "Could not write report file.");
         return;
     }
-
-    voxel_count =
-        (size_t)app->renderer.W *
-        (size_t)app->renderer.H *
-        (size_t)app->renderer.D;
-
-    fputs("<!doctype html><html><head><meta charset=\"utf-8\">", fp);
-    fputs("<title>VoxelPilot Insight Report</title>", fp);
-    fputs("<style>body{font-family:Segoe UI,Arial,sans-serif;background:#101820;color:#eef;line-height:1.45;margin:32px;}section{border:1px solid #345;padding:16px;margin:16px 0;border-radius:10px;background:#16212b;}table{border-collapse:collapse;width:100%;}td,th{border-bottom:1px solid #345;padding:6px;text-align:left;}code{color:#8fe;}</style>", fp);
-    fputs("</head><body><h1>VoxelPilot Insight Report</h1>", fp);
-
-    fputs("<section><h2>Dataset</h2><table>", fp);
-    fprintf(fp, "<tr><th>Dimensions</th><td>%d x %d x %d</td></tr>", app->renderer.W, app->renderer.H, app->renderer.D);
-    fprintf(fp, "<tr><th>Voxel count</th><td>%zu</td></tr>", voxel_count);
-    fprintf(fp, "<tr><th>Value range</th><td>%.4f to %.4f</td></tr>", app->hist_min_value, app->hist_max_value);
-    fprintf(fp, "<tr><th>Voxel spacing</th><td>%.3f / %.3f / %.3f</td></tr>", app->voxel_spacing[0], app->voxel_spacing[1], app->voxel_spacing[2]);
-    fputs("<tr><th>Source path</th><td><code>", fp);
-    write_html_escaped(fp, app->upload_path[0] ? app->upload_path : "startup/synthetic volume");
-    fputs("</code></td></tr></table></section>", fp);
-
-    fputs("<section><h2>Quantitative Metrics</h2><table>", fp);
-    fprintf(fp, "<tr><th>Visible ratio</th><td>%.1f%%</td></tr>", app->quant_metrics.visible_ratio * 100.0f);
-    fprintf(fp, "<tr><th>Median / P95 / Mean</th><td>%.3f / %.3f / %.3f</td></tr>", app->quant_metrics.percentile_50, app->quant_metrics.percentile_95, app->quant_metrics.mean_intensity);
-    fprintf(fp, "<tr><th>Low / Mid / High density</th><td>%.1f%% / %.1f%% / %.1f%%</td></tr>", app->quant_metrics.low_density_ratio * 100.0f, app->quant_metrics.mid_density_ratio * 100.0f, app->quant_metrics.high_density_ratio * 100.0f);
-    fputs("<tr><th>Summary</th><td>", fp);
-    write_html_escaped(fp, app->quant_metrics_status);
-    fputs("</td></tr></table></section>", fp);
-
-    fputs("<section><h2>AI/Object Review</h2><table>", fp);
-    fputs("<tr><th>AI type</th><td>Local explainable heuristic AI: rule prompts, histogram/material heuristics, ray picking, flood-fill segmentation, and human-confirmed annotations. No cloud model or trained neural network is used in this demo slice.</td></tr>", fp);
-    fputs("<tr><th>Primary material</th><td>", fp);
-    write_html_escaped(fp, app->object_summary.primary_material);
-    fputs("</td></tr><tr><th>Object summary</th><td>", fp);
-    write_html_escaped(fp, app->object_summary_status);
-    fputs("</td></tr></table></section>", fp);
-
-    fputs("<section><h2>Measurements</h2><table>", fp);
-    fprintf(fp, "<tr><th>Point A</th><td>%.3f, %.3f, %.3f</td></tr>", app->measure_a[0], app->measure_a[1], app->measure_a[2]);
-    fprintf(fp, "<tr><th>Point B</th><td>%.3f, %.3f, %.3f</td></tr>", app->measure_b[0], app->measure_b[1], app->measure_b[2]);
-    fprintf(fp, "<tr><th>Distance</th><td>%.3f voxels / %.3f world units</td></tr>", measurement_distance(app), measurement_distance_world(app));
-    fputs("</table></section>", fp);
-
-    fputs("<section><h2>Annotations</h2><table><tr><th>ID</th><th>Name</th><th>Voxels</th><th>Intensity Range</th></tr>", fp);
-    for (i = 0; i < app->annotation_count; ++i) {
-        AnnotationRegion *region = &app->annotations[i];
-        if (!region->active) continue;
-        fprintf(fp, "<tr><td>%u</td><td>", (unsigned int)region->label_id);
-        write_html_escaped(fp, region->name);
-        fprintf(fp, "</td><td>%zu</td><td>%.3f - %.3f</td></tr>", region->voxel_count, region->min_intensity, region->max_intensity);
-    }
-    if (app->annotation_count == 0) {
-        fputs("<tr><td colspan=\"4\">No annotations yet.</td></tr>", fp);
-    }
-    fputs("</table></section>", fp);
-
-    fputs("<section><h2>Performance / Streaming</h2><table>", fp);
-    fprintf(fp, "<tr><th>Render time</th><td>%.2f ms</td></tr>", app->last_render_ms);
-    fprintf(fp, "<tr><th>FPS</th><td>%.1f</td></tr>", app->gui_fps);
-    fprintf(fp, "<tr><th>Brick cache plan</th><td>%d visible, %d candidates, stream %d now, queue %d, evictable %d</td></tr>", app->streaming_visible_bricks, app->streaming_resident_candidates, app->streaming_stream_now, app->streaming_queue, app->streaming_evictable);
-    fputs("</table></section>", fp);
-
-    fputs("</body></html>\n", fp);
-    fclose(fp);
 
     strncpy(app->report_path, selected, sizeof(app->report_path) - 1);
     app->report_path[sizeof(app->report_path) - 1] = '\0';
     snprintf(app->report_status, sizeof(app->report_status),
              "Exported insight report: %s", selected);
 }
-
 static int performance_allows_optional_action(
     StandaloneApp *app,
     const char    *action_label,
@@ -4093,11 +4177,7 @@ static void draw_performance_safety_block(StandaloneApp *app)
 
 static void draw_ai_assist_panel(StandaloneApp *app)
 {
-    int has_volume =
-        app->renderer.volume_data &&
-        app->renderer.W > 0 &&
-        app->renderer.H > 0 &&
-        app->renderer.D > 0;
+    int has_volume;
     float suggested_center = 0.0f;
     float suggested_width = 0.0f;
     float suggested_opacity = 0.0f;
@@ -4105,465 +4185,241 @@ static void draw_ai_assist_panel(StandaloneApp *app)
     VoxelPilotTransferAdvisorResult transfer_advisor;
     int has_transfer_advisor = 0;
 
+    if (!app || !app->ai_visible) {
+        return;
+    }
+
+    has_volume =
+        app->renderer.volume_data &&
+        app->renderer.W > 0 &&
+        app->renderer.H > 0 &&
+        app->renderer.D > 0;
+
     memset(&transfer_advisor, 0, sizeof(transfer_advisor));
+    if (has_volume && app->histogram_ready) {
+        has_transfer_suggestion = voxelpilot_compute_auto_enhance_transfer(
+            app->histogram,
+            HISTOGRAM_BINS,
+            &suggested_center,
+            &suggested_width,
+            &suggested_opacity);
+        has_transfer_advisor = voxelpilot_compute_transfer_advisor(
+            app->histogram,
+            HISTOGRAM_BINS,
+            app->tf_center,
+            app->tf_width,
+            app->tf_opacity_scale,
+            app->semantic_region_count,
+            &transfer_advisor);
+    }
 
     set_default_window_layout(app, "AI Assist");
-    ImGui::Begin("AI Assist");
+    bool ai_open = app->ai_visible != 0;
+    if (ImGui::Begin("AI Assist", &ai_open)) {
+        ImGui::Text("AI Assist");
+        draw_help_marker("Local tools only: transfer suggestions, health checks, semantic discovery, and export helpers.");
+        ImGui::Separator();
 
-    ImGui::Text("AI Review Workbench");
-    ImGui::Separator();
-    ImGui::TextWrapped("Mode: flexible local intent parser, label masks, hover explanations, GPU transfer tuning, and brick-streaming telemetry");
-    ImGui::TextWrapped(
-        "AI concept: local explainable heuristic AI. It parses open-ended visibility/material/quality intents, derives transfer windows from the histogram, and lets the CUDA renderer apply the result without cloud inference or a heavy model pass.");
-
-    if (has_volume && app->histogram_ready) {
-        has_transfer_suggestion =
-            voxelpilot_compute_auto_enhance_transfer(
-                app->histogram,
-                HISTOGRAM_BINS,
-                &suggested_center,
-                &suggested_width,
-                &suggested_opacity);
-        has_transfer_advisor =
-            voxelpilot_compute_transfer_advisor(
-                app->histogram,
-                HISTOGRAM_BINS,
-                app->tf_center,
-                app->tf_width,
-                app->tf_opacity_scale,
-                app->semantic_region_count,
-                &transfer_advisor);
-    }
-
-    if (!has_volume) {
-        ImGui::TextWrapped("Load a volume to enable AI-assisted review suggestions.");
-    } else {
-        ImGui::Text("Dataset: %d x %d x %d",
-                    app->renderer.W,
-                    app->renderer.H,
-                    app->renderer.D);
-        ImGui::Text("Intensity range: %.4f to %.4f",
-                    app->hist_min_value,
-                    app->hist_max_value);
-    }
-
-    ImGui::Separator();
-    ImGui::Text("Dataset Health Check");
-    ImGui::TextWrapped("Local diagnostic: checks dimensions, histogram shape, dynamic range, and working-set size before optional AI review.");
-    if (has_volume && app->histogram_ready && !app->dataset_health_ready) {
-        update_dataset_health(app);
-    }
-    if (ImGui::Button("Refresh Health Check")) {
-        update_dataset_health(app);
-    }
-    if (app->dataset_health_ready) {
-        ImGui::Text("Level: %s | Score: %.0f/100",
-                    dataset_health_level_label(app->dataset_health.level),
-                    app->dataset_health.score);
-        ImGui::TextWrapped("Summary: %s", app->dataset_health.summary);
-        ImGui::TextWrapped("Recommendation: %s", app->dataset_health.recommendation);
-        ImGui::Text("Background: %.1f%% | Active bins: %.1f%% | Range: %.4f",
-                    app->dataset_health.background_ratio * 100.0f,
-                    app->dataset_health.active_bin_ratio * 100.0f,
-                    app->dataset_health.dynamic_range);
-    } else {
-        ImGui::TextWrapped("%s", app->dataset_health_status);
-    }
-
-    draw_performance_safety_block(app);
-
-    ImGui::Separator();
-    ImGui::Text("AI Transfer Advisor");
-    ImGui::TextWrapped("Local advisor: reads the existing histogram and suggests visibility settings without model inference, downsampling, or automatic renderer changes.");
-    if (!has_volume || !app->histogram_ready) {
-        ImGui::TextWrapped("Load a volume with a populated histogram to enable transfer advice.");
-    } else if (has_transfer_advisor) {
-        ImGui::Text("Advice: %s", transfer_advisor.action);
-        ImGui::Text("Confidence: %.1f%%", transfer_advisor.confidence * 100.0f);
-        ImGui::TextWrapped("Why: %s", transfer_advisor.explanation);
-        if (transfer_advisor.has_recommendation) {
-            ImGui::Text("Suggested center/width/opacity: %.3f / %.3f / %.2f",
-                        transfer_advisor.tf_center,
-                        transfer_advisor.tf_width,
-                        transfer_advisor.tf_opacity_scale);
-            if (ImGui::Button("Apply Advisor Settings")) {
-                app->tf_center = transfer_advisor.tf_center;
-                app->tf_width = transfer_advisor.tf_width;
-                app->tf_opacity_scale = transfer_advisor.tf_opacity_scale;
-                snprintf(app->ai_assist_status,
-                         sizeof(app->ai_assist_status),
-                         "Applied advisor settings: center %.3f, width %.3f, opacity %.2f.",
-                         app->tf_center,
-                         app->tf_width,
-                         app->tf_opacity_scale);
-                update_quant_metrics(app);
-            }
+        if (!has_volume) {
+            ImGui::TextWrapped("Load a volume to enable AI actions.");
         } else {
-            ImGui::TextWrapped("No transfer change recommended. Current settings look safe for review.");
-        }
-    } else {
-        ImGui::TextWrapped("Advisor could not summarize this histogram. Try loading the volume again.");
-    }
-
-    ImGui::Separator();
-    ImGui::Text("Auto Object Identification");
-    ImGui::TextWrapped("Local AI heuristic: estimates dominant material classes from the active volume histogram.");
-    if (ImGui::Button("Analyze Loaded Volume")) {
-        update_object_summary(app);
-    }
-    if (app->object_summary_ready) {
-        ImGui::Text("Primary: %s", app->object_summary.primary_material);
-        ImGui::Text("Confidence: %.1f%%", app->object_summary.confidence * 100.0f);
-        ImGui::Text("Low/Mid/High: %.1f%% / %.1f%% / %.1f%%",
-                    app->object_summary.low_density_ratio * 100.0f,
-                    app->object_summary.mid_density_ratio * 100.0f,
-                    app->object_summary.high_density_ratio * 100.0f);
-    }
-    ImGui::TextWrapped("%s", app->object_summary_status);
-
-    ImGui::Separator();
-    ImGui::Text("Quantitative Insight");
-    ImGui::TextWrapped("Lightweight metrics are derived from the existing histogram, so this does not add a heavy render or model pass.");
-    if (ImGui::Button("Refresh Quant Metrics")) {
-        update_quant_metrics(app);
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Export Insight Report")) {
-        export_insight_report(app);
-    }
-    if (ImGui::Button("Export AI Review Bundle")) {
-        if (performance_allows_optional_action(app, "AI review bundle", 1, 1)) {
-            export_ai_review_bundle(app);
-            refresh_performance_governor(app);
-        }
-    }
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Exports PNG snapshot, ASD regions JSON, relationships JSON, label mask, and HTML report.");
-    }
-    if (app->quant_metrics_ready) {
-        ImGui::Text("Visible: %.1f%% | Median: %.3f | P95: %.3f",
-                    app->quant_metrics.visible_ratio * 100.0f,
-                    app->quant_metrics.percentile_50,
-                    app->quant_metrics.percentile_95);
-        ImGui::Text("Low/Mid/High: %.1f%% / %.1f%% / %.1f%%",
-                    app->quant_metrics.low_density_ratio * 100.0f,
-                    app->quant_metrics.mid_density_ratio * 100.0f,
-                    app->quant_metrics.high_density_ratio * 100.0f);
-    }
-    ImGui::TextWrapped("Metrics: %s", app->quant_metrics_status);
-    ImGui::TextWrapped("Report: %s", app->report_status);
-
-    ImGui::Separator();
-    ImGui::Text("Prompt-Based Segmentation");
-    ImGui::InputText("Prompt", app->ai_prompt, sizeof(app->ai_prompt));
-    if (ImGui::Button("Run Prompt")) {
-        apply_ai_prompt_to_app(app);
-    }
-    ImGui::TextWrapped("Examples are guidance, not a fixed list: make it brighter | show bone | hide below 0.3 | switch to quality GPU rendering | reset view");
-
-    if (ImGui::Button("Auto Enhance View")) {
-        apply_auto_enhance_transfer(app, "AI Assist");
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Preview Auto Window")) {
-        if (has_transfer_suggestion) {
-            app->tf_center = suggested_center;
-            app->tf_width = suggested_width;
-            app->tf_opacity_scale = suggested_opacity;
-            snprintf(app->ai_assist_status,
-                     sizeof(app->ai_assist_status),
-                     "Previewed auto window: center %.3f, width %.3f, opacity %.2f.",
-                     app->tf_center,
-                     app->tf_width,
-                     app->tf_opacity_scale);
-        } else {
-            snprintf(app->ai_assist_status,
-                     sizeof(app->ai_assist_status),
-                     "Auto window needs a populated histogram.");
-        }
-    }
-
-    if (ImGui::Button("Scout Focus Slice")) {
-        float focus_slice = 0.0f;
-        float focus_score = 0.0f;
-        if (voxelpilot_find_high_variance_axial_slice(
-                app->renderer.volume_data,
-                app->renderer.W,
-                app->renderer.H,
-                app->renderer.D,
-                &focus_slice,
-                &focus_score)) {
-            app->slice_z = focus_slice;
-            app->ai_focus_slice = focus_slice;
-            app->ai_focus_score = focus_score;
-            snprintf(app->ai_assist_status,
-                     sizeof(app->ai_assist_status),
-                     "Scout moved Axial Z to %.3f with variance score %.4f.",
-                     app->ai_focus_slice,
-                     app->ai_focus_score);
-        } else {
-            snprintf(app->ai_assist_status,
-                     sizeof(app->ai_assist_status),
-                     "Focus scout needs a loaded 3D volume.");
-        }
-    }
-
-    if (has_transfer_suggestion) {
-        ImGui::Text("Suggested center: %.3f", suggested_center);
-        ImGui::Text("Suggested width: %.3f", suggested_width);
-    }
-    if (app->ai_focus_score > 0.0f) {
-        ImGui::Text("Focus Axial Z: %.3f", app->ai_focus_slice);
-        ImGui::Text("Focus score: %.4f", app->ai_focus_score);
-    }
-
-    ImGui::Separator();
-    ImGui::TextWrapped("Status: %s", app->ai_assist_status);
-
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Text("Adaptive Semantic Discovery");
-    ImGui::TextWrapped("ASD-Lite discovers candidate regions from intensity, connectedness, shape, stability, and relationships. Labels are cautious and local, not hardcoded anatomy.");
-    if (ImGui::Button("Run Semantic Demo")) {
-        if (performance_allows_optional_action(app, "Semantic demo", 1, 0)) {
-            run_semantic_demo_workflow(app, "Semantic demo");
-            refresh_performance_governor(app);
-        }
-    }
-    ImGui::SameLine();
-    ImGui::TextDisabled("one-click AI review");
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Runs auto-enhance, ASD discovery, cinematic mode, region overlay, and callouts using local explainable heuristics.");
-    }
-    if (ImGui::Button("Start Guided Review")) {
-        start_guided_review(app);
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Prev Region")) {
-        if (select_guided_review_region(app, -1)) app->guided_review_visible = 1;
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Next Region")) {
-        if (select_guided_review_region(app, 1)) app->guided_review_visible = 1;
-    }
-    ImGui::TextWrapped("Guided Review: %s", app->guided_review_status);
-    ImGui::SliderInt("ASD Max Regions", &app->semantic_max_regions, 1, MAX_ANNOTATIONS);
-    ImGui::SliderFloat("ASD Sensitivity", &app->semantic_sensitivity, 0.0f, 1.0f);
-    ImGui::InputInt("ASD Min Voxels", &app->semantic_min_region_voxels);
-    if (app->semantic_min_region_voxels < 1) app->semantic_min_region_voxels = 1;
-    {
-        bool emphasis = app->semantic_cinematic_emphasis != 0;
-        if (ImGui::Checkbox("ASD Cinematic Emphasis", &emphasis)) {
-            app->semantic_cinematic_emphasis = emphasis ? 1 : 0;
-        }
-    }
-    {
-        bool callouts = app->semantic_callouts_enabled != 0;
-        if (ImGui::Checkbox("Cinematic Callouts", &callouts)) {
-            app->semantic_callouts_enabled = callouts ? 1 : 0;
-        }
-    }
-    ImGui::SliderInt("Callout Top Regions", &app->semantic_callout_top_regions, 1, MAX_ANNOTATIONS);
-    {
-        bool selected_only = app->semantic_callout_selected_only != 0;
-        if (ImGui::Checkbox("Selected Region Only", &selected_only)) {
-            app->semantic_callout_selected_only = selected_only ? 1 : 0;
-        }
-    }
-    ImGui::SliderFloat("Callout Opacity", &app->semantic_callout_opacity, 0.35f, 1.0f);
-    if (ImGui::Button("Discover Regions")) {
-        if (performance_allows_optional_action(app, "ASD discovery", 1, 0)) {
-            run_adaptive_semantic_discovery(app);
-            refresh_performance_governor(app);
-        }
-    }
-    ImGui::TextWrapped("ASD status: %s", app->semantic_status);
-    if (app->semantic_region_count > 0) {
-        int i;
-        ImGui::Text("Region Legend");
-        for (i = 0; i < app->semantic_region_count; ++i) {
-            VoxelPilotSemanticRegion *semantic = &app->semantic_regions[i];
-            char row_label[256];
-            snprintf(row_label, sizeof(row_label),
-                     "#%u %s | %s | %.0f%% stable | rank %d##asd_%d",
-                     (unsigned int)semantic->label_id,
-                     semantic->name,
-                     semantic->archetype,
-                     semantic->stability_score * 100.0f,
-                     semantic->importance_rank,
-                     i);
-            if (ImGui::Selectable(row_label, app->semantic_selected_region == i)) {
-                AnnotationRegion *overlay_region = find_annotation_by_label(app, semantic->label_id);
-                app->semantic_selected_region = i;
-                app->selected_annotation = overlay_region ? (int)(overlay_region - app->annotations) : -1;
-                snprintf(app->semantic_edit_name, sizeof(app->semantic_edit_name), "%s", semantic->name);
-            }
-            if (ImGui::IsItemHovered()) {
-                ImGui::BeginTooltip();
-                ImGui::TextWrapped("%s", semantic->description);
-                ImGui::Text("Confidence %.0f%% | Importance %.0f%%",
-                            semantic->confidence * 100.0f,
-                            semantic->importance_score * 100.0f);
-                {
-                    const char *note = semantic_relationship_note(app, semantic->label_id);
-                    if (note && note[0]) ImGui::TextWrapped("%s", note);
-                }
-                ImGui::EndTooltip();
+            ImGui::Text("Volume: %d x %d x %d", app->renderer.W, app->renderer.H, app->renderer.D);
+            ImGui::Text("Range: %.4f to %.4f", app->hist_min_value, app->hist_max_value);
+            ImGui::Text("ASD: %d region(s), %d relation(s)", app->semantic_region_count, app->semantic_relation_count);
+            ImGui::Text("ASD memory: %d correction(s)", app->semantic_correction_count);
+            ImGui::Text("ASD safety: %s", app->performance_result.safe_to_run_asd ? "Ready" : "Blocked");
+            if (!app->performance_result.safe_to_run_asd) {
+                ImGui::TextWrapped("ASD is blocked by Performance Safety: %s", app->performance_result.recommendation);
             }
         }
-        if (app->semantic_selected_region >= 0 &&
-            app->semantic_selected_region < app->semantic_region_count) {
-            VoxelPilotSemanticRegion *selected_semantic = &app->semantic_regions[app->semantic_selected_region];
-            ImGui::Spacing();
-            ImGui::Text("Selected Region Correction");
-            ImGui::InputText("Correction Name", app->semantic_edit_name, sizeof(app->semantic_edit_name));
-            if (ImGui::Button("Confirm / Rename")) {
-                if (upsert_semantic_correction(app, selected_semantic, 1, 0)) {
-                    int applied = voxelpilot_asd_apply_corrections(
-                        app->semantic_regions,
-                        app->semantic_region_count,
-                        semantic_total_voxels(app),
-                        app->semantic_corrections,
-                        app->semantic_correction_count);
-                    refresh_semantic_annotation_overlays(app);
-                    snprintf(app->semantic_memory_status, sizeof(app->semantic_memory_status),
-                             "Confirmed correction memory for region %u; applied %d correction(s).",
-                             (unsigned int)selected_semantic->label_id,
-                             applied);
-                }
+
+        ImGui::Separator();
+        ImGui::Text("ASD Discovery");
+        draw_help_marker("Adaptive Semantic Discovery finds candidate regions and labels them cautiously.");
+        if (ImGui::Button("Discover Regions")) {
+            if (performance_allows_optional_action(app, "ASD discovery", 1, 0)) {
+                run_adaptive_semantic_discovery(app);
+                refresh_performance_governor(app);
             }
-            ImGui::SameLine();
-            if (ImGui::Button("Reject")) {
-                if (!app->semantic_edit_name[0]) {
-                    snprintf(app->semantic_edit_name, sizeof(app->semantic_edit_name),
-                             "Rejected %s", selected_semantic->name);
-                }
-                if (upsert_semantic_correction(app, selected_semantic, 0, 1)) {
-                    int applied = voxelpilot_asd_apply_corrections(
-                        app->semantic_regions,
-                        app->semantic_region_count,
-                        semantic_total_voxels(app),
-                        app->semantic_corrections,
-                        app->semantic_correction_count);
-                    refresh_semantic_annotation_overlays(app);
-                    snprintf(app->semantic_memory_status, sizeof(app->semantic_memory_status),
-                             "Rejected region %u; applied %d correction(s) and hid rejected overlay.",
-                             (unsigned int)selected_semantic->label_id,
-                             applied);
-                }
-            }
-        }
-        ImGui::InputText("Memory File", app->semantic_memory_path, sizeof(app->semantic_memory_path));
-        if (ImGui::Button("Save Memory")) {
-            save_semantic_memory(app, app->semantic_memory_path);
         }
         ImGui::SameLine();
-        if (ImGui::Button("Load Memory")) {
-            load_semantic_memory(app, app->semantic_memory_path);
+        if (ImGui::Button("Start Guided Review")) {
+            start_guided_review(app);
         }
-        ImGui::TextWrapped("Memory: %s", app->semantic_memory_status);
-    }
+        ImGui::SameLine();
+        if (ImGui::Button("Run Semantic Demo")) {
+            if (performance_allows_optional_action(app, "Semantic demo", 1, 0)) {
+                run_semantic_demo_workflow(app, "Semantic demo");
+                refresh_performance_governor(app);
+            }
+        }
 
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Text("Multi-Material Labels");
-    {
-        bool annotation_mode = (app->annotation_mode != 0);
-        if (ImGui::Checkbox("Slice Click Labels", &annotation_mode)) {
-            app->annotation_mode = annotation_mode ? 1 : 0;
+        ImGui::SliderInt("Max Regions", &app->semantic_max_regions, 1, MAX_ANNOTATIONS);
+        ImGui::SliderFloat("Sensitivity", &app->semantic_sensitivity, 0.0f, 1.0f);
+        ImGui::InputInt("Min Voxels", &app->semantic_min_region_voxels);
+        if (app->semantic_min_region_voxels < 1) app->semantic_min_region_voxels = 1;
+
+        ImGui::Separator();
+        ImGui::Text("ASD Summary");
+        ImGui::SameLine();
+        draw_help_marker("Review the top discovered semantic regions and choose one to highlight.");
+        if (app->semantic_region_count > 0) {
+            if (app->semantic_status[0]) {
+                ImGui::TextWrapped("Status: %s", app->semantic_status);
+            }
+            ImGui::BeginGroup();
+            int visible_regions = app->semantic_region_count < 3 ? app->semantic_region_count : 3;
+            for (int i = 0; i < visible_regions; ++i) {
+                VoxelPilotSemanticRegion *region = &app->semantic_regions[i];
+                char label[128];
+                snprintf(label, sizeof(label), "#%d %s", i + 1, region->name[0] ? region->name : "ASD candidate");
+                bool selected = (app->semantic_selected_region == i);
+                ImGui::Selectable(label, selected, ImGuiSelectableFlags_SpanAllColumns);
+                if (ImGui::IsItemClicked()) {
+                    app->semantic_selected_region = i;
+                }
+                ImGui::SameLine();
+                ImGui::Text("%s | %.0f%% conf | %.0f%% stab", region->archetype, region->confidence * 100.0f, region->stability_score * 100.0f);
+            }
+            if (app->semantic_selected_region >= 0 && app->semantic_selected_region < app->semantic_region_count) {
+                VoxelPilotSemanticRegion *selected = &app->semantic_regions[app->semantic_selected_region];
+                ImGui::TextWrapped("Selected: %s | %s | %zu voxels", selected->name, selected->category, selected->voxel_count);
+                if (selected->label_id != 0) {
+                    const char *relation_note = semantic_relationship_note(app, selected->label_id);
+                    if (relation_note[0]) {
+                        ImGui::TextWrapped("Relation note: %s", relation_note);
+                    }
+                }
+            }
+            ImGui::EndGroup();
+        } else {
+            ImGui::TextWrapped("No ASD regions discovered yet. Click Discover Regions to run ASD-Lite.");
         }
-    }
-    {
-        bool overlay_visible = (app->label_overlay_visible != 0);
-        if (ImGui::Checkbox("Show Labels in 3D Render", &overlay_visible)) {
-            app->label_overlay_visible = overlay_visible ? 1 : 0;
+
+        if (ImGui::CollapsingHeader("Transfer & Health", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (!has_volume || !app->histogram_ready) {
+                ImGui::TextWrapped("Load a volume and build its histogram to enable transfer advice.");
+            } else {
+                if (ImGui::Button("Auto Enhance View")) {
+                    apply_auto_enhance_transfer(app, "AI Assist");
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Preview Auto Window")) {
+                    if (has_transfer_suggestion) {
+                        snprintf(app->ai_assist_status,
+                                 sizeof(app->ai_assist_status),
+                                 "Preview - not applied: center %.3f, width %.3f, opacity %.2f.",
+                                 suggested_center,
+                                 suggested_width,
+                                 suggested_opacity);
+                        set_ui_toast(app, "Preview ready. No settings changed.");
+                    } else {
+                        snprintf(app->ai_assist_status,
+                                 sizeof(app->ai_assist_status),
+                                 "Auto window needs a populated histogram.");
+                    }
+                }
+                if (app->transfer_undo_available) {
+                    ImGui::SameLine();
+                    if (ImGui::Button("Restore Previous View")) {
+                        undo_transfer_settings(app);
+                    }
+                }
+                ImGui::InputText("Prompt", app->ai_prompt, sizeof(app->ai_prompt));
+                if (ImGui::Button("Apply Prompt")) {
+                    apply_ai_prompt_to_app(app);
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Health Check")) {
+                    update_dataset_health(app);
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Export Bundle")) {
+                    if (performance_allows_optional_action(app, "AI review bundle", 1, 1)) {
+                        export_ai_review_bundle(app);
+                        refresh_performance_governor(app);
+                    }
+                }
+            }
         }
-    }
-    ImGui::SliderFloat("3D Label Opacity", &app->label_overlay_alpha, 0.10f, 0.95f);
-    {
-        bool selected_emphasis = (app->label_selected_emphasis_enabled != 0);
-        if (ImGui::Checkbox("Selected Region Glow", &selected_emphasis)) {
-            app->label_selected_emphasis_enabled = selected_emphasis ? 1 : 0;
-        }
-    }
-    ImGui::SliderFloat("Selected Glow Strength", &app->label_selected_emphasis_strength, 0.0f, 1.0f);
-    ImGui::InputText("Label Name", app->annotation_name, sizeof(app->annotation_name));
-    ImGui::SliderFloat("Label Tolerance", &app->annotation_tolerance, 0.005f, 0.250f);
-    ImGui::ColorEdit3("Label Color", app->annotation_color);
-    if (ImGui::Button("Label Current Slice Point")) {
-        float point[3] = { app->slice_x, app->slice_y, app->slice_z };
-        create_annotation_region_at_point(app, point);
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Export Mask")) {
-        export_annotation_mask(app);
-    }
-    ImGui::TextWrapped("Annotation status: %s", app->annotation_status);
-    if (app->annotation_count > 0) {
-        int i;
-        for (i = 0; i < app->annotation_count; ++i) {
-            AnnotationRegion *region = &app->annotations[i];
-            char row_label[128];
-            if (!region->active) continue;
-            snprintf(row_label, sizeof(row_label),
-                     "%u: %s (%zu voxels)",
-                     (unsigned int)region->label_id,
-                     region->name,
-                     region->voxel_count);
-            if (ImGui::Selectable(row_label, app->selected_annotation == i)) {
-                app->selected_annotation = i;
-                snprintf(app->annotation_name, sizeof(app->annotation_name),
-                         "%s", region->name);
-                app->annotation_tolerance = region->tolerance;
-                app->annotation_color[0] = region->color[0];
-                app->annotation_color[1] = region->color[1];
-                app->annotation_color[2] = region->color[2];
+
+        ImGui::TextWrapped("%s", app->ai_assist_status);
+
+        if (ImGui::CollapsingHeader("More AI Tools")) {
+            ImGui::Text("Advisor");
+            if (!has_volume || !app->histogram_ready) {
+                ImGui::TextWrapped("Load a volume for transfer advice.");
+            } else if (has_transfer_advisor) {
+                ImGui::Text("%s | %.0f%%", transfer_advisor.action, transfer_advisor.confidence * 100.0f);
+                if (transfer_advisor.has_recommendation) {
+                    ImGui::Text("%.3f / %.3f / %.2f",
+                                transfer_advisor.tf_center,
+                                transfer_advisor.tf_width,
+                                transfer_advisor.tf_opacity_scale);
+                    if (ImGui::Button("Apply Advisor Settings")) {
+                        apply_transfer_settings_with_undo(
+                            app,
+                            transfer_advisor.tf_center,
+                            transfer_advisor.tf_width,
+                            transfer_advisor.tf_opacity_scale,
+                            "Advisor settings");
+                    }
+                }
+            } else {
+                ImGui::TextWrapped("Advisor could not summarize this histogram.");
+            }
+
+            ImGui::Separator();
+            if (ImGui::Button("Refresh Quant Metrics")) {
+                update_quant_metrics(app);
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Export Insight Report")) {
+                export_insight_report(app);
+            }
+            if (ImGui::Button("Scout Focus Slice")) {
+                float focus_slice = 0.0f;
+                float focus_score = 0.0f;
+                if (voxelpilot_find_high_variance_axial_slice(
+                        app->renderer.volume_data,
+                        app->renderer.W,
+                        app->renderer.H,
+                        app->renderer.D,
+                        &focus_slice,
+                        &focus_score)) {
+                    app->slice_z = focus_slice;
+                    app->ai_focus_slice = focus_slice;
+                    app->ai_focus_score = focus_score;
+                    snprintf(app->ai_assist_status,
+                             sizeof(app->ai_assist_status),
+                             "Scout moved Axial Z to %.3f.",
+                             app->ai_focus_slice);
+                    set_ui_toast(app, "Focus slice updated.");
+                } else {
+                    snprintf(app->ai_assist_status,
+                             sizeof(app->ai_assist_status),
+                             "Focus scout needs a loaded 3D volume.");
+                }
             }
         }
     }
-
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Text("Object Hover + Streaming");
-    ImGui::TextWrapped("Hover over slice previews or the main 3D render for density or label explanations.");
-    ImGui::TextWrapped("3D hover: %s", app->main_hover_description);
-    update_streaming_estimate(app);
-    if (app->renderer.h_grid.numBricks > 0) {
-        ImGui::SliderInt("Brick Budget",
-                         &app->streaming_budget_bricks,
-                         1,
-                         app->renderer.h_grid.numBricks);
-    }
-    ImGui::TextWrapped("Streaming: %s", app->streaming_status);
-    ImGui::Text("Cache Plan: stream %d | queue %d | evictable %d",
-                app->streaming_stream_now,
-                app->streaming_queue,
-                app->streaming_evictable);
-
-    ImGui::Spacing();
-    ImGui::Text("Review Summary");
-    ImGui::Separator();
-    if (has_volume) {
-        ImGui::TextWrapped(
-            "Current review combines 3D rendering, prompt-guided transfer mapping, labels, hover explanations, and measurement context.");
-        ImGui::TextWrapped(
-            "Research track: true model-backed 3D segmentation and disk-backed brick paging can build on this scaffold.");
-    } else {
-        ImGui::TextWrapped("No active dataset summary yet.");
-    }
-
+    app->ai_visible = ai_open ? 1 : 0;
     ImGui::End();
 }
-
 static void draw_metadata_panel(StandaloneApp *app)
 {
+    if (!app->metadata_visible) {
+        return;
+    }
+
     size_t voxel_count =
         (size_t)app->renderer.W *
         (size_t)app->renderer.H *
         (size_t)app->renderer.D;
 
     set_default_window_layout(app, "Metadata");
-    ImGui::Begin("Metadata");
+    bool metadata_open = app->metadata_visible != 0;
+    if (ImGui::Begin("Metadata", &metadata_open)) {
     ImGui::Text("Dataset Summary");
     ImGui::Separator();
     ImGui::Text("Dimensions: %d x %d x %d",
@@ -4588,40 +4444,8 @@ static void draw_metadata_panel(StandaloneApp *app)
         ImGui::TextWrapped("Health summary: %s", app->dataset_health_status);
     }
     ImGui::TextWrapped("Dataset status: %s", app->upload_status);
-    ImGui::End();
-}
-
-static void draw_about_panel(StandaloneApp *app)
-{
-    (void)app;
-
-    set_default_window_layout(app, "About");
-    ImGui::Begin("About");
-
-    ImGui::TextColored(
-        ImVec4(0.40f, 0.88f, 0.78f, 1.0f),
-        "%s", BRAND_TITLE);
-    ImGui::Text("%s", BRAND_SUBTITLE);
-    ImGui::Separator();
-    ImGui::TextWrapped(
-        "A single-machine CUDA volume exploration workstation built for fast interactive rendering, slice inspection, and demo-ready review on NVIDIA hardware.");
-
-    ImGui::Spacing();
-    ImGui::Text("Current Highlights");
-    ImGui::Separator();
-    ImGui::BulletText("CUDA volume rendering with live camera framing and lighting control.");
-    ImGui::BulletText("Transfer mapping, clipping, histogram analysis, and orthogonal slice review.");
-    ImGui::BulletText("AI Assist panel with prompt rules, label masks, hover explanations, and brick telemetry.");
-    ImGui::BulletText("Mouse orbit and zoom, preset viewpoints, measurement tools, and PNG snapshots.");
-    ImGui::BulletText("Workspace session save/load plus a packaged Windows launcher flow.");
-
-    ImGui::Spacing();
-    ImGui::Text("Next Version");
-    ImGui::Separator();
-    ImGui::BulletText("Model-backed anatomical identification and uncertainty overlays.");
-    ImGui::BulletText("Disk-backed brick paging for true out-of-core volume streaming.");
-    ImGui::BulletText("3D label-mask overlays and richer correction-log export.");
-
+    }
+    app->metadata_visible = metadata_open ? 1 : 0;
     ImGui::End();
 }
 
@@ -4826,6 +4650,13 @@ static void draw_demo_banner(StandaloneApp *app)
     ImGui::Text("| %s", BRAND_TITLE);
     ImGui::TextWrapped(
         "Presentation build for the NVIDIA laptop: use the guided walkthrough to move through the demo in order.");
+    if (app->demo_auto_enabled) {
+        ImGui::TextColored(
+            ImVec4(0.40f, 0.88f, 0.78f, 1.0f),
+            "Auto Demo");
+        ImGui::SameLine();
+        ImGui::TextWrapped("%s", app->demo_auto_status);
+    }
     if (ImGui::Button("Start Guided Walkthrough")) {
         app->walkthrough_visible = 1;
         app->walkthrough_step = 0;
@@ -4935,6 +4766,103 @@ static void update_startup_splash(StandaloneApp *app)
     }
 }
 
+
+static void update_auto_demo_sequence(StandaloneApp *app, double now)
+{
+    double t;
+    double active_t;
+    double denom;
+    float phase;
+
+    if (!app || !app->demo_auto_enabled) {
+        return;
+    }
+
+    if (app->demo_auto_start_time <= 0.0) {
+        app->demo_auto_start_time = now;
+    }
+
+    t = now - app->demo_auto_start_time;
+
+    if (app->splash_visible) {
+        snprintf(app->demo_auto_status,
+                 sizeof(app->demo_auto_status),
+                 "Launching VoxelPilot and preparing the foot volume.");
+        return;
+    }
+
+    active_t = t - 3.8;
+    if (active_t < 0.0) active_t = 0.0;
+    if (active_t > app->demo_auto_duration_sec) {
+        active_t = app->demo_auto_duration_sec;
+    }
+
+    app->walkthrough_visible = 0;
+    app->paused = 0;
+    app->orbit_radius = 1.62f;
+    app->orbit_target[0] = 0.5f;
+    app->orbit_target[1] = 0.5f;
+    app->orbit_target[2] = 0.5f;
+
+    if (active_t < 5.0) {
+        phase = (float)(active_t / 5.0);
+        app->cinematic_enabled = 0;
+        app->tf_palette = 0;
+        app->orbit_yaw = -0.55f + phase * 0.85f;
+        app->orbit_pitch = 0.18f + 0.16f * sinf(phase * 3.14159265f);
+        snprintf(app->demo_auto_status,
+                 sizeof(app->demo_auto_status),
+                 "Loaded foot_256x256x256_uint8.raw | rotating across X/Y.");
+    } else if (active_t < 12.0) {
+        phase = (float)((active_t - 5.0) / 7.0);
+        app->cinematic_enabled = 0;
+        app->orbit_yaw = 0.30f + phase * 1.45f;
+        app->orbit_pitch = 0.24f + 0.28f * sinf(phase * 3.14159265f);
+        snprintf(app->demo_auto_status,
+                 sizeof(app->demo_auto_status),
+                 "Interactive CUDA orbit: X/Y rotation stays real-time.");
+    } else if (active_t < 17.0) {
+        phase = (float)((active_t - 12.0) / 5.0);
+        app->cinematic_enabled = 1;
+        app->cinematic_rim_strength = 0.45f + 0.10f * phase;
+        app->cinematic_glow_strength = 0.32f + 0.08f * phase;
+        app->cinematic_contrast = 1.16f + 0.08f * phase;
+        app->orbit_yaw = 1.75f + phase * 0.65f;
+        app->orbit_pitch = 0.32f + 0.16f * sinf(phase * 3.14159265f);
+        clamp_cinematic_settings(app);
+        snprintf(app->demo_auto_status,
+                 sizeof(app->demo_auto_status),
+                 "Cinematic Mode enabled: rim, glow, and contrast improve depth.");
+    } else {
+        denom = app->demo_auto_duration_sec - 17.0;
+        if (denom < 1.0) denom = 1.0;
+        phase = (float)((active_t - 17.0) / denom);
+        if (phase < 0.0f) phase = 0.0f;
+        if (phase > 1.0f) phase = 1.0f;
+        if (!app->demo_auto_enhance_applied) {
+            apply_auto_enhance_transfer(app, "Auto demo AI Assist");
+            app->tf_palette = 1;
+            app->demo_auto_enhance_applied = 1;
+        }
+        app->cinematic_enabled = 1;
+        app->cinematic_rim_strength = fmaxf(app->cinematic_rim_strength, 0.55f);
+        app->cinematic_glow_strength = fmaxf(app->cinematic_glow_strength, 0.40f);
+        app->cinematic_contrast = fmaxf(app->cinematic_contrast, 1.24f);
+        app->orbit_yaw = 2.40f + phase * 0.45f;
+        app->orbit_pitch = 0.34f;
+        clamp_cinematic_settings(app);
+        snprintf(app->demo_auto_status,
+                 sizeof(app->demo_auto_status),
+                 "AI Assist Auto Enhance applied: transfer and palette tuned for clarity.");
+    }
+
+    apply_orbit_camera(app);
+    app->camera_motion_active = 1;
+
+    if (t >= app->demo_auto_duration_sec + 5.0) {
+        glfwSetWindowShouldClose(app->window, GLFW_TRUE);
+    }
+}
 static void draw_startup_splash(StandaloneApp *app)
 {
     const ImGuiViewport *viewport = ImGui::GetMainViewport();
@@ -5065,6 +4993,10 @@ static void draw_status_bar(StandaloneApp *app)
                 measurement_distance_world(app));
     ImGui::SameLine();
     ImGui::Text("| Preset: %s", app->preset_status);
+    if (app->ui_toast[0]) {
+        ImGui::SameLine();
+        ImGui::Text("| %s", app->ui_toast);
+    }
     ImGui::End();
 }
 
@@ -5224,10 +5156,6 @@ static void draw_cinematic_semantic_callouts(StandaloneApp *app)
 
         anchor_x = viewport->Pos.x + local_x;
         anchor_y = viewport->Pos.y + local_y;
-        card_x = anchor_x + ((local_x > viewport_w * 0.62f) ? -(card_w + 34.0f) : 34.0f);
-        card_y = anchor_y - card_h * 0.5f + (float)(drawn % 3) * 12.0f;
-        card_x = fmaxf(viewport->Pos.x + 12.0f, fminf(card_x, viewport->Pos.x + viewport_w - card_w - 12.0f));
-        card_y = fmaxf(viewport->Pos.y + 36.0f, fminf(card_y, viewport->Pos.y + viewport_h - card_h - 44.0f));
 
         region_color = ImGui::ColorConvertFloat4ToU32(ImVec4(
             semantic->color[0], semantic->color[1], semantic->color[2], alpha));
@@ -5248,6 +5176,27 @@ static void draw_cinematic_semantic_callouts(StandaloneApp *app)
                     : "ASD-Lite",
                  semantic->importance_rank);
 
+        const float card_padding = 12.0f;
+        const float max_card_w = selected ? 320.0f : 280.0f;
+        ImFont *font = (ImFont *)ImGui::GetFont();
+        const float font_size = ImGui::GetFontSize();
+        const float available_text_width = max_card_w - card_padding * 2.0f;
+        const char *title_text = title;
+        const char *detail_text = detail;
+        const char *source_text = source;
+        ImVec2 title_size = ImGui::CalcTextSize(title_text, NULL, false, available_text_width);
+        ImVec2 detail_size = ImGui::CalcTextSize(detail_text, NULL, false, available_text_width);
+        ImVec2 source_size = ImGui::CalcTextSize(source_text, NULL, false, available_text_width);
+
+        card_w = fmaxf(card_w, fminf(max_card_w, fmaxf(title_size.x, fmaxf(detail_size.x, source_size.x)) + card_padding * 2.0f));
+        card_h = card_padding + title_size.y + 4.0f + detail_size.y + 4.0f + source_size.y + card_padding;
+        card_h = fmaxf(card_h, selected ? 86.0f : 74.0f);
+
+        card_x = anchor_x + ((local_x > viewport_w * 0.62f) ? -(card_w + 34.0f) : 34.0f);
+        card_y = anchor_y - card_h * 0.5f + (float)(drawn % 3) * 12.0f;
+        card_x = fmaxf(viewport->Pos.x + 12.0f, fminf(card_x, viewport->Pos.x + viewport_w - card_w - 12.0f));
+        card_y = fmaxf(viewport->Pos.y + 36.0f, fminf(card_y, viewport->Pos.y + viewport_h - card_h - 44.0f));
+
         draw_list->AddCircleFilled(ImVec2(anchor_x, anchor_y), selected ? 8.0f : 6.0f, region_color, 24);
         draw_list->AddCircle(ImVec2(anchor_x, anchor_y), selected ? 15.0f : 12.0f, line_color, 32, selected ? 2.4f : 1.8f);
         draw_list->AddLine(
@@ -5267,9 +5216,25 @@ static void draw_cinematic_semantic_callouts(StandaloneApp *app)
             12.0f,
             0,
             selected ? 2.2f : 1.4f);
-        draw_list->AddText(ImVec2(card_x + 12.0f, card_y + 10.0f), region_color, title);
-        draw_list->AddText(ImVec2(card_x + 12.0f, card_y + 34.0f), IM_COL32(228, 236, 240, (int)(235.0f * alpha)), detail);
-        draw_list->AddText(ImVec2(card_x + 12.0f, card_y + 56.0f), IM_COL32(168, 218, 218, (int)(225.0f * alpha)), source);
+
+        draw_list->AddText(font, font_size,
+                           ImVec2(card_x + card_padding, card_y + card_padding),
+                           region_color,
+                           title_text,
+                           nullptr,
+                           available_text_width);
+        draw_list->AddText(font, font_size,
+                           ImVec2(card_x + card_padding, card_y + card_padding + title_size.y + 4.0f),
+                           IM_COL32(228, 236, 240, (int)(235.0f * alpha)),
+                           detail_text,
+                           nullptr,
+                           available_text_width);
+        draw_list->AddText(font, font_size,
+                           ImVec2(card_x + card_padding, card_y + card_padding + title_size.y + detail_size.y + 8.0f),
+                           IM_COL32(168, 218, 218, (int)(225.0f * alpha)),
+                           source_text,
+                           nullptr,
+                           available_text_width);
         drawn++;
     }
 }
@@ -5281,14 +5246,14 @@ static void draw_gui(StandaloneApp *app)
         return;
     }
 
-    draw_dockspace();
+    draw_top_ribbon(app);
+    draw_dockspace(app);
     ensure_default_dock_layout(app);
     draw_demo_banner(app);
     draw_controls_panel(app);
     draw_insights_panel(app);
     draw_ai_assist_panel(app);
     draw_metadata_panel(app);
-    draw_about_panel(app);
     draw_walkthrough_overlay(app);
     draw_guided_review_overlay(app);
     draw_status_bar(app);
@@ -5323,6 +5288,9 @@ int main(int argc, char **argv)
     int           cli_cinematic_glow_set = 0;
     int           cli_cinematic_contrast_set = 0;
     int           cli_semantic_demo = 0;
+    int           cli_demo_auto = 0;
+    double        cli_demo_duration_sec = 24.0;
+    VoxelPilotCliExportPlan export_plan;
     float         cli_cinematic_rim = 0.35f;
     float         cli_cinematic_glow = 0.20f;
     float         cli_cinematic_contrast = 1.10f;
@@ -5374,6 +5342,13 @@ int main(int argc, char **argv)
             cli_cinematic_enabled = 1;
         } else if (strcmp(argv[i], "--semantic-demo") == 0) {
             cli_semantic_demo = 1;
+        } else if (strcmp(argv[i], "--demo-auto") == 0) {
+            cli_demo_auto = 1;
+        } else if (strcmp(argv[i], "--demo-duration") == 0 &&
+                   i+1 < argc) {
+            cli_demo_duration_sec = atof(argv[++i]);
+            if (cli_demo_duration_sec < 8.0) cli_demo_duration_sec = 8.0;
+            if (cli_demo_duration_sec > 60.0) cli_demo_duration_sec = 60.0;
         } else if (strcmp(argv[i], "--cinematic-rim") == 0 &&
                    i+1 < argc) {
             if (parse_cli_float(argv[++i], 0.0f, 1.0f, &cli_cinematic_rim) != 0) {
@@ -5450,6 +5425,7 @@ int main(int argc, char **argv)
                     strcmp(argv[i], "--tf-center") == 0 ||
                     strcmp(argv[i], "--tf-width") == 0 ||
                     strcmp(argv[i], "--tf-opacity") == 0 ||
+                    strcmp(argv[i], "--demo-duration") == 0 ||
                     strcmp(argv[i], "--cinematic-rim") == 0 ||
                     strcmp(argv[i], "--cinematic-glow") == 0 ||
                     strcmp(argv[i], "--cinematic-contrast") == 0) &&
@@ -5459,7 +5435,7 @@ int main(int argc, char **argv)
         } else {
             fprintf(stderr, "Unknown argument: %s\n", argv[i]);
             fprintf(stderr,
-                    "Usage: %s [--volume file.raw] [--dim N | --width W --height H --depth D] [--type uint8|uint16|float32] [--snapshot path.png] [--review-bundle folder] [--tf-center C --tf-width W --tf-opacity O] [--cinematic-lite --cinematic-rim R --cinematic-glow G --cinematic-contrast C] [--semantic-demo]\n",
+                    "Usage: %s [--volume file.raw] [--dim N | --width W --height H --depth D] [--type uint8|uint16|float32] [--snapshot path.png] [--review-bundle folder] [--tf-center C --tf-width W --tf-opacity O] [--cinematic-lite --cinematic-rim R --cinematic-glow G --cinematic-contrast C] [--semantic-demo] [--demo-auto --demo-duration seconds]\n",
                     argv[0]);
             return -1;
         }
@@ -5468,6 +5444,8 @@ int main(int argc, char **argv)
     memset(&startup_spec, 0, sizeof(startup_spec));
     memset(&inferred_spec, 0, sizeof(inferred_spec));
     memset(startup_error, 0, sizeof(startup_error));
+    memset(&export_plan, 0, sizeof(export_plan));
+    voxelpilot_cli_make_export_plan(snapshot_path, review_bundle_folder, &export_plan);
 
     if (volume_path) {
         if (volume_import_infer_from_filename(volume_path, &inferred_spec) == 0) {
@@ -5510,73 +5488,28 @@ int main(int argc, char **argv)
     }
 
     memset(&app, 0, sizeof(app));
-    app.win_w    = DEFAULT_WIN_W;
-    app.win_h    = DEFAULT_WIN_H;
-    app.render_w = DEFAULT_RENDER_W;
-    app.render_h = DEFAULT_RENDER_H;
-    app.render_match_window = 1;
-    app.layout_refit_next_frame = 1;
-    app.window_was_maximized = 0;
-    app.selected_resolution = 1;
+    apply_default_workspace_state(&app, 1);
 
-    /* Default camera */
-    app.cam_pos[0] =  0.5f;
-    app.cam_pos[1] =  0.5f;
-    app.cam_pos[2] = -1.0f;
-    app.cam_dir[0] =  0.0f;
-    app.cam_dir[1] =  0.0f;
-    app.cam_dir[2] =  1.0f;
-    app.cam_up[0]  =  0.0f;
-    app.cam_up[1]  =  1.0f;
-    app.cam_up[2]  =  0.0f;
-    app.fov_y_deg  = 45.0f;
-
-    /* Default light */
-    app.light_pos[0] =  1.5f;
-    app.light_pos[1] =  1.5f;
-    app.light_pos[2] = -1.0f;
-
-    /* Default render params */
-    apply_render_quality_preset(&app, VOXELPILOT_RENDER_QUALITY_BALANCED);
-    {
-        VoxelPilotCinematicParams cinematic;
-        voxelpilot_cinematic_defaults(&cinematic);
-        app.cinematic_enabled = cinematic.enabled;
-        app.cinematic_rim_strength = cinematic.rim_strength;
-        app.cinematic_glow_strength = cinematic.glow_strength;
-        app.cinematic_contrast = cinematic.contrast;
-    }
     if (cli_cinematic_enabled) app.cinematic_enabled = 1;
     if (cli_cinematic_rim_set) app.cinematic_rim_strength = cli_cinematic_rim;
     if (cli_cinematic_glow_set) app.cinematic_glow_strength = cli_cinematic_glow;
     if (cli_cinematic_contrast_set) app.cinematic_contrast = cli_cinematic_contrast;
     clamp_cinematic_settings(&app);
-    app.paused     = 0;
-    app.tf_center = 0.45f;
-    app.tf_width = 0.35f;
-    app.tf_opacity_scale = 1.8f;
     if (cli_tf_center_set) app.tf_center = cli_tf_center;
     if (cli_tf_width_set) app.tf_width = cli_tf_width;
     if (cli_tf_opacity_set) app.tf_opacity_scale = cli_tf_opacity;
-    app.tf_palette = 0;
-    app.tf_invert = 0;
-    voxelpilot_set_default_clip_bounds(app.clip_min, app.clip_max);
-    app.slice_x = 0.5f;
-    app.slice_y = 0.5f;
-    app.slice_z = 0.5f;
-    app.orbit_target[0] = 0.5f;
-    app.orbit_target[1] = 0.5f;
-    app.orbit_target[2] = 0.5f;
-    app.orbit_yaw = 0.0f;
-    app.orbit_pitch = 0.0f;
-    app.orbit_radius = 1.5f;
-    app.pending_scroll = 0.0f;
+
     app.demo_mode_enabled = 1;
+    app.demo_auto_enabled = cli_demo_auto;
+    app.demo_auto_start_time = 0.0;
+    app.demo_auto_duration_sec = cli_demo_duration_sec;
+    app.demo_auto_enhance_applied = 0;
+    strcpy(app.demo_auto_status,
+           cli_demo_auto
+               ? "Auto demo armed: launching VoxelPilot."
+               : "Manual demo mode ready.");
     app.walkthrough_visible = 0;
     app.walkthrough_step = 0;
-    app.guided_review_visible = 0;
-    memset(&app.guided_review_step, 0, sizeof(app.guided_review_step));
-    strcpy(app.guided_review_status, "Run Semantic Demo or Discover Regions, then start Guided Review.");
     app.splash_visible = 1;
     app.splash_start_time = 0.0;
     app.splash_status_index = 0;
@@ -5614,73 +5547,28 @@ int main(int argc, char **argv)
     strcpy(app.screenshot_path, "volume_snapshot.png");
     strcpy(app.preset_status, "No preset loaded");
     strcpy(app.preset_path, "workspace.vpilot");
-    memset(&app.dataset_health, 0, sizeof(app.dataset_health));
-    app.dataset_health_ready = 0;
-    strcpy(app.dataset_health_status, "Dataset Health needs a loaded volume histogram.");
+    app.transfer_undo_available = 0;
+    strcpy(app.ui_toast, "");
     app.ai_focus_slice = 0.5f;
     app.ai_focus_score = 0.0f;
     strcpy(app.ai_prompt, "show high-density shell");
     strcpy(app.ai_assist_status,
            "AI Assist ready. Load a volume to run local review suggestions.");
-    app.annotation_mode = 0;
-    strcpy(app.annotation_name, "Region");
-    app.annotation_tolerance = 0.035f;
-    app.annotation_color[0] = 0.95f;
-    app.annotation_color[1] = 0.28f;
-    app.annotation_color[2] = 0.16f;
-    app.label_overlay_visible = 1;
-    app.label_overlay_alpha = 0.55f;
-    app.label_selected_emphasis_enabled = 1;
-    app.label_selected_emphasis_strength = 0.65f;
-    app.semantic_max_regions = MAX_ANNOTATIONS;
-    app.semantic_min_region_voxels = 128;
-    app.semantic_sensitivity = 0.55f;
-    app.semantic_cinematic_emphasis = 1;
-    app.semantic_callouts_enabled = 1;
-    app.semantic_callout_top_regions = 3;
-    app.semantic_callout_selected_only = 0;
-    app.semantic_callout_opacity = 0.88f;
     memset(app.semantic_corrections, 0, sizeof(app.semantic_corrections));
     app.semantic_correction_count = 0;
     strcpy(app.semantic_edit_name, "");
     strcpy(app.semantic_memory_path, "voxelpilot_asd_memory.json");
     strcpy(app.semantic_memory_status, "No ASD correction memory loaded yet.");
-    reset_semantic_discovery(&app);
     app.slice_preview_dirty = 1;
     app.slice_prev_x = -1.0f;
     app.slice_prev_y = -1.0f;
     app.slice_prev_z = -1.0f;
-    app.selected_annotation = -1;
-    strcpy(app.annotation_status, "No annotation regions yet.");
     strcpy(app.hover_description, "Hover over a slice preview for context.");
-    app.main_hover_active = 0;
-    app.main_hover_label_id = 0;
-    memset(&app.main_hover_pick, 0, sizeof(app.main_hover_pick));
-    strcpy(app.main_hover_description,
-           "Hover over the 3D render for a direct pick explanation.");
-    app.object_summary_ready = 0;
-    strcpy(app.object_summary_status,
-           "Click Analyze Loaded Volume to generate a local object summary.");
-    app.quant_metrics_ready = 0;
-    strcpy(app.quant_metrics_status,
-           "Click Refresh Quant Metrics to summarize the active volume.");
-    strcpy(app.report_status, "No report exported yet.");
-    strcpy(app.report_path, "voxelpilot_insight_report.html");
-    app.render_ms_average = 0.0f;
-    app.render_ms_average_ready = 0;
-    voxelpilot_performance_result_defaults(&app.performance_result);
-    strcpy(app.performance_status, "Performance Safety: waiting for render telemetry.");
     app.streaming_budget_bricks = 0;
     app.streaming_stream_now = 0;
     app.streaming_queue = 0;
     app.streaming_evictable = 0;
     strcpy(app.streaming_status, "Brick streaming telemetry pending.");
-    sync_resolution_selection(&app);
-    set_camera_preset(&app,
-        -0.35f, 0.95f, -0.35f,
-        0.7f, -0.35f, 0.7f,
-        0.0f, 1.0f, 0.0f);
-
     if (!detect_cuda_runtime(cuda_status, sizeof(cuda_status))) {
         fprintf(stderr, "%s\n", cuda_status);
         strncpy(app.upload_status, cuda_status, sizeof(app.upload_status) - 1);
@@ -5693,13 +5581,22 @@ int main(int argc, char **argv)
     }
 
     /* Init CUDA renderer directly */
-    renderer_state_init(
-        &app.renderer,
-        NULL,
-        app.upload_width,
-        app.upload_height,
-        app.upload_depth,
-        brick_dim);
+    if (!renderer_state_init(
+            &app.renderer,
+            NULL,
+            app.upload_width,
+            app.upload_height,
+            app.upload_depth,
+            brick_dim)) {
+        snprintf(app.upload_status, sizeof(app.upload_status),
+                 "Renderer init failed: %s",
+                 app.renderer.last_error_message[0]
+                     ? app.renderer.last_error_message
+                     : "unknown CUDA error");
+        fprintf(stderr, "renderer_state_init failed: %s\n",
+                app.renderer.last_error_message);
+    }
+
     if (startup_volume_data) {
         strcpy(app.upload_status, "Loading startup volume to GPU...");
         reload_volume(
@@ -5743,7 +5640,7 @@ int main(int argc, char **argv)
         run_semantic_demo_workflow(&app, "CLI semantic demo");
     }
 
-    if (review_bundle_folder) {
+    if (export_plan.run_review_bundle) {
         if (app.render_w < 1024) app.render_w = 1024;
         if (app.render_h < 1024) app.render_h = 1024;
         set_camera_preset(&app,
@@ -5758,12 +5655,14 @@ int main(int argc, char **argv)
             return -1;
         }
         printf("AI review bundle saved: %s\n", app.report_path);
-        renderer_state_cleanup(&app.renderer);
-        cudaDeviceReset();
-        return 0;
+        if (!export_plan.run_snapshot) {
+            renderer_state_cleanup(&app.renderer);
+            cudaDeviceReset();
+            return 0;
+        }
     }
 
-    if (snapshot_path) {
+    if (export_plan.run_snapshot) {
         if (app.render_w < 1024) app.render_w = 1024;
         if (app.render_h < 1024) app.render_h = 1024;
         set_camera_preset(&app,
@@ -5843,6 +5742,7 @@ int main(int argc, char **argv)
     {
         ImGuiIO *io = &ImGui::GetIO();
         io->IniFilename = NULL;
+        io->FontGlobalScale = 1.06f;
 #ifdef IMGUI_HAS_DOCK
         io->ConfigFlags |= ImGuiConfigFlags_DockingEnable;
 #endif
@@ -5900,6 +5800,11 @@ int main(int argc, char **argv)
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
         update_startup_splash(&app);
+        app.camera_motion_active = 0;
+        update_auto_demo_sequence(&app, now);
+        if (!app.splash_visible) {
+            handle_keyboard_shortcuts(&app);
+        }
         if (!app.splash_visible) {
             process_mouse_camera_controls(&app);
         }

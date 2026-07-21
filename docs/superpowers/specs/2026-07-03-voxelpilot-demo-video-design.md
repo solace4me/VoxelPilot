@@ -1,4 +1,4 @@
-# VoxelPilot Real-App Demo Video Design
+ # VoxelPilot Real-App Demo Video Design
 
 Date: 2026-07-03
 Status: Approved design

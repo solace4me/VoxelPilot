@@ -9,31 +9,12 @@
 #include <string.h>
 
 #include "volume_structs.h"
+#include "ai_prompt.h"
+#include "dataset_health.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-#define VOXELPILOT_PROMPT_STATUS_MAX 256
-
-#define VOXELPILOT_RENDER_QUALITY_INTERACTIVE 0
-#define VOXELPILOT_RENDER_QUALITY_BALANCED    1
-#define VOXELPILOT_RENDER_QUALITY_QUALITY     2
-
-typedef struct {
-    int   recognized;
-    int   set_transfer;
-    int   set_min_intensity;
-    int   reset_view;
-    int   auto_enhance;
-    int   set_quality;
-    int   quality_mode;
-    float tf_center;
-    float tf_width;
-    float tf_opacity_scale;
-    float min_intensity;
-    char  status[VOXELPILOT_PROMPT_STATUS_MAX];
-} VoxelPilotPromptResult;
 
 typedef struct {
     char  primary_material[96];
@@ -59,45 +40,6 @@ typedef struct {
     char  summary[256];
 } VoxelPilotQuantMetrics;
 
-#define VOXELPILOT_TRANSFER_ADVICE_KEEP_CURRENT       0
-#define VOXELPILOT_TRANSFER_ADVICE_BRIGHTEN_SPARSE    1
-#define VOXELPILOT_TRANSFER_ADVICE_HIGH_DENSITY_FOCUS 2
-
-typedef struct {
-    int   kind;
-    int   has_recommendation;
-    float tf_center;
-    float tf_width;
-    float tf_opacity_scale;
-    float min_intensity;
-    float confidence;
-    char  action[128];
-    char  explanation[256];
-} VoxelPilotTransferAdvisorResult;
-
-#define VOXELPILOT_DATASET_HEALTH_OK        0
-#define VOXELPILOT_DATASET_HEALTH_WATCH     1
-#define VOXELPILOT_DATASET_HEALTH_ATTENTION 2
-
-#define VOXELPILOT_DATASET_HEALTH_TINY_VOLUME         0x01
-#define VOXELPILOT_DATASET_HEALTH_FLAT_RANGE          0x02
-#define VOXELPILOT_DATASET_HEALTH_BACKGROUND_DOMINANT 0x04
-#define VOXELPILOT_DATASET_HEALTH_LOW_CONTRAST        0x08
-#define VOXELPILOT_DATASET_HEALTH_LARGE_VOLUME        0x10
-
-typedef struct {
-    int    level;
-    int    flags;
-    float  score;
-    float  background_ratio;
-    float  active_bin_ratio;
-    float  dynamic_range;
-    size_t voxel_count;
-    size_t estimated_bytes;
-    char   summary[256];
-    char   recommendation[256];
-} VoxelPilotDatasetHealthResult;
-
 typedef struct {
     int visible;
     int resident_candidates;
@@ -118,507 +60,6 @@ typedef struct {
     float  intensity;
     float  t;
 } VoxelPilotRayPickResult;
-
-static inline float voxelpilot_ai_clampf(float value, float lo, float hi)
-{
-    if (value < lo) return lo;
-    if (value > hi) return hi;
-    return value;
-}
-
-static inline void voxelpilot_ai_copy_lower(
-    const char *src,
-    char       *dst,
-    size_t      dst_size)
-{
-    size_t i;
-
-    if (!dst || dst_size == 0) {
-        return;
-    }
-
-    if (!src) {
-        dst[0] = '\0';
-        return;
-    }
-
-    for (i = 0; i + 1 < dst_size && src[i]; ++i) {
-        dst[i] = (char)tolower((unsigned char)src[i]);
-    }
-    dst[i] = '\0';
-}
-
-static inline int voxelpilot_ai_extract_first_number(
-    const char *text,
-    float      *out_value)
-{
-    const char *cursor;
-    char *end_ptr;
-    double value;
-
-    if (!text || !out_value) {
-        return 0;
-    }
-
-    cursor = text;
-    while (*cursor) {
-        int is_digit = (*cursor >= '0' && *cursor <= '9');
-        int is_signed_number =
-            *cursor == '-' &&
-            ((*(cursor + 1) >= '0' && *(cursor + 1) <= '9') ||
-             *(cursor + 1) == '.');
-        if (is_digit || *cursor == '.' || is_signed_number) {
-            value = strtod(cursor, &end_ptr);
-            if (end_ptr != cursor) {
-                *out_value = (float)value;
-                return 1;
-            }
-        }
-        ++cursor;
-    }
-
-    return 0;
-}
-
-static inline int voxelpilot_ai_text_contains_any(
-    const char *text,
-    const char *const *terms,
-    int         term_count)
-{
-    int term_index;
-
-    if (!text || !terms || term_count < 1) {
-        return 0;
-    }
-
-    for (term_index = 0; term_index < term_count; ++term_index) {
-        if (terms[term_index] && strstr(text, terms[term_index])) {
-            return 1;
-        }
-    }
-
-    return 0;
-}
-
-static inline int voxelpilot_ai_histogram_percentile_bin(
-    const float *histogram,
-    int          bin_count,
-    float        percentile,
-    float        total_samples)
-{
-    float threshold;
-    float cumulative = 0.0f;
-    int bin_index;
-
-    if (!histogram || bin_count < 2 || total_samples <= 0.0f) {
-        return 0;
-    }
-
-    percentile = voxelpilot_ai_clampf(percentile, 0.0f, 1.0f);
-    threshold = total_samples * percentile;
-
-    for (bin_index = 0; bin_index < bin_count; ++bin_index) {
-        if (histogram[bin_index] > 0.0f) {
-            cumulative += histogram[bin_index];
-        }
-        if (cumulative >= threshold) {
-            return bin_index;
-        }
-    }
-
-    return bin_count - 1;
-}
-
-static inline int voxelpilot_compute_auto_enhance_transfer(
-    const float *histogram,
-    int          bin_count,
-    float       *out_center,
-    float       *out_width,
-    float       *out_opacity_scale)
-{
-    float total_samples = 0.0f;
-    float background_ratio;
-    float lower_percentile;
-    float upper_percentile;
-    float informative_samples = 0.0f;
-    float informative_ratio;
-    int lower_bin;
-    int upper_bin;
-    int bin_index;
-    float lower_norm;
-    float upper_norm;
-    float center;
-    float width;
-    float opacity_scale;
-
-    if (!histogram || bin_count < 2 || !out_center || !out_width || !out_opacity_scale) {
-        return 0;
-    }
-
-    for (bin_index = 0; bin_index < bin_count; ++bin_index) {
-        if (histogram[bin_index] > 0.0f) {
-            total_samples += histogram[bin_index];
-        }
-    }
-
-    if (total_samples <= 0.0f) {
-        return 0;
-    }
-
-    background_ratio = histogram[0] > 0.0f ? histogram[0] / total_samples : 0.0f;
-    lower_percentile = background_ratio > 0.30f
-        ? voxelpilot_ai_clampf(background_ratio + 0.02f, 0.02f, 0.82f)
-        : 0.02f;
-    upper_percentile = background_ratio > 0.55f ? 0.995f : 0.900f;
-
-    lower_bin = voxelpilot_ai_histogram_percentile_bin(
-        histogram,
-        bin_count,
-        lower_percentile,
-        total_samples);
-    upper_bin = voxelpilot_ai_histogram_percentile_bin(
-        histogram,
-        bin_count,
-        upper_percentile,
-        total_samples);
-
-    if (upper_bin < lower_bin) {
-        upper_bin = lower_bin;
-    }
-
-    lower_norm = (float)lower_bin / (float)(bin_count - 1);
-    upper_norm = (float)upper_bin / (float)(bin_count - 1);
-    center = (lower_norm + upper_norm) * 0.5f;
-    width = upper_norm - lower_norm;
-
-    if (width < 0.20f) {
-        width = 0.20f;
-    }
-    if (width > 0.82f) {
-        width = 0.82f;
-    }
-    if (center - width * 0.5f < 0.0f) {
-        center = width * 0.5f;
-    }
-    if (center + width * 0.5f > 1.0f) {
-        center = 1.0f - width * 0.5f;
-    }
-
-    for (bin_index = lower_bin; bin_index <= upper_bin && bin_index < bin_count; ++bin_index) {
-        if (histogram[bin_index] > 0.0f) {
-            informative_samples += histogram[bin_index];
-        }
-    }
-    informative_ratio = informative_samples / total_samples;
-
-    opacity_scale = 1.55f;
-    if (background_ratio > 0.60f || informative_ratio < 0.35f) {
-        opacity_scale = 2.20f;
-    } else if (background_ratio > 0.35f || informative_ratio < 0.55f) {
-        opacity_scale = 1.90f;
-    } else if (width < 0.28f) {
-        opacity_scale = 2.05f;
-    } else if (width < 0.42f) {
-        opacity_scale = 1.85f;
-    }
-
-    *out_center = voxelpilot_ai_clampf(center, 0.0f, 1.0f);
-    *out_width = voxelpilot_ai_clampf(width, 0.05f, 1.0f);
-    *out_opacity_scale = voxelpilot_ai_clampf(opacity_scale, 1.0f, 3.0f);
-    return 1;
-}
-
-static inline int voxelpilot_compute_dataset_health(
-    const float                   *histogram,
-    int                            bin_count,
-    int                            width,
-    int                            height,
-    int                            depth,
-    float                          value_min,
-    float                          value_max,
-    size_t                         estimated_bytes,
-    VoxelPilotDatasetHealthResult *health)
-{
-    float total = 0.0f;
-    float background_ratio = 0.0f;
-    float active_bin_ratio = 0.0f;
-    float dynamic_range;
-    float score = 100.0f;
-    int nonzero_bins = 0;
-    int bin_index;
-    size_t voxel_count;
-
-    if (!histogram || bin_count < 2 || width < 1 || height < 1 || depth < 1 || !health) {
-        return 0;
-    }
-
-    memset(health, 0, sizeof(*health));
-    voxel_count = (size_t)width * (size_t)height * (size_t)depth;
-    dynamic_range = value_max - value_min;
-    if (dynamic_range < 0.0f) dynamic_range = -dynamic_range;
-    if (estimated_bytes == 0) {
-        estimated_bytes = voxel_count * sizeof(float);
-    }
-
-    for (bin_index = 0; bin_index < bin_count; ++bin_index) {
-        float count = histogram[bin_index] > 0.0f ? histogram[bin_index] : 0.0f;
-        if (count <= 0.0f) continue;
-        total += count;
-        nonzero_bins++;
-    }
-
-    if (total <= 0.0f) {
-        health->level = VOXELPILOT_DATASET_HEALTH_ATTENTION;
-        health->flags = VOXELPILOT_DATASET_HEALTH_FLAT_RANGE;
-        health->score = 0.0f;
-        health->voxel_count = voxel_count;
-        health->estimated_bytes = estimated_bytes;
-        health->dynamic_range = dynamic_range;
-        snprintf(health->summary, sizeof(health->summary),
-                 "Dataset histogram is empty, so VoxelPilot cannot assess visibility yet.");
-        snprintf(health->recommendation, sizeof(health->recommendation),
-                 "Reload the volume or verify width, height, depth, and data type before running AI review.");
-        return 1;
-    }
-
-    background_ratio = histogram[0] > 0.0f ? histogram[0] / total : 0.0f;
-    active_bin_ratio = (float)nonzero_bins / (float)bin_count;
-
-    health->level = VOXELPILOT_DATASET_HEALTH_OK;
-    health->voxel_count = voxel_count;
-    health->estimated_bytes = estimated_bytes;
-    health->background_ratio = background_ratio;
-    health->active_bin_ratio = active_bin_ratio;
-    health->dynamic_range = dynamic_range;
-
-    if (voxel_count < (size_t)64 * 64 * 32) {
-        health->flags |= VOXELPILOT_DATASET_HEALTH_TINY_VOLUME;
-        score -= 15.0f;
-    }
-
-    if (dynamic_range < 1.0e-5f || nonzero_bins <= 1) {
-        health->flags |= VOXELPILOT_DATASET_HEALTH_FLAT_RANGE;
-        score -= 70.0f;
-    } else if (dynamic_range < 0.04f || active_bin_ratio < 0.10f) {
-        health->flags |= VOXELPILOT_DATASET_HEALTH_LOW_CONTRAST;
-        score -= 20.0f;
-    }
-
-    if (background_ratio > 0.75f) {
-        health->flags |= VOXELPILOT_DATASET_HEALTH_BACKGROUND_DOMINANT;
-        score -= background_ratio > 0.90f ? 35.0f : 22.0f;
-    }
-
-    if (estimated_bytes > (size_t)768 * 1024 * 1024 ||
-        voxel_count > (size_t)512 * 512 * 384) {
-        health->flags |= VOXELPILOT_DATASET_HEALTH_LARGE_VOLUME;
-        score -= 15.0f;
-    }
-
-    health->score = voxelpilot_ai_clampf(score, 0.0f, 100.0f);
-
-    if ((health->flags & VOXELPILOT_DATASET_HEALTH_FLAT_RANGE) ||
-        background_ratio > 0.88f) {
-        health->level = VOXELPILOT_DATASET_HEALTH_ATTENTION;
-    } else if (health->flags != 0) {
-        health->level = VOXELPILOT_DATASET_HEALTH_WATCH;
-    }
-
-    if (health->flags & VOXELPILOT_DATASET_HEALTH_FLAT_RANGE) {
-        snprintf(health->summary, sizeof(health->summary),
-                 "Attention: dataset appears flat or constant with %.6f dynamic range and %d active histogram bin(s).",
-                 dynamic_range,
-                 nonzero_bins);
-        snprintf(health->recommendation, sizeof(health->recommendation),
-                 "Verify import dimensions/data type; a constant volume cannot support meaningful rendering, ASD, or Guided Review.");
-    } else if (health->flags & VOXELPILOT_DATASET_HEALTH_BACKGROUND_DOMINANT) {
-        snprintf(health->summary, sizeof(health->summary),
-                 "Attention: %.1f%% of samples sit in the background bin, so the object may import too dark or sparse.",
-                 background_ratio * 100.0f);
-        snprintf(health->recommendation, sizeof(health->recommendation),
-                 "Use AI Transfer Advisor or Auto Enhance View before ASD/Guided Review; keep rendering quality unchanged until visibility improves.");
-    } else if (health->flags & VOXELPILOT_DATASET_HEALTH_LARGE_VOLUME) {
-        snprintf(health->summary, sizeof(health->summary),
-                 "Watch: dataset working set is %.1f MB with %.1f%% active histogram bins.",
-                 (double)estimated_bytes / (1024.0 * 1024.0),
-                 active_bin_ratio * 100.0f);
-        snprintf(health->recommendation, sizeof(health->recommendation),
-                 "Check Performance Safety before optional AI passes; keep callouts bounded and use brick telemetry for large volumes.");
-    } else if (health->flags & VOXELPILOT_DATASET_HEALTH_LOW_CONTRAST) {
-        snprintf(health->summary, sizeof(health->summary),
-                 "Watch: dataset has narrow contrast with %.1f%% active histogram bins.",
-                 active_bin_ratio * 100.0f);
-        snprintf(health->recommendation, sizeof(health->recommendation),
-                 "Use AI Transfer Advisor to widen visibility before region discovery.");
-    } else if (health->flags & VOXELPILOT_DATASET_HEALTH_TINY_VOLUME) {
-        snprintf(health->summary, sizeof(health->summary),
-                 "Watch: tiny dataset has %zu voxels; rendering is valid but semantic detail may be limited.",
-                 voxel_count);
-        snprintf(health->recommendation, sizeof(health->recommendation),
-                 "Use it for UI/report testing; semantic discovery and Guided Review are stronger on larger volumes.");
-    } else {
-        snprintf(health->summary, sizeof(health->summary),
-                 "healthy dataset: %zu voxels, %.1f%% active histogram bins, and %.3f dynamic range.",
-                 voxel_count,
-                 active_bin_ratio * 100.0f,
-                 dynamic_range);
-        snprintf(health->recommendation, sizeof(health->recommendation),
-                 "Proceed with AI Transfer Advisor, ASD-Lite, and Guided Review as needed.");
-    }
-
-    return 1;
-}
-
-static inline int voxelpilot_compute_transfer_advisor(
-    const float                    *histogram,
-    int                             bin_count,
-    float                           current_center,
-    float                           current_width,
-    float                           current_opacity_scale,
-    int                             semantic_region_count,
-    VoxelPilotTransferAdvisorResult *advisor)
-{
-    float total = 0.0f;
-    float low = 0.0f;
-    float mid = 0.0f;
-    float high = 0.0f;
-    float weighted_sum = 0.0f;
-    float background_ratio;
-    float low_ratio;
-    float mid_ratio;
-    float high_ratio;
-    float mean_intensity;
-    int lower_bin;
-    int upper_bin;
-    int bin_index;
-    int nonzero_bins = 0;
-    float suggested_center;
-    float suggested_width;
-    float suggested_opacity;
-
-    if (!histogram || bin_count < 2 || !advisor) {
-        return 0;
-    }
-
-    memset(advisor, 0, sizeof(*advisor));
-    advisor->kind = VOXELPILOT_TRANSFER_ADVICE_KEEP_CURRENT;
-    advisor->tf_center = voxelpilot_ai_clampf(current_center, 0.0f, 1.0f);
-    advisor->tf_width = voxelpilot_ai_clampf(current_width, 0.02f, 1.0f);
-    advisor->tf_opacity_scale = voxelpilot_ai_clampf(current_opacity_scale, 0.1f, 3.0f);
-    advisor->min_intensity = 0.0f;
-
-    for (bin_index = 0; bin_index < bin_count; ++bin_index) {
-        float count = histogram[bin_index] > 0.0f ? histogram[bin_index] : 0.0f;
-        float normalized = (float)bin_index / (float)(bin_count - 1);
-        if (count <= 0.0f) {
-            continue;
-        }
-        total += count;
-        weighted_sum += count * normalized;
-        nonzero_bins++;
-        if (normalized >= 0.65f) {
-            high += count;
-        } else if (normalized >= 0.20f) {
-            mid += count;
-        } else {
-            low += count;
-        }
-    }
-
-    if (total <= 0.0f) {
-        snprintf(advisor->action, sizeof(advisor->action),
-                 "Load a populated volume histogram");
-        snprintf(advisor->explanation, sizeof(advisor->explanation),
-                 "AI Transfer Advisor needs a non-empty histogram before it can recommend visibility settings.");
-        return 0;
-    }
-
-    background_ratio = histogram[0] > 0.0f ? histogram[0] / total : 0.0f;
-    low_ratio = low / total;
-    mid_ratio = mid / total;
-    high_ratio = high / total;
-    mean_intensity = weighted_sum / total;
-
-    if ((background_ratio > 0.45f || low_ratio > 0.70f || nonzero_bins <= bin_count / 3) &&
-        voxelpilot_compute_auto_enhance_transfer(
-            histogram,
-            bin_count,
-            &suggested_center,
-            &suggested_width,
-            &suggested_opacity)) {
-        advisor->kind = VOXELPILOT_TRANSFER_ADVICE_BRIGHTEN_SPARSE;
-        advisor->has_recommendation = 1;
-        advisor->tf_center = suggested_center;
-        advisor->tf_width = suggested_width;
-        advisor->tf_opacity_scale = voxelpilot_ai_clampf(
-            suggested_opacity > current_opacity_scale ? suggested_opacity : current_opacity_scale + 0.25f,
-            1.0f,
-            3.0f);
-        advisor->min_intensity = voxelpilot_ai_clampf(
-            advisor->tf_center - advisor->tf_width * 0.5f,
-            0.0f,
-            1.0f);
-        advisor->confidence = voxelpilot_ai_clampf(
-            background_ratio > low_ratio ? background_ratio : low_ratio,
-            0.45f,
-            0.95f);
-        snprintf(advisor->action, sizeof(advisor->action),
-                 "Brighten sparse/background-dominant volume");
-        snprintf(advisor->explanation, sizeof(advisor->explanation),
-                 "The histogram is %.1f%% background/low-density with only %d active bins, so the advisor recommends a tighter visible window and stronger opacity without changing render quality.",
-                 (background_ratio > low_ratio ? background_ratio : low_ratio) * 100.0f,
-                 nonzero_bins);
-        return 1;
-    }
-
-    if (high_ratio >= 0.42f || mean_intensity >= 0.62f) {
-        lower_bin = voxelpilot_ai_histogram_percentile_bin(histogram, bin_count, 0.18f, total);
-        upper_bin = voxelpilot_ai_histogram_percentile_bin(histogram, bin_count, 0.96f, total);
-        if (lower_bin < (int)((float)(bin_count - 1) * 0.60f)) {
-            lower_bin = (int)((float)(bin_count - 1) * 0.60f);
-        }
-        if (upper_bin < lower_bin) {
-            upper_bin = lower_bin;
-        }
-        advisor->kind = VOXELPILOT_TRANSFER_ADVICE_HIGH_DENSITY_FOCUS;
-        advisor->has_recommendation = 1;
-        advisor->tf_center = ((float)lower_bin + (float)upper_bin) * 0.5f / (float)(bin_count - 1);
-        advisor->tf_width = ((float)upper_bin - (float)lower_bin) / (float)(bin_count - 1);
-        advisor->tf_width = voxelpilot_ai_clampf(advisor->tf_width, 0.18f, 0.36f);
-        if (advisor->tf_center - advisor->tf_width * 0.5f < 0.0f) {
-            advisor->tf_center = advisor->tf_width * 0.5f;
-        }
-        if (advisor->tf_center + advisor->tf_width * 0.5f > 1.0f) {
-            advisor->tf_center = 1.0f - advisor->tf_width * 0.5f;
-        }
-        advisor->tf_opacity_scale = voxelpilot_ai_clampf(
-            current_opacity_scale < 1.85f ? 1.85f : current_opacity_scale,
-            1.0f,
-            3.0f);
-        advisor->min_intensity = voxelpilot_ai_clampf(
-            advisor->tf_center - advisor->tf_width * 0.5f,
-            0.0f,
-            1.0f);
-        advisor->confidence = voxelpilot_ai_clampf(high_ratio, 0.50f, 0.96f);
-        snprintf(advisor->action, sizeof(advisor->action),
-                 "Focus high-density shell/object detail");
-        snprintf(advisor->explanation, sizeof(advisor->explanation),
-                 "High-density samples dominate %.1f%% of the histogram%s, so the advisor recommends an upper-band transfer window for shell, bone-like, mineral, or dense industrial structures.",
-                 high_ratio * 100.0f,
-                 semantic_region_count > 0 ? " and ASD regions are available" : "");
-        return 1;
-    }
-
-    advisor->confidence = voxelpilot_ai_clampf(
-        mid_ratio > low_ratio ? mid_ratio : low_ratio,
-        0.35f,
-        0.80f);
-    snprintf(advisor->action, sizeof(advisor->action),
-             "Keep current transfer settings");
-    snprintf(advisor->explanation, sizeof(advisor->explanation),
-             "The histogram is already balanced across visible intensities, so the advisor does not recommend changing the current transfer window.");
-    return 1;
-}
 
 static inline int voxelpilot_blend_label_overlay(
     float base_r,
@@ -813,218 +254,7 @@ static inline int voxelpilot_pick_volume_along_ray(
     return 0;
 }
 
-static inline int voxelpilot_should_auto_enhance_on_load(
-    const float *histogram,
-    int          bin_count)
-{
-    float total_samples = 0.0f;
-    float background_ratio;
-    int bin_index;
-
-    if (!histogram || bin_count < 2) {
-        return 0;
-    }
-
-    for (bin_index = 0; bin_index < bin_count; ++bin_index) {
-        if (histogram[bin_index] > 0.0f) {
-            total_samples += histogram[bin_index];
-        }
-    }
-
-    if (total_samples <= 0.0f) {
-        return 0;
-    }
-
-    background_ratio = histogram[0] > 0.0f ? histogram[0] / total_samples : 0.0f;
-
-    return background_ratio < 0.55f;
-}
-
-static inline void voxelpilot_init_prompt_result(
-    VoxelPilotPromptResult *result)
-{
-    if (!result) {
-        return;
-    }
-
-    memset(result, 0, sizeof(*result));
-    result->quality_mode = VOXELPILOT_RENDER_QUALITY_BALANCED;
-    result->tf_center = 0.45f;
-    result->tf_width = 0.35f;
-    result->tf_opacity_scale = 1.8f;
-    result->min_intensity = 0.0f;
-    snprintf(result->status, sizeof(result->status), "No prompt action recognized.");
-}
-
-static inline int voxelpilot_parse_prompt_action(
-    const char              *prompt,
-    VoxelPilotPromptResult *result)
-{
-    static const char *const visibility_terms[] = {
-        "auto enhance", "auto-enhance", "make visible", "more visible",
-        "easier to see", "bring out", "brighter", "brighten", "too dark",
-        "very dark", "enhance contrast", "more contrast", "clearer", "sharper view",
-        "show better", "not showing", "hard to see", "improve visibility"
-    };
-    static const char *const reset_terms[] = {
-        "reset", "full volume", "show all", "restore", "start over"
-    };
-    static const char *const low_cut_terms[] = {
-        "below", "under", "less than", "lower than", "threshold", "cutoff"
-    };
-    static const char *const high_cut_terms[] = {
-        "above", "over", "greater than", "higher than", "at least"
-    };
-    static const char *const hide_terms[] = {
-        "hide", "remove", "exclude", "drop", "suppress", "mask out"
-    };
-    static const char *const show_terms[] = {
-        "show", "keep", "only", "isolate", "segment", "reveal", "focus"
-    };
-    static const char *const high_density_terms[] = {
-        "bone", "cortical", "dense", "high-density", "high density", "shell", "hard tissue"
-    };
-    static const char *const mid_density_terms[] = {
-        "soft tissue", "medium density", "mid density", "muscle", "organ", "tissue"
-    };
-    static const char *const low_density_terms[] = {
-        "low density", "air", "background", "dark material", "low intensity"
-    };
-    static const char *const quality_terms[] = {
-        "quality", "high fidelity", "best detail", "maximum detail", "high detail", "gpu quality"
-    };
-    static const char *const faster_terms[] = {
-        "fast", "faster", "interactive", "responsive", "smooth", "speed"
-    };
-    char text[512];
-    float value = 0.0f;
-    int has_number;
-    int wants_hide;
-    int wants_show;
-    int mentions_low_cut;
-    int mentions_high_cut;
-
-    if (!result) {
-        return 0;
-    }
-
-    voxelpilot_init_prompt_result(result);
-    voxelpilot_ai_copy_lower(prompt, text, sizeof(text));
-
-    if (!text[0]) {
-        return 0;
-    }
-
-    has_number = voxelpilot_ai_extract_first_number(text, &value);
-    wants_hide = voxelpilot_ai_text_contains_any(text, hide_terms, (int)(sizeof(hide_terms) / sizeof(hide_terms[0])));
-    wants_show = voxelpilot_ai_text_contains_any(text, show_terms, (int)(sizeof(show_terms) / sizeof(show_terms[0])));
-    mentions_low_cut = voxelpilot_ai_text_contains_any(text, low_cut_terms, (int)(sizeof(low_cut_terms) / sizeof(low_cut_terms[0])));
-    mentions_high_cut = voxelpilot_ai_text_contains_any(text, high_cut_terms, (int)(sizeof(high_cut_terms) / sizeof(high_cut_terms[0])));
-
-    if (voxelpilot_ai_text_contains_any(text, quality_terms, (int)(sizeof(quality_terms) / sizeof(quality_terms[0])))) {
-        result->recognized = 1;
-        result->set_quality = 1;
-        result->quality_mode = VOXELPILOT_RENDER_QUALITY_QUALITY;
-        snprintf(result->status, sizeof(result->status),
-                 "Prompt selected the high-quality GPU rendering preset.");
-        return 1;
-    }
-
-    if (voxelpilot_ai_text_contains_any(text, faster_terms, (int)(sizeof(faster_terms) / sizeof(faster_terms[0])))) {
-        result->recognized = 1;
-        result->set_quality = 1;
-        result->quality_mode = VOXELPILOT_RENDER_QUALITY_INTERACTIVE;
-        snprintf(result->status, sizeof(result->status),
-                 "Prompt selected the interactive GPU rendering preset.");
-        return 1;
-    }
-
-    if (strstr(text, "balanced")) {
-        result->recognized = 1;
-        result->set_quality = 1;
-        result->quality_mode = VOXELPILOT_RENDER_QUALITY_BALANCED;
-        snprintf(result->status, sizeof(result->status),
-                 "Prompt selected the balanced GPU rendering preset.");
-        return 1;
-    }
-
-    if (voxelpilot_ai_text_contains_any(text, reset_terms, (int)(sizeof(reset_terms) / sizeof(reset_terms[0])))) {
-        result->recognized = 1;
-        result->reset_view = 1;
-        result->set_transfer = 1;
-        result->auto_enhance = 1;
-        result->tf_center = 0.45f;
-        result->tf_width = 0.35f;
-        result->tf_opacity_scale = 1.8f;
-        snprintf(result->status, sizeof(result->status),
-                 "Prompt reset clipping and requested histogram-based view enhancement.");
-        return 1;
-    }
-
-    if (voxelpilot_ai_text_contains_any(text, visibility_terms, (int)(sizeof(visibility_terms) / sizeof(visibility_terms[0])))) {
-        result->recognized = 1;
-        result->auto_enhance = 1;
-        snprintf(result->status, sizeof(result->status),
-                 "Prompt requested automatic visibility enhancement from the active histogram.");
-        return 1;
-    }
-
-    if ((wants_hide || wants_show || mentions_low_cut || mentions_high_cut || strstr(text, "intensity")) &&
-        has_number) {
-        value = voxelpilot_ai_clampf(value, 0.0f, 1.0f);
-        result->recognized = 1;
-        result->set_transfer = 1;
-        result->set_min_intensity = 1;
-        result->min_intensity = value;
-        result->tf_width = voxelpilot_ai_clampf(1.0f - value, 0.05f, 1.0f);
-        result->tf_center = voxelpilot_ai_clampf(value + result->tf_width * 0.5f, 0.0f, 1.0f);
-        result->tf_opacity_scale = wants_hide || mentions_low_cut || mentions_high_cut ? 1.55f : 1.35f;
-        snprintf(result->status, sizeof(result->status),
-                 "Prompt mapped to a flexible intensity cutoff at %.3f.", value);
-        return 1;
-    }
-
-    if (voxelpilot_ai_text_contains_any(text, high_density_terms, (int)(sizeof(high_density_terms) / sizeof(high_density_terms[0])))) {
-        result->recognized = 1;
-        result->set_transfer = 1;
-        result->set_min_intensity = 1;
-        result->min_intensity = 0.62f;
-        result->tf_center = 0.78f;
-        result->tf_width = 0.24f;
-        result->tf_opacity_scale = 1.85f;
-        snprintf(result->status, sizeof(result->status),
-                 "Prompt mapped to a high-density bone/shell material intent.");
-        return 1;
-    }
-
-    if (voxelpilot_ai_text_contains_any(text, mid_density_terms, (int)(sizeof(mid_density_terms) / sizeof(mid_density_terms[0])))) {
-        result->recognized = 1;
-        result->set_transfer = 1;
-        result->set_min_intensity = 1;
-        result->min_intensity = 0.18f;
-        result->tf_center = 0.45f;
-        result->tf_width = 0.42f;
-        result->tf_opacity_scale = 1.35f;
-        snprintf(result->status, sizeof(result->status),
-                 "Prompt mapped to a mid-density tissue material intent.");
-        return 1;
-    }
-
-    if (voxelpilot_ai_text_contains_any(text, low_density_terms, (int)(sizeof(low_density_terms) / sizeof(low_density_terms[0])))) {
-        result->recognized = 1;
-        result->set_transfer = 1;
-        result->set_min_intensity = 1;
-        result->min_intensity = 0.02f;
-        result->tf_center = 0.20f;
-        result->tf_width = 0.32f;
-        result->tf_opacity_scale = 1.45f;
-        snprintf(result->status, sizeof(result->status),
-                 "Prompt mapped to a low-density material intent.");
-        return 1;
-    }
-
-    return 0;
-}
+#define VOXELPILOT_FLOOD_FILL_MAX_QUEUE 1048576
 
 static inline int voxelpilot_flood_fill_label_region(
     const float   *volume_data,
@@ -1042,6 +272,7 @@ static inline int voxelpilot_flood_fill_label_region(
     float         *out_max_value)
 {
     size_t voxel_count;
+    size_t queue_cap;
     size_t seed_index;
     size_t *queue;
     size_t read_index = 0;
@@ -1063,6 +294,9 @@ static inline int voxelpilot_flood_fill_label_region(
     }
 
     voxel_count = (size_t)width * (size_t)height * (size_t)depth;
+    queue_cap = voxel_count < VOXELPILOT_FLOOD_FILL_MAX_QUEUE
+                ? voxel_count
+                : VOXELPILOT_FLOOD_FILL_MAX_QUEUE;
     seed_index =
         (size_t)seed_z * (size_t)width * (size_t)height +
         (size_t)seed_y * (size_t)width +
@@ -1072,16 +306,18 @@ static inline int voxelpilot_flood_fill_label_region(
     max_value = seed_value;
     tolerance = fabsf(tolerance);
 
-    queue = (size_t *)malloc(voxel_count * sizeof(size_t));
+    queue = (size_t *)malloc(queue_cap * sizeof(size_t));
     if (!queue) {
         return 0;
     }
 
     label_mask[seed_index] = label_id;
-    queue[write_index++] = seed_index;
+    queue[write_index % queue_cap] = seed_index;
+    ++write_index;
 
     while (read_index < write_index) {
-        size_t packed = queue[read_index++];
+        size_t packed = queue[read_index % queue_cap];
+        ++read_index;
         size_t wh     = (size_t)width * (size_t)height;
         int z = (int)(packed / wh);
         size_t rem = packed - (size_t)z * wh;
@@ -1122,7 +358,10 @@ static inline int voxelpilot_flood_fill_label_region(
             }
 
             label_mask[next_index] = label_id;
-            queue[write_index++] = next_index;
+            if (write_index - read_index < queue_cap) {
+                queue[write_index % queue_cap] = next_index;
+                ++write_index;
+            }
         }
     }
 
@@ -1133,6 +372,8 @@ static inline int voxelpilot_flood_fill_label_region(
     if (out_max_value) *out_max_value = max_value;
     return 1;
 }
+
+#undef VOXELPILOT_FLOOD_FILL_MAX_QUEUE
 
 static inline void voxelpilot_describe_voxel_context(
     float          intensity,

@@ -424,7 +424,7 @@ __global__ void expand_gray_to_rgba(
    Called by renderer.cu after creating texture objects.
    ============================================================ */
 
-void set_device_texture_objects(
+int set_device_texture_objects(
     cudaTextureObject_t volTex,
     cudaTextureObject_t gradTex)
 {
@@ -439,7 +439,8 @@ void set_device_texture_objects(
         fprintf(stderr,
                 "cudaMemcpyToSymbol(devVolumeTex) failed: %s\n",
                 cudaGetErrorString(e1));
-        exit(-1);
+        cudaGetLastError();
+        return 0;
     }
 
     e2 = cudaMemcpyToSymbol(
@@ -450,7 +451,10 @@ void set_device_texture_objects(
         fprintf(stderr,
                 "cudaMemcpyToSymbol(devGradTex) failed: %s\n",
                 cudaGetErrorString(e2));
-        exit(-1);
+        cudaGetLastError();
+        return 0;
     }
+
+    return 1;
 }
 #endif

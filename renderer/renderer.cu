@@ -17,6 +17,7 @@
 #include "../common/volume_structs.h"
 #include "../common/math_utils.h"
 #include "../common/renderer_api.h"
+#include "../common/cuda_device_policy.h"
 
 
 /* ============================================================
@@ -37,12 +38,12 @@ __global__ void volume_render_kernel(
     int              img_w,
     int              img_h);
 
-void set_device_texture_objects(
+int set_device_texture_objects(
     cudaTextureObject_t volTex,
     cudaTextureObject_t gradTex);
 
 /* From volume_textures.cu */
-void create_volume_and_gradient_textures(
+int create_volume_and_gradient_textures(
     const float     *volume_data,
     int              W,
     int              H,
@@ -56,24 +57,81 @@ void release_volume_resources(VolumeResources *res);
    CUDA Error Helper
    ============================================================ */
 
-static void check_cuda(cudaError_t err, const char *msg)
+static void renderer_clear_error(RendererState *st)
 {
-    if (err != cudaSuccess) {
-        const char *err_name = cudaGetErrorName(err);
-        const char *err_text = cudaGetErrorString(err);
-        if (!err_name) err_name = "unknown";
-        if (!err_text) err_text = "no error string available";
-        fprintf(stderr,
-                "CUDA Error at %s: [%d] %s - %s\n",
-                msg, (int)err, err_name, err_text);
-        exit(-1);
+    if (!st) {
+        return;
     }
+    st->last_error_code = 0;
+    st->last_error_message[0] = '\0';
+}
+
+static int renderer_fail_cuda(RendererState *st, cudaError_t err, const char *msg)
+{
+    const char *err_name = cudaGetErrorName(err);
+    const char *err_text = cudaGetErrorString(err);
+    if (!err_name) err_name = "unknown";
+    if (!err_text) err_text = "no error string available";
+
+    if (st) {
+        st->last_error_code = (int)err;
+        snprintf(st->last_error_message,
+                 sizeof(st->last_error_message),
+                 "CUDA Error at %s: [%d] %s - %s",
+                 msg ? msg : "unknown",
+                 (int)err,
+                 err_name,
+                 err_text);
+    }
+
+    fprintf(stderr,
+            "CUDA Error at %s: [%d] %s - %s\n",
+            msg ? msg : "unknown",
+            (int)err,
+            err_name,
+            err_text);
+    cudaGetLastError();
+    return 0;
+}
+
+static int renderer_check_cuda(RendererState *st, cudaError_t err, const char *msg)
+{
+    if (err == cudaSuccess) {
+        return 1;
+    }
+    return renderer_fail_cuda(st, err, msg);
+}
+
+static int renderer_fail_message(RendererState *st, const char *msg)
+{
+    const char *safe_msg = msg ? msg : "Renderer operation failed";
+    if (st) {
+        st->last_error_code = -1;
+        snprintf(st->last_error_message,
+                 sizeof(st->last_error_message),
+                 "%s",
+                 safe_msg);
+    }
+    fprintf(stderr, "%s\n", safe_msg);
+    return 0;
 }
 
 static void warn_cuda_nonfatal(cudaError_t err, const char *msg)
 {
-    const char *err_name = cudaGetErrorName(err);
-    const char *err_text = cudaGetErrorString(err);
+    const char *err_name;
+    const char *err_text;
+
+    if (err == cudaSuccess) {
+        return;
+    }
+
+    if (err == cudaErrorInvalidDevice || err == cudaErrorNotSupported) {
+        cudaGetLastError();
+        return;
+    }
+
+    err_name = cudaGetErrorName(err);
+    err_text = cudaGetErrorString(err);
     if (!err_name) err_name = "unknown";
     if (!err_text) err_text = "no error string available";
     fprintf(stderr,
@@ -82,24 +140,56 @@ static void warn_cuda_nonfatal(cudaError_t err, const char *msg)
     cudaGetLastError();
 }
 
-static void resize_output_buffers(RendererState *st)
+static int select_managed_memory_hint_device(int *out_device)
+{
+    int device_count = 0;
+    int active_device = -1;
+    cudaError_t err;
+
+    if (!out_device) {
+        return 0;
+    }
+
+    err = cudaGetDeviceCount(&device_count);
+    if (err != cudaSuccess) {
+        cudaGetLastError();
+        return 0;
+    }
+
+    err = cudaGetDevice(&active_device);
+    if (err != cudaSuccess) {
+        cudaGetLastError();
+        return 0;
+    }
+
+    if (!voxelpilot_cuda_hint_device_is_valid(active_device, device_count)) {
+        return 0;
+    }
+
+    *out_device = active_device;
+    return 1;
+}
+
+static int resize_output_buffers(RendererState *st)
 {
     size_t output_bytes;
 
     if (!st) {
-        return;
+        return 0;
     }
 
     if (st->d_out &&
         st->h_out &&
         st->out_w == st->img_w &&
         st->out_h == st->img_h) {
-        return;
+        return 1;
     }
 
-    if (st->stream) {
-        check_cuda(cudaStreamSynchronize(st->stream),
-                   "cudaStreamSynchronize before output resize");
+    if (st->stream &&
+        !renderer_check_cuda(st,
+                             cudaStreamSynchronize(st->stream),
+                             "cudaStreamSynchronize before output resize")) {
+        return 0;
     }
 
     if (st->d_out) {
@@ -113,15 +203,25 @@ static void resize_output_buffers(RendererState *st)
 
     output_bytes = (size_t)st->img_w * (size_t)st->img_h * sizeof(uchar4);
 
-    check_cuda(
-        cudaMalloc((void **)&st->d_out, output_bytes),
-        "cudaMalloc(d_out resize)");
-    check_cuda(
-        cudaMallocHost((void **)&st->h_out, output_bytes),
-        "cudaMallocHost(h_out resize)");
+    if (!renderer_check_cuda(
+            st,
+            cudaMalloc((void **)&st->d_out, output_bytes),
+            "cudaMalloc(d_out resize)")) {
+        return 0;
+    }
+    if (!renderer_check_cuda(
+            st,
+            cudaMallocHost((void **)&st->h_out, output_bytes),
+            "cudaMallocHost(h_out resize)")) {
+        cudaFree(st->d_out);
+        st->d_out = NULL;
+        return 0;
+    }
 
     st->out_w = st->img_w;
     st->out_h = st->img_h;
+    renderer_clear_error(st);
+    return 1;
 }
 
 static void clear_label_overlay(RendererState *st)
@@ -183,21 +283,30 @@ static void sync_label_overlay(RendererState *st, const RendererInput *cmd)
             cudaFree(st->d_label_mask);
             st->d_label_mask = NULL;
         }
-        check_cuda(
-            cudaMalloc((void **)&st->d_label_mask, bytes),
-            "cudaMalloc(d_label_mask)");
+        if (!renderer_check_cuda(
+                st,
+                cudaMalloc((void **)&st->d_label_mask, bytes),
+                "cudaMalloc(d_label_mask)")) {
+            st->label_mask_bytes = 0;
+            clear_label_overlay(st);
+            return;
+        }
         st->label_mask_bytes = bytes;
         st->label_revision = 0;
     }
 
     if (st->label_revision != cmd->labels.revision) {
-        check_cuda(
-            cudaMemcpy(
-                st->d_label_mask,
-                cmd->label_mask,
-                bytes,
-                cudaMemcpyHostToDevice),
-            "cudaMemcpy(label_mask)");
+        if (!renderer_check_cuda(
+                st,
+                cudaMemcpy(
+                    st->d_label_mask,
+                    cmd->label_mask,
+                    bytes,
+                    cudaMemcpyHostToDevice),
+                "cudaMemcpy(label_mask)")) {
+            clear_label_overlay(st);
+            return;
+        }
         st->label_revision = cmd->labels.revision;
     }
 
@@ -228,13 +337,17 @@ static cudaMemLocation make_device_location(int device)
 static void apply_managed_memory_hints(
     float *volume_data,
     size_t volume_bytes,
-    int device,
     const char *stage)
 {
     cudaMemLocation device_location;
     cudaError_t err;
     char advise_label[64];
     char prefetch_label[64];
+    int device;
+
+    if (!volume_data || volume_bytes == 0 || !select_managed_memory_hint_device(&device)) {
+        return;
+    }
 
     device_location = make_device_location(device);
 
@@ -326,7 +439,7 @@ static int load_volume_file(
    Build Brick Grid
    ============================================================ */
 
-static void build_brick_grid(RendererState *st)
+static int build_brick_grid(RendererState *st)
 {
     int bx, by, bz;
     int brickSizeX, brickSizeY, brickSizeZ;
@@ -355,7 +468,12 @@ static void build_brick_grid(RendererState *st)
 
     if (!st->h_bricks) {
         fprintf(stderr, "Failed to allocate brick array\n");
-        exit(-1);
+        if (st) {
+            st->last_error_code = -1;
+            snprintf(st->last_error_message, sizeof(st->last_error_message),
+                     "Failed to allocate brick array");
+        }
+        return 0;
     }
 
     idx = 0;
@@ -386,6 +504,8 @@ static void build_brick_grid(RendererState *st)
             }
         }
     }
+
+    return 1;
 }
 
 
@@ -404,15 +524,12 @@ static void mark_empty_bricks(RendererState *st, float threshold)
 
         for (z = 0; z < br->sizeZ; ++z) {
             int gz = br->offsetZ + z;
-            if (gz < 0 || gz >= st->D) continue;
 
             for (y = 0; y < br->sizeY; ++y) {
                 int gy = br->offsetY + y;
-                if (gy < 0 || gy >= st->H) continue;
 
                 for (x = 0; x < br->sizeX; ++x) {
                     int gx = br->offsetX + x;
-                    if (gx < 0 || gx >= st->W) continue;
 
                     size_t idx =
                         (size_t)gz * (size_t)st->W * (size_t)st->H
@@ -437,29 +554,55 @@ static void mark_empty_bricks(RendererState *st, float threshold)
    Upload Brick Data to Device
    ============================================================ */
 
-static void upload_bricks(RendererState *st)
+static int upload_bricks(RendererState *st)
 {
     size_t brick_bytes;
 
+    if (!st || !st->h_bricks || st->h_grid.numBricks < 1) {
+        return 0;
+    }
+
     brick_bytes = (size_t)st->h_grid.numBricks * sizeof(BrickInfo);
 
-    check_cuda(
-        cudaMalloc((void **)&st->d_bricks, brick_bytes),
-        "cudaMalloc(d_bricks)");
+    if (!renderer_check_cuda(
+            st,
+            cudaMalloc((void **)&st->d_bricks, brick_bytes),
+            "cudaMalloc(d_bricks)")) {
+        return 0;
+    }
 
-    check_cuda(
-        cudaMemcpy(st->d_bricks, st->h_bricks,
-                   brick_bytes, cudaMemcpyHostToDevice),
-        "cudaMemcpy(d_bricks)");
+    if (!renderer_check_cuda(
+            st,
+            cudaMemcpy(st->d_bricks, st->h_bricks,
+                       brick_bytes, cudaMemcpyHostToDevice),
+            "cudaMemcpy(d_bricks)")) {
+        cudaFree(st->d_bricks);
+        st->d_bricks = NULL;
+        return 0;
+    }
 
-    check_cuda(
-        cudaMalloc((void **)&st->d_grid, sizeof(BrickGrid)),
-        "cudaMalloc(d_grid)");
+    if (!renderer_check_cuda(
+            st,
+            cudaMalloc((void **)&st->d_grid, sizeof(BrickGrid)),
+            "cudaMalloc(d_grid)")) {
+        cudaFree(st->d_bricks);
+        st->d_bricks = NULL;
+        return 0;
+    }
 
-    check_cuda(
-        cudaMemcpy(st->d_grid, &st->h_grid,
-                   sizeof(BrickGrid), cudaMemcpyHostToDevice),
-        "cudaMemcpy(d_grid)");
+    if (!renderer_check_cuda(
+            st,
+            cudaMemcpy(st->d_grid, &st->h_grid,
+                       sizeof(BrickGrid), cudaMemcpyHostToDevice),
+            "cudaMemcpy(d_grid)")) {
+        cudaFree(st->d_bricks);
+        st->d_bricks = NULL;
+        cudaFree(st->d_grid);
+        st->d_grid = NULL;
+        return 0;
+    }
+
+    return 1;
 }
 
 
@@ -470,18 +613,27 @@ static void upload_bricks(RendererState *st)
 
 float render_frame_gpu(RendererState *st)
 {
-    float ms;
+    float ms = -1.0f;
     dim3 block, grid;
 
-    resize_output_buffers(st);
+    if (!st || !st->volume_data || !st->d_bricks || !st->d_grid ||
+        !st->stream || !st->start_event || !st->stop_event) {
+        return -1.0f;
+    }
+
+    if (!resize_output_buffers(st)) {
+        return -1.0f;
+    }
 
     block.x = 16; block.y = 16; block.z = 1;
     grid.x = (st->img_w + block.x - 1) / block.x;
     grid.y = (st->img_h + block.y - 1) / block.y;
     grid.z = 1;
 
-    check_cuda(cudaEventRecord(st->start_event, st->stream),
-               "cudaEventRecord(start)");
+    if (!renderer_check_cuda(st, cudaEventRecord(st->start_event, st->stream),
+                             "cudaEventRecord(start)")) {
+        return -1.0f;
+    }
 
     volume_render_kernel<<<grid, block, 0, st->stream>>>(
         st->d_out,
@@ -496,28 +648,42 @@ float render_frame_gpu(RendererState *st)
         st->img_w,
         st->img_h);
 
-    check_cuda(cudaGetLastError(), "volume_render_kernel launch");
+    if (!renderer_check_cuda(st, cudaGetLastError(), "volume_render_kernel launch")) {
+        return -1.0f;
+    }
 
-    check_cuda(cudaEventRecord(st->stop_event, st->stream),
-               "cudaEventRecord(stop)");
+    if (!renderer_check_cuda(st, cudaEventRecord(st->stop_event, st->stream),
+                             "cudaEventRecord(stop)")) {
+        return -1.0f;
+    }
 
-    check_cuda(cudaEventSynchronize(st->stop_event),
-               "cudaEventSynchronize(stop)");
+    if (!renderer_check_cuda(st, cudaEventSynchronize(st->stop_event),
+                             "cudaEventSynchronize(stop)")) {
+        return -1.0f;
+    }
 
-    check_cuda(cudaEventElapsedTime(&ms, st->start_event, st->stop_event),
-               "cudaEventElapsedTime");
+    if (!renderer_check_cuda(st, cudaEventElapsedTime(&ms, st->start_event, st->stop_event),
+                             "cudaEventElapsedTime")) {
+        return -1.0f;
+    }
 
     /* Copy result to pinned host buffer */
-    check_cuda(
-        cudaMemcpyAsync(st->h_out, st->d_out,
-                        (size_t)st->img_w * (size_t)st->img_h * sizeof(uchar4),
-                        cudaMemcpyDeviceToHost,
-                        st->stream),
-        "cudaMemcpyAsync(d_out -> h_out)");
+    if (!renderer_check_cuda(
+            st,
+            cudaMemcpyAsync(st->h_out, st->d_out,
+                            (size_t)st->img_w * (size_t)st->img_h * sizeof(uchar4),
+                            cudaMemcpyDeviceToHost,
+                            st->stream),
+            "cudaMemcpyAsync(d_out -> h_out)")) {
+        return -1.0f;
+    }
 
-    check_cuda(cudaStreamSynchronize(st->stream),
-               "cudaStreamSynchronize after memcpy");
+    if (!renderer_check_cuda(st, cudaStreamSynchronize(st->stream),
+                             "cudaStreamSynchronize after memcpy")) {
+        return -1.0f;
+    }
 
+    renderer_clear_error(st);
     return ms;
 }
 
@@ -590,7 +756,7 @@ int reload_volume(
 
     /* Free old textures */
     zeroTex = 0;
-    set_device_texture_objects(zeroTex, zeroTex);
+    (void)set_device_texture_objects(zeroTex, zeroTex);
     release_volume_resources(&st->volRes);
 
     /* Free old bricks */
@@ -620,32 +786,43 @@ int reload_volume(
     st->vparams.depth  = depth;
 
     /* Allocate new managed memory */
-    check_cuda(
-        cudaMallocManaged(
-            (void **)&st->volume_data,
-            st->vol_bytes,
-            cudaMemAttachGlobal),
-        "cudaMallocManaged(reload)");
+    if (!renderer_check_cuda(
+            st,
+            cudaMallocManaged(
+                (void **)&st->volume_data,
+                st->vol_bytes,
+                cudaMemAttachGlobal),
+            "cudaMallocManaged(reload)")) {
+        return 0;
+    }
 
     /* Copy uploaded data */
     memcpy(st->volume_data, new_data, st->vol_bytes);
 
     /* Recreate textures */
     memset(&st->volRes, 0, sizeof(VolumeResources));
-    create_volume_and_gradient_textures(
-        st->volume_data, st->W, st->H, st->D,
-        &st->volRes);
-    set_device_texture_objects(
-        st->volRes.volTex, st->volRes.gradTex);
+    if (!create_volume_and_gradient_textures(
+            st->volume_data, st->W, st->H, st->D,
+            &st->volRes)) {
+        return 0;
+    }
+    if (!set_device_texture_objects(
+            st->volRes.volTex, st->volRes.gradTex)) {
+        return renderer_fail_message(st, "Could not bind CUDA texture objects for reloaded volume.");
+    }
 
     /* Unified memory hints are optional on some Windows driver setups. */
     apply_managed_memory_hints(
-        st->volume_data, st->vol_bytes, 0, "reload");
+        st->volume_data, st->vol_bytes, "reload");
 
     /* Rebuild bricks */
-    build_brick_grid(st);
+    if (!build_brick_grid(st)) {
+        return 0;
+    }
     mark_empty_bricks(st, 0.01f);
-    upload_bricks(st);
+    if (!upload_bricks(st)) {
+        return 0;
+    }
 
     printf("Volume reloaded from upload: %dx%dx%d\n",
            st->W, st->H, st->D);
@@ -657,7 +834,7 @@ int reload_volume(
    Initialize Renderer State
    ============================================================ */
 
-void renderer_state_init(
+int renderer_state_init(
     RendererState  *st,
     const char     *volume_path,
     int             width,
@@ -683,7 +860,7 @@ void renderer_state_init(
     st->vparams.empty_space_skip_mult = 2.0f;
     st->vparams.tf_center            = 0.45f;
     st->vparams.tf_width             = 0.35f;
-    st->vparams.tf_opacity_scale     = 1.0f;
+    st->vparams.tf_opacity_scale     = 1.8f;
     st->vparams.tf_palette           = 0;
     st->vparams.tf_invert            = 0;
     st->vparams.cinematic_enabled    = 0;
@@ -711,12 +888,15 @@ void renderer_state_init(
     st->img_h = 512;
 
     /* Allocate managed memory for volume */
-    check_cuda(
-        cudaMallocManaged(
-            (void **)&st->volume_data,
-            st->vol_bytes,
-            cudaMemAttachGlobal),
-        "cudaMallocManaged(volume_data)");
+    if (!renderer_check_cuda(
+            st,
+            cudaMallocManaged(
+                (void **)&st->volume_data,
+                st->vol_bytes,
+                cudaMemAttachGlobal),
+            "cudaMallocManaged(volume_data)")) {
+        return 0;
+    }
 
     /* Load or generate volume */
     if (volume_path && load_volume_file(
@@ -735,46 +915,61 @@ void renderer_state_init(
 
     /* Create textures */
     memset(&st->volRes, 0, sizeof(VolumeResources));
-    create_volume_and_gradient_textures(
-        st->volume_data, st->W, st->H, st->D, &st->volRes);
-    set_device_texture_objects(st->volRes.volTex, st->volRes.gradTex);
+    if (!create_volume_and_gradient_textures(
+            st->volume_data, st->W, st->H, st->D, &st->volRes)) {
+        renderer_fail_message(st, "Could not create CUDA volume textures.");
+        return 0;
+    }
+    if (!set_device_texture_objects(st->volRes.volTex, st->volRes.gradTex)) {
+        renderer_fail_message(st, "Could not bind CUDA texture objects.");
+        return 0;
+    }
 
     /* Unified memory hints are optional on some Windows driver setups. */
     apply_managed_memory_hints(
-        st->volume_data, st->vol_bytes, 0, "init");
+        st->volume_data, st->vol_bytes, "init");
 
     /* Build bricks */
-    build_brick_grid(st);
+    if (!build_brick_grid(st)) {
+        return 0;
+    }
     mark_empty_bricks(st, 0.01f);
-    upload_bricks(st);
+    if (!upload_bricks(st)) {
+        return 0;
+    }
 
     /* Allocate output buffers (RGBA) */
-    check_cuda(
-        cudaMalloc((void **)&st->d_out,
-                   (size_t)st->img_w * (size_t)st->img_h * sizeof(uchar4)),
-        "cudaMalloc(d_out)");
-    check_cuda(
-        cudaMallocHost((void **)&st->h_out,
-                       (size_t)st->img_w * (size_t)st->img_h * sizeof(uchar4)),
-        "cudaMallocHost(h_out)");
+    if (!resize_output_buffers(st)) {
+        return 0;
+    }
 
     /* Create CUDA stream */
-    check_cuda(
-        cudaStreamCreate(&st->stream),
-        "cudaStreamCreate");
+    if (!renderer_check_cuda(
+            st,
+            cudaStreamCreate(&st->stream),
+            "cudaStreamCreate")) {
+        return 0;
+    }
 
     /* Create timing events once; reused every frame */
-    check_cuda(
-        cudaEventCreate(&st->start_event),
-        "cudaEventCreate(start)");
-    check_cuda(
-        cudaEventCreate(&st->stop_event),
-        "cudaEventCreate(stop)");
+    if (!renderer_check_cuda(
+            st,
+            cudaEventCreate(&st->start_event),
+            "cudaEventCreate(start)")) {
+        return 0;
+    }
+    if (!renderer_check_cuda(
+            st,
+            cudaEventCreate(&st->stop_event),
+            "cudaEventCreate(stop)")) {
+        return 0;
+    }
 
     st->frame_id = 0;
 
     printf("Renderer initialized: %dx%dx%d, brick=%d\n",
            st->W, st->H, st->D, st->brick_dim);
+    return 1;
 }
 
 
@@ -812,7 +1007,7 @@ void renderer_state_cleanup(RendererState *st)
     if (st->h_bricks) { free(st->h_bricks);     st->h_bricks = NULL; }
 
     zeroTex = 0;
-    set_device_texture_objects(zeroTex, zeroTex);
+    (void)set_device_texture_objects(zeroTex, zeroTex);
     release_volume_resources(&st->volRes);
 
     if (st->volume_data) {

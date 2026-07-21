@@ -98,11 +98,15 @@ typedef struct {
     /* CUDA stream for rendering */
     cudaStream_t    stream;
 
+    /* Recoverable renderer error state */
+    int             last_error_code;
+    char            last_error_message[256];
+
     /* Frame counter */
     uint32_t        frame_id;
 } RendererState;
 
-void renderer_state_init(
+int renderer_state_init(
     RendererState *st,
     const char    *volume_path,
     int            width,

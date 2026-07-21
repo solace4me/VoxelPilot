@@ -66,7 +66,7 @@ Speaker notes:
 - Branded startup splash
 - Demo mode banner
 - One-click guided walkthrough overlay
-- In-app Help and About panels
+- In-app walkthrough overlay and help cues
 - Laptop-ready launcher and release package
 
 Speaker notes:
@@ -85,7 +85,7 @@ Speaker notes:
 - Practical review workflow:
   measurement, clipping, capture, presets
 - Presentation-oriented polish:
-  splash, walkthrough, help, about, launcher
+  splash, walkthrough, help cues, launcher
 
 Speaker notes:
 "If I had to summarize the app in one line, I would say this is a presentation-ready CUDA volume exploration workstation, not just a renderer. That is the difference between a technical prototype and something with a stronger product identity."
