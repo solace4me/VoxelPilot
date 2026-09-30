@@ -260,6 +260,7 @@ typedef struct {
     int           dock_layout_ready;
     float         dock_layout_viewport_w;
     float         dock_layout_viewport_h;
+    int           dock_layout_variant;
     int           controls_visible;
     int           insights_visible;
     int           ai_visible;
@@ -325,18 +326,12 @@ static const char *k_render_quality_labels[] = {
 enum {
     VOXELPILOT_RIBBON_HOME = 0,
     VOXELPILOT_RIBBON_VIEW = 1,
-    VOXELPILOT_RIBBON_AI = 2,
-    VOXELPILOT_RIBBON_ANALYSIS = 3,
-    VOXELPILOT_RIBBON_EXPORT = 4,
-    VOXELPILOT_RIBBON_COUNT = 5
+    VOXELPILOT_RIBBON_COUNT = 2
 };
 
 static const char *k_ribbon_tab_labels[] = {
     "Home",
-    "View",
-    "AI Assist",
-    "Analysis",
-    "Export"
+    "View"
 };
 
 static void apply_render_quality_preset(StandaloneApp *app, int quality_mode);
@@ -455,6 +450,14 @@ static void reset_default_layout(StandaloneApp *app);
 static void refresh_adaptive_quality_for_frame(StandaloneApp *app);
 static void refresh_performance_governor(StandaloneApp *app);
 static void export_ai_review_bundle(StandaloneApp *app);
+static void export_insight_report(StandaloneApp *app);
+static int performance_allows_optional_action(
+    StandaloneApp *app,
+    const char    *action_label,
+    int            requires_asd,
+    int            requires_mask_export);
+static void voxelpilot_same_line_if_fits(const char *next_label);
+static ImVec4 voxelpilot_pressure_color(int status);
 static void refresh_semantic_annotation_overlays(StandaloneApp *app);
 static int save_semantic_memory(StandaloneApp *app, const char *path);
 static int load_semantic_memory(StandaloneApp *app, const char *path);
@@ -2526,10 +2529,20 @@ static void ensure_default_dock_layout(StandaloneApp *app)
     dock_right_id = ImGui::DockBuilderSplitNode(dock_main_id, ImGuiDir_Right, 0.30f, NULL, &dock_main_id);
 
     ImGui::DockBuilderDockWindow("Controls", dock_left_id);
-    ImGui::DockBuilderDockWindow("AI Assist", dock_right_id);
-    ImGui::DockBuilderDockWindow("Insights", dock_right_id);
-    ImGui::DockBuilderDockWindow("Metadata", dock_right_id);
     ImGui::DockBuilderDockWindow("Status", dock_bottom_id);
+
+    if (app->dock_layout_variant == 1) {
+        ImGuiID dock_right_bottom_id =
+            ImGui::DockBuilderSplitNode(dock_right_id, ImGuiDir_Down, 0.45f, NULL, &dock_right_id);
+        ImGui::DockBuilderDockWindow("Insights", dock_right_id);
+        ImGui::DockBuilderDockWindow("AI Assist", dock_right_bottom_id);
+        ImGui::DockBuilderDockWindow("Metadata", dock_right_bottom_id);
+    } else {
+        ImGui::DockBuilderDockWindow("AI Assist", dock_right_id);
+        ImGui::DockBuilderDockWindow("Insights", dock_right_id);
+        ImGui::DockBuilderDockWindow("Metadata", dock_right_id);
+    }
+
     ImGui::DockBuilderFinish(dockspace_id);
 
     app->dock_layout_ready = 1;
@@ -2623,9 +2636,6 @@ static void draw_ribbon_tab(StandaloneApp *app, int tab_index)
     }
     if (ImGui::Button(k_ribbon_tab_labels[tab_index], ImVec2(92.0f, 0.0f)) && app) {
         app->ribbon_active_tab = tab_index;
-        if (tab_index == VOXELPILOT_RIBBON_AI) {
-            app->ai_visible = 1;
-        }
     }
     if (active) {
         ImGui::PopStyleColor(2);
@@ -2646,6 +2656,12 @@ static void draw_top_ribbon(StandaloneApp *app)
     flags |= ImGuiWindowFlags_NoDocking;
 #endif
     int tab;
+
+    if (app) {
+        /* Keep the always-visible Safety badge accurate every frame,
+           regardless of whether AI Assist is open or a gated action ran. */
+        refresh_performance_governor(app);
+    }
 
     ImGui::SetNextWindowPos(viewport->Pos, ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(viewport->Size.x, height), ImGuiCond_Always);
@@ -2668,6 +2684,17 @@ static void draw_top_ribbon(StandaloneApp *app)
         ImGui::TextColored(ImVec4(0.40f, 0.88f, 0.78f, 1.0f), "%s", BRAND_TITLE);
         ImGui::SameLine();
         ImGui::TextColored(ImVec4(0.72f, 0.78f, 0.86f, 1.0f), "%s", BRAND_SUBTITLE);
+        if (app) {
+            ImGui::SameLine();
+            ImGui::TextColored(
+                voxelpilot_pressure_color(app->performance_result.status),
+                "| Safety: %s (%d/100)",
+                app->performance_result.status_label,
+                app->performance_result.pressure_score);
+            if (ImGui::IsItemHovered() && app->performance_result.primary_reason[0]) {
+                ImGui::SetTooltip("%s", app->performance_result.primary_reason);
+            }
+        }
 
         ImGui::TableSetColumnIndex(1);
         ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 1.0f);
@@ -2695,13 +2722,8 @@ static void draw_top_ribbon(StandaloneApp *app)
     if (app && app->ribbon_expanded) {
         ImGui::Separator();
         if (app->ribbon_active_tab == VOXELPILOT_RIBBON_HOME) {
-            if (ImGui::Button("Reset Workspace")) reset_workspace(app);
-            ImGui::SameLine();
-            if (ImGui::Button("Guided Walkthrough")) {
-                app->walkthrough_visible = 1;
-                app->walkthrough_step = 0;
-            }
-            ImGui::SameLine();
+            /* Reset Workspace and Guided Walkthrough live in Controls -
+               kept here once as an exact duplicate; removed. */
             if (ImGui::Button("Reset Layout")) reset_default_layout(app);
             ImGui::SameLine();
             ImGui::Text("GPU %.2f ms | FPS %.1f", app->last_render_ms, app->gui_fps);
@@ -2742,25 +2764,6 @@ static void draw_top_ribbon(StandaloneApp *app)
                 ImGui::SliderFloat("Contrast##ribbon_cinematic_contrast", &app->cinematic_contrast, 0.8f, 1.6f);
                 clamp_cinematic_settings(app);
             }
-        } else if (app->ribbon_active_tab == VOXELPILOT_RIBBON_AI) {
-            if (!app->ai_visible) {
-                if (ImGui::Button("Open AI Assist Panel")) {
-                    app->ai_visible = 1;
-                }
-                ImGui::SameLine();
-            }
-            ImGui::TextWrapped("AI Assist lives on the right rail. Use Discover Regions, Auto Enhance View, Health Check, and export helpers there.");
-            ImGui::Text("Panel visible: %s", app->ai_visible ? "Yes" : "No");
-        } else if (app->ribbon_active_tab == VOXELPILOT_RIBBON_ANALYSIS) {
-            ImGui::Text("Dataset: %d x %d x %d | Health: %s",
-                        app->renderer.W,
-                        app->renderer.H,
-                        app->renderer.D,
-                        app->dataset_health_status);
-        } else if (app->ribbon_active_tab == VOXELPILOT_RIBBON_EXPORT) {
-            ImGui::Text("Snapshot: %s", app->screenshot_status);
-            ImGui::SameLine();
-            ImGui::Text("Report: %s", app->report_status);
         }
     }
 
@@ -3000,6 +3003,22 @@ static void draw_controls_panel(StandaloneApp *app)
     if (ImGui::Button("Guided Walkthrough")) {
         app->walkthrough_visible = 1;
         app->walkthrough_step = 0;
+    }
+
+    {
+        const char *layout_label = app->dock_layout_variant == 1
+            ? "Switch to Demo Layout"
+            : "Switch to Deep Review Layout";
+        if (ImGui::Button(layout_label)) {
+            app->dock_layout_variant = app->dock_layout_variant == 1 ? 0 : 1;
+            app->dock_layout_ready = 0;
+        }
+        ImGui::TextColored(
+            ImVec4(0.62f, 0.68f, 0.74f, 1.0f),
+            "%s",
+            app->dock_layout_variant == 1
+                ? "Deep Review: Insights and Metadata both stay visible for close analysis."
+                : "Demo: Insights, AI Assist, and Metadata share one tabbed panel.");
     }
 
     ImGui::Separator();
@@ -4123,6 +4142,39 @@ static int performance_allows_optional_action(
     return 1;
 }
 
+static ImVec4 voxelpilot_score_color(float t)
+{
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+    if (t < 0.5f) {
+        float k = t / 0.5f;
+        return ImVec4(0.85f, 0.35f + 0.45f * k, 0.25f, 1.0f);
+    }
+    {
+        float k = (t - 0.5f) / 0.5f;
+        return ImVec4(0.85f - 0.65f * k, 0.80f, 0.25f + 0.10f * k, 1.0f);
+    }
+}
+
+static ImVec4 voxelpilot_pressure_color(int status)
+{
+    if (status == VOXELPILOT_GOVERNOR_CRITICAL) return ImVec4(0.90f, 0.30f, 0.30f, 1.0f);
+    if (status == VOXELPILOT_GOVERNOR_PRESSURE) return ImVec4(0.90f, 0.60f, 0.20f, 1.0f);
+    if (status == VOXELPILOT_GOVERNOR_WATCH)    return ImVec4(0.85f, 0.80f, 0.25f, 1.0f);
+    return ImVec4(0.35f, 0.85f, 0.55f, 1.0f);
+}
+
+static void voxelpilot_same_line_if_fits(const char *next_label)
+{
+    ImGuiStyle *style = &ImGui::GetStyle();
+    ImVec2 label_size = ImGui::CalcTextSize(next_label);
+    float next_width = label_size.x + style->FramePadding.x * 2.0f;
+    float avail = ImGui::GetContentRegionAvail().x;
+    if (avail > next_width + style->ItemSpacing.x) {
+        ImGui::SameLine();
+    }
+}
+
 static void draw_performance_safety_block(StandaloneApp *app)
 {
     if (!app) return;
@@ -4131,9 +4183,15 @@ static void draw_performance_safety_block(StandaloneApp *app)
 
     ImGui::Separator();
     ImGui::Text("Performance Safety");
-    ImGui::Text("Status: %s | Score: %d/100",
-                app->performance_result.status_label,
-                app->performance_result.pressure_score);
+    ImGui::TextColored(voxelpilot_pressure_color(app->performance_result.status),
+                "Status: %s", app->performance_result.status_label);
+    {
+        char pressure_overlay[16];
+        snprintf(pressure_overlay, sizeof(pressure_overlay), "%d/100", app->performance_result.pressure_score);
+        ImGui::PushStyleColor(ImGuiCol_PlotHistogram, voxelpilot_pressure_color(app->performance_result.status));
+        ImGui::ProgressBar(app->performance_result.pressure_score / 100.0f, ImVec2(120.0f, 0.0f), pressure_overlay);
+        ImGui::PopStyleColor();
+    }
     ImGui::TextWrapped("%s", app->performance_result.primary_reason);
     ImGui::TextWrapped("Recommendation: %s", app->performance_result.recommendation);
 
@@ -4221,20 +4279,25 @@ static void draw_ai_assist_panel(StandaloneApp *app)
         ImGui::Separator();
 
         if (!has_volume) {
-            ImGui::TextWrapped("Load a volume to enable AI actions.");
+            ImGui::TextWrapped(
+                "AI Assist needs a loaded volume first: use Browse... in Controls to set "
+                "Width, Height, Depth, and Data Type, then click Load Volume.");
+            if (ImGui::Button("Show Me: Volume Import Step")) {
+                app->walkthrough_visible = 1;
+                app->walkthrough_step = 1;
+            }
         } else {
             ImGui::Text("Volume: %d x %d x %d", app->renderer.W, app->renderer.H, app->renderer.D);
             ImGui::Text("Range: %.4f to %.4f", app->hist_min_value, app->hist_max_value);
             ImGui::Text("ASD: %d region(s), %d relation(s)", app->semantic_region_count, app->semantic_relation_count);
             ImGui::Text("ASD memory: %d correction(s)", app->semantic_correction_count);
             ImGui::Text("ASD safety: %s", app->performance_result.safe_to_run_asd ? "Ready" : "Blocked");
-            if (!app->performance_result.safe_to_run_asd) {
-                ImGui::TextWrapped("ASD is blocked by Performance Safety: %s", app->performance_result.recommendation);
+            if (app->performance_result.status != VOXELPILOT_GOVERNOR_HEALTHY) {
+                draw_performance_safety_block(app);
             }
         }
 
-        ImGui::Separator();
-        ImGui::Text("ASD Discovery");
+        if (ImGui::CollapsingHeader("Discovery", ImGuiTreeNodeFlags_DefaultOpen)) {
         draw_help_marker("Adaptive Semantic Discovery finds candidate regions and labels them cautiously.");
         if (ImGui::Button("Discover Regions")) {
             if (performance_allows_optional_action(app, "ASD discovery", 1, 0)) {
@@ -4242,11 +4305,11 @@ static void draw_ai_assist_panel(StandaloneApp *app)
                 refresh_performance_governor(app);
             }
         }
-        ImGui::SameLine();
+        voxelpilot_same_line_if_fits("Start Guided Review");
         if (ImGui::Button("Start Guided Review")) {
             start_guided_review(app);
         }
-        ImGui::SameLine();
+        voxelpilot_same_line_if_fits("Run Semantic Demo");
         if (ImGui::Button("Run Semantic Demo")) {
             if (performance_allows_optional_action(app, "Semantic demo", 1, 0)) {
                 run_semantic_demo_workflow(app, "Semantic demo");
@@ -4263,6 +4326,9 @@ static void draw_ai_assist_panel(StandaloneApp *app)
         ImGui::Text("ASD Summary");
         ImGui::SameLine();
         draw_help_marker("Review the top discovered semantic regions and choose one to highlight.");
+        ImGui::TextColored(
+            ImVec4(0.55f, 0.62f, 0.68f, 1.0f),
+            "Heuristic scores from shape/intensity geometry - not a trained model.");
         if (app->semantic_region_count > 0) {
             if (app->semantic_status[0]) {
                 ImGui::TextWrapped("Status: %s", app->semantic_status);
@@ -4279,7 +4345,28 @@ static void draw_ai_assist_panel(StandaloneApp *app)
                     app->semantic_selected_region = i;
                 }
                 ImGui::SameLine();
-                ImGui::Text("%s | %.0f%% conf | %.0f%% stab", region->archetype, region->confidence * 100.0f, region->stability_score * 100.0f);
+                ImGui::Text("%s", region->archetype);
+                ImGui::SameLine();
+                {
+                    char conf_overlay[16];
+                    snprintf(conf_overlay, sizeof(conf_overlay), "%.0f%%", region->confidence * 100.0f);
+                    ImGui::PushStyleColor(ImGuiCol_PlotHistogram, voxelpilot_score_color(region->confidence));
+                    ImGui::ProgressBar(region->confidence, ImVec2(52.0f, 0.0f), conf_overlay);
+                    ImGui::PopStyleColor();
+                }
+                ImGui::SameLine();
+                {
+                    char stab_overlay[16];
+                    snprintf(stab_overlay, sizeof(stab_overlay), "%.0f%%", region->stability_score * 100.0f);
+                    ImGui::PushStyleColor(ImGuiCol_PlotHistogram, voxelpilot_score_color(region->stability_score));
+                    ImGui::ProgressBar(region->stability_score, ImVec2(52.0f, 0.0f), stab_overlay);
+                    ImGui::PopStyleColor();
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip(
+                        "Archetype, confidence, and stability come from local shape/intensity heuristics\n"
+                        "(connected components + geometry), not a trained model.");
+                }
             }
             if (app->semantic_selected_region >= 0 && app->semantic_selected_region < app->semantic_region_count) {
                 VoxelPilotSemanticRegion *selected = &app->semantic_regions[app->semantic_selected_region];
@@ -4295,6 +4382,7 @@ static void draw_ai_assist_panel(StandaloneApp *app)
         } else {
             ImGui::TextWrapped("No ASD regions discovered yet. Click Discover Regions to run ASD-Lite.");
         }
+        }
 
         if (ImGui::CollapsingHeader("Transfer & Health", ImGuiTreeNodeFlags_DefaultOpen)) {
             if (!has_volume || !app->histogram_ready) {
@@ -4303,7 +4391,7 @@ static void draw_ai_assist_panel(StandaloneApp *app)
                 if (ImGui::Button("Auto Enhance View")) {
                     apply_auto_enhance_transfer(app, "AI Assist");
                 }
-                ImGui::SameLine();
+                voxelpilot_same_line_if_fits("Preview Auto Window");
                 if (ImGui::Button("Preview Auto Window")) {
                     if (has_transfer_suggestion) {
                         snprintf(app->ai_assist_status,
@@ -4320,7 +4408,7 @@ static void draw_ai_assist_panel(StandaloneApp *app)
                     }
                 }
                 if (app->transfer_undo_available) {
-                    ImGui::SameLine();
+                    voxelpilot_same_line_if_fits("Restore Previous View");
                     if (ImGui::Button("Restore Previous View")) {
                         undo_transfer_settings(app);
                     }
@@ -4329,11 +4417,11 @@ static void draw_ai_assist_panel(StandaloneApp *app)
                 if (ImGui::Button("Apply Prompt")) {
                     apply_ai_prompt_to_app(app);
                 }
-                ImGui::SameLine();
+                voxelpilot_same_line_if_fits("Health Check");
                 if (ImGui::Button("Health Check")) {
                     update_dataset_health(app);
                 }
-                ImGui::SameLine();
+                voxelpilot_same_line_if_fits("Export Bundle");
                 if (ImGui::Button("Export Bundle")) {
                     if (performance_allows_optional_action(app, "AI review bundle", 1, 1)) {
                         export_ai_review_bundle(app);
@@ -4347,8 +4435,11 @@ static void draw_ai_assist_panel(StandaloneApp *app)
 
         if (ImGui::CollapsingHeader("More AI Tools")) {
             ImGui::Text("Advisor");
+            ImGui::TextColored(
+                ImVec4(0.55f, 0.62f, 0.68f, 1.0f),
+                "Heuristic confidence from histogram shape - not a trained model.");
             if (!has_volume || !app->histogram_ready) {
-                ImGui::TextWrapped("Load a volume for transfer advice.");
+                ImGui::TextWrapped("Load a volume to see AI Transfer Advisor recommendations here.");
             } else if (has_transfer_advisor) {
                 ImGui::Text("%s | %.0f%%", transfer_advisor.action, transfer_advisor.confidence * 100.0f);
                 if (transfer_advisor.has_recommendation) {
@@ -4373,7 +4464,7 @@ static void draw_ai_assist_panel(StandaloneApp *app)
             if (ImGui::Button("Refresh Quant Metrics")) {
                 update_quant_metrics(app);
             }
-            ImGui::SameLine();
+            voxelpilot_same_line_if_fits("Export Insight Report");
             if (ImGui::Button("Export Insight Report")) {
                 export_insight_report(app);
             }
