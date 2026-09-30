@@ -1,0 +1,45 @@
+name: Tests
+
+on:
+  push:
+    branches: [ "**" ]
+  pull_request:
+    branches: [ "**" ]
+  workflow_dispatch:
+
+jobs:
+  unit-and-structural-tests:
+    # Unit tests (tests/volume_import_tests.cpp) compile with plain cl.exe
+    # and do not touch the CUDA renderer, so this job only needs MSVC - no
+    # GPU or CUDA toolkit required.
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up MSVC developer environment
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Create build directory
+        run: New-Item -ItemType Directory -Force -Path build
+
+      - name: Compile unit tests
+        run: cl /nologo /EHsc /std:c++17 /Icommon tests\volume_import_tests.cpp common\volume_import.cpp /Fe:build\volume_import_tests.exe
+
+      - name: Run unit tests
+        run: .\build\volume_import_tests.exe
+
+      - name: Run structural regression tests
+        run: python tests\render_regression_tests.py
+
+# Not covered here: the GPU render-regression stages (foot baseline, VTK
+# headsq, Bonsai, Bonsai ASD) in run_all_tests_windows.bat. Those launch
+# the actual CUDA renderer against sample datasets and need a real NVIDIA
+# GPU, which GitHub-hosted runners don't have. Run
+# .\run_all_tests_windows.bat locally before merging any change that could
+# affect rendering output; this workflow is the always-on subset of that.
