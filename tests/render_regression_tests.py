@@ -126,8 +126,8 @@ class RenderRegressionTests(unittest.TestCase):
         source = STANDALONE_MAIN.read_text(encoding="utf-8")
         ai_assist_panel = extract_static_function(source, "draw_ai_assist_panel")
 
-        self.assertIn('ImGui::CollapsingHeader("Advanced AI"', ai_assist_panel)
-        self.assertIn('ImGui::Button("Undo Transfer")', ai_assist_panel)
+        self.assertIn('ImGui::CollapsingHeader("More AI Tools"', ai_assist_panel)
+        self.assertIn('ImGui::Button("Restore Previous View")', ai_assist_panel)
         self.assertIn("Preview - not applied", ai_assist_panel)
         self.assertIn("draw_help_marker", source)
         self.assertNotIn("Collapsed review tools", ai_assist_panel)
