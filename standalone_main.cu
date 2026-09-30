@@ -47,256 +47,7 @@
 #include "common/semantic_discovery.h"
 #include "common/performance_governor.h"
 
-/* ============================================================
-   Constants
-   ============================================================ */
-#define DEFAULT_WIN_W    VOXELPILOT_DEFAULT_WIN_W
-#define DEFAULT_WIN_H    VOXELPILOT_DEFAULT_WIN_H
-#define DEFAULT_RENDER_W VOXELPILOT_DEFAULT_RENDER_W
-#define DEFAULT_RENDER_H VOXELPILOT_DEFAULT_RENDER_H
-#define MAX_PATH_BUF     1024
-#define BRAND_TITLE      "VoxelPilot v2"
-#define BRAND_SUBTITLE   "Cinematic AI Preview | NVIDIA Volume Explorer"
-#define HISTOGRAM_BINS   128
-#define MAX_ANNOTATIONS  VOXELPILOT_DEFAULT_MAX_ANNOTATIONS
-#define ANNOTATION_NAME_MAX 64
-
-typedef struct {
-    const char *label;
-    int         width;
-    int         height;
-} ResolutionPreset;
-
-typedef struct {
-    int           active;
-    unsigned char label_id;
-    char          name[ANNOTATION_NAME_MAX];
-    float         color[3];
-    float         seed[3];
-    float         seed_intensity;
-    float         tolerance;
-    size_t        voxel_count;
-    float         min_intensity;
-    float         max_intensity;
-} AnnotationRegion;
-
-/* ============================================================
-   Standalone App State
-   ============================================================ */
-typedef struct {
-    /* Window */
-    GLFWwindow   *window;
-    int           win_w, win_h;
-    int           layout_refit_next_frame;
-    int           window_was_maximized;
-
-    /* GL */
-    GLuint        prog;
-    GLint         tex_uniform_loc;
-    GLuint        vao, vbo, ebo;
-    GLuint        gl_tex;
-    int           tex_w, tex_h;
-
-    /* Renderer */
-    RendererState renderer;
-
-    /* UI: Camera */
-    float         cam_pos[3];
-    float         cam_dir[3];
-    float         cam_up[3];
-    float         fov_y_deg;
-
-    /* UI: Light */
-    float         light_pos[3];
-
-    /* UI: Cinematic render style */
-    int           cinematic_enabled;
-    float         cinematic_rim_strength;
-    float         cinematic_glow_strength;
-    float         cinematic_contrast;
-
-    /* UI: Render params */
-    float         step_size;
-    float         threshold;
-    float         skip_mult;
-    int           render_w;
-    int           render_h;
-    int           render_match_window;
-    int           render_quality_mode;
-    int           adaptive_quality_enabled;
-    int           adaptive_quality_active;
-    float         adaptive_quality_multiplier;
-    float         adaptive_step_size;
-    float         adaptive_skip_mult;
-    char          adaptive_quality_status[256];
-
-    /* UI: Control */
-    int           paused;
-
-    /* Stats */
-    float         last_render_ms;
-    float         gui_fps;
-    uint32_t      frame_id;
-    float         render_ms_average;
-    int           render_ms_average_ready;
-    VoxelPilotPerformanceResult performance_result;
-    char          performance_status[512];
-
-    /* Volume upload */
-    char          upload_path[1024];
-    int           upload_width;
-    int           upload_height;
-    int           upload_depth;
-    int           upload_data_type;
-    size_t        upload_file_size_bytes;
-    int           upload_file_size_known;
-    char          upload_hint_status[256];
-    char          upload_status[256];
-    char          screenshot_status[256];
-    char          screenshot_path[MAX_PATH_BUF];
-    int           selected_resolution;
-    float         tf_center;
-    float         tf_width;
-    float         tf_opacity_scale;
-    int           tf_palette;
-    int           tf_invert;
-    float         slice_x;
-    float         slice_y;
-    float         slice_z;
-    GLuint        axial_tex;
-    GLuint        coronal_tex;
-    GLuint        sagittal_tex;
-    float         clip_min[3];
-    float         clip_max[3];
-    float         histogram[HISTOGRAM_BINS];
-    float         hist_min_value;
-    float         hist_max_value;
-    float         hist_peak_count;
-    int           histogram_ready;
-    VoxelPilotDatasetHealthResult dataset_health;
-    int           dataset_health_ready;
-    char          dataset_health_status[512];
-    float         ai_focus_slice;
-    float         ai_focus_score;
-    char          ai_assist_status[256];
-    float         transfer_undo_center;
-    float         transfer_undo_width;
-    float         transfer_undo_opacity_scale;
-    int           transfer_undo_available;
-    char          ui_toast[256];
-    char          ai_prompt[256];
-    int           annotation_mode;
-    char          annotation_name[ANNOTATION_NAME_MAX];
-    float         annotation_tolerance;
-    float         annotation_color[3];
-    AnnotationRegion annotations[MAX_ANNOTATIONS];
-    int           annotation_count;
-    int           selected_annotation;
-    unsigned char *label_mask;
-    int           label_mask_W;
-    int           label_mask_H;
-    int           label_mask_D;
-    uint32_t      label_mask_revision;
-    int           label_overlay_visible;
-    float         label_overlay_alpha;
-    int           label_selected_emphasis_enabled;
-    float         label_selected_emphasis_strength;
-    VoxelPilotSemanticRegion semantic_regions[VOXELPILOT_ASD_MAX_REGIONS];
-    int           semantic_region_count;
-    VoxelPilotRegionRelation semantic_relations[VOXELPILOT_ASD_MAX_RELATIONS];
-    int           semantic_relation_count;
-    int           semantic_selected_region;
-    int           semantic_max_regions;
-    int           semantic_min_region_voxels;
-    float         semantic_sensitivity;
-    int           semantic_cinematic_emphasis;
-    int           semantic_callouts_enabled;
-    int           semantic_callout_top_regions;
-    int           semantic_callout_selected_only;
-    float         semantic_callout_opacity;
-    char          semantic_status[512];
-    VoxelPilotSemanticCorrection semantic_corrections[VOXELPILOT_ASD_MAX_CORRECTIONS];
-    int           semantic_correction_count;
-    char          semantic_edit_name[VOXELPILOT_ASD_NAME_MAX];
-    char          semantic_memory_status[512];
-    char          semantic_memory_path[MAX_PATH_BUF];
-    char          annotation_status[256];
-    char          hover_description[256];
-    int           main_hover_active;
-    VoxelPilotRayPickResult main_hover_pick;
-    char          main_hover_description[256];
-    unsigned char main_hover_label_id;
-    VoxelPilotObjectSummary object_summary;
-    int           object_summary_ready;
-    char          object_summary_status[512];
-    VoxelPilotQuantMetrics quant_metrics;
-    int           quant_metrics_ready;
-    char          quant_metrics_status[256];
-    char          report_status[256];
-    char          report_path[MAX_PATH_BUF];
-    int           streaming_visible_bricks;
-    int           streaming_resident_candidates;
-    int           streaming_budget_bricks;
-    int           streaming_stream_now;
-    int           streaming_queue;
-    int           streaming_evictable;
-    char          streaming_status[256];
-    float         measure_a[3];
-    float         measure_b[3];
-    int           measurement_visible;
-    int           measurement_target;
-    float         voxel_spacing[3];
-    char          preset_status[256];
-    char          preset_path[MAX_PATH_BUF];
-    float         orbit_yaw;
-    float         orbit_pitch;
-    float         orbit_radius;
-    float         orbit_target[3];
-    double        last_mouse_x;
-    double        last_mouse_y;
-    float         pending_scroll;
-    int           orbit_drag_active;
-    int           camera_motion_active;
-    int           dock_layout_ready;
-    float         dock_layout_viewport_w;
-    float         dock_layout_viewport_h;
-    int           dock_layout_variant;
-    int           controls_visible;
-    int           insights_visible;
-    int           ai_visible;
-    int           metadata_visible;
-    int           ribbon_expanded;
-    int           ribbon_active_tab;
-    int           demo_mode_enabled;
-    int           demo_auto_enabled;
-    double        demo_auto_start_time;
-    double        demo_auto_duration_sec;
-    int           demo_auto_enhance_applied;
-    char          demo_auto_status[192];
-    int           walkthrough_visible;
-    int           walkthrough_step;
-    int           guided_review_visible;
-    VoxelPilotGuidedReviewStep guided_review_step;
-    char          guided_review_status[256];
-    int           splash_visible;
-    double        splash_start_time;
-    int           splash_status_index;
-
-    /* Persistent slice preview buffers (reused each frame, realloced on dim change) */
-    unsigned char *slice_axial_buf;
-    unsigned char *slice_coronal_buf;
-    unsigned char *slice_sagittal_buf;
-    int            slice_buf_W;
-    int            slice_buf_H;
-    int            slice_buf_D;
-
-    /* Dirty tracking for slice preview — skip CPU recompute when positions unchanged */
-    float          slice_prev_x;
-    float          slice_prev_y;
-    float          slice_prev_z;
-    int            slice_preview_dirty;
-
-} StandaloneApp;
+#include "standalone_app.h"
 
 static const ResolutionPreset k_resolution_presets[] = {
     { "256 x 256", 256, 256 },
@@ -440,17 +191,13 @@ static const char *semantic_relationship_note(
     StandaloneApp *app,
     unsigned char  label_id);
 static void run_adaptive_semantic_discovery(StandaloneApp *app);
-static void run_semantic_demo_workflow(StandaloneApp *app, const char *reason);
 static int select_guided_review_region(StandaloneApp *app, int direction);
 static void start_guided_review(StandaloneApp *app);
 static void draw_guided_review_overlay(StandaloneApp *app);
 static void update_render_performance_average(StandaloneApp *app);
-static void update_quant_metrics(StandaloneApp *app);
 static void reset_default_layout(StandaloneApp *app);
 static void refresh_adaptive_quality_for_frame(StandaloneApp *app);
 static void refresh_performance_governor(StandaloneApp *app);
-static void export_ai_review_bundle(StandaloneApp *app);
-static void export_insight_report(StandaloneApp *app);
 static int performance_allows_optional_action(
     StandaloneApp *app,
     const char    *action_label,
@@ -708,7 +455,7 @@ static void update_dataset_health(StandaloneApp *app)
              app->dataset_health.summary);
 }
 
-static float measurement_distance(const StandaloneApp *app)
+float measurement_distance(const StandaloneApp *app)
 {
     float dx = (app->measure_b[0] - app->measure_a[0]) * (float)app->renderer.W;
     float dy = (app->measure_b[1] - app->measure_a[1]) * (float)app->renderer.H;
@@ -716,7 +463,7 @@ static float measurement_distance(const StandaloneApp *app)
     return sqrtf(dx * dx + dy * dy + dz * dz);
 }
 
-static float measurement_distance_world(const StandaloneApp *app)
+float measurement_distance_world(const StandaloneApp *app)
 {
     float dx = (app->measure_b[0] - app->measure_a[0]) * (float)app->renderer.W * app->voxel_spacing[0];
     float dy = (app->measure_b[1] - app->measure_a[1]) * (float)app->renderer.H * app->voxel_spacing[1];
@@ -1212,7 +959,7 @@ static void refresh_upload_file_details(StandaloneApp *app)
     }
 }
 
-static int write_png_file(
+int write_png_file(
     const unsigned char *pixels,
     int                  width,
     int                  height,
@@ -2383,7 +2130,7 @@ static int build_current_renderer_input(
 /* ============================================================
    Render one frame to the CUDA output buffer only (no GL window)
    ============================================================ */
-static void render_frame_gpu_snapshot(StandaloneApp *app)
+void render_frame_gpu_snapshot(StandaloneApp *app)
 {
     RendererInput cmd;
 
@@ -3544,7 +3291,7 @@ static void apply_ai_prompt_to_app(StandaloneApp *app)
              "%s", result.status);
 }
 
-static void update_quant_metrics(StandaloneApp *app)
+void update_quant_metrics(StandaloneApp *app)
 {
     float visible_threshold;
 
@@ -3575,7 +3322,7 @@ static void update_quant_metrics(StandaloneApp *app)
              "%s", app->quant_metrics.summary);
 }
 
-static void update_object_summary(StandaloneApp *app)
+void update_object_summary(StandaloneApp *app)
 {
     if (!app->histogram_ready ||
         !voxelpilot_summarize_object_context(
@@ -3596,7 +3343,7 @@ static void update_object_summary(StandaloneApp *app)
              "%s", app->object_summary.description);
 }
 
-static void run_semantic_demo_workflow(StandaloneApp *app, const char *reason)
+void run_semantic_demo_workflow(StandaloneApp *app, const char *reason)
 {
     VoxelPilotSemanticDemoSettings settings;
     const char *label = reason && reason[0] ? reason : "Semantic demo";
@@ -3852,7 +3599,7 @@ static void refresh_performance_governor(StandaloneApp *app)
              app->performance_result.recommendation);
 }
 
-static void update_streaming_estimate(StandaloneApp *app)
+void update_streaming_estimate(StandaloneApp *app)
 {
     VoxelPilotBrickCachePlan plan;
 
@@ -3910,210 +3657,6 @@ static void update_streaming_estimate(StandaloneApp *app)
              app->streaming_evictable);
 }
 
-static void build_ai_review_bundle_content(
-    StandaloneApp                    *app,
-    VoxelPilotAiReviewBundleContent  *content)
-{
-    voxelpilot_ai_review_bundle_content_defaults(content);
-    if (!app || !content) return;
-
-    content->volume_width = app->renderer.W;
-    content->volume_height = app->renderer.H;
-    content->volume_depth = app->renderer.D;
-    content->selected_label_id =
-        (app->selected_annotation >= 0 && app->selected_annotation < app->annotation_count)
-            ? (unsigned int)app->annotations[app->selected_annotation].label_id
-            : 0u;
-    content->regions = app->semantic_regions;
-    content->region_count = app->semantic_region_count;
-    content->relations = app->semantic_relations;
-    content->relation_count = app->semantic_relation_count;
-    content->label_mask = app->label_mask;
-    content->label_mask_width = app->label_mask_W;
-    content->label_mask_height = app->label_mask_H;
-    content->label_mask_depth = app->label_mask_D;
-    content->object_summary_status = app->object_summary_status;
-}
-
-static int export_ai_review_bundle_to_folder(StandaloneApp *app, const char *folder)
-{
-    VoxelPilotReviewBundlePaths paths;
-    VoxelPilotAiReviewBundleContent bundle_content;
-    char stem[128];
-    char folder_error[256];
-
-    if (!app || !app->renderer.volume_data || app->renderer.W < 1 || app->renderer.H < 1 || app->renderer.D < 1) {
-        if (app) snprintf(app->report_status, sizeof(app->report_status), "Load a volume before exporting an AI review bundle.");
-        return 0;
-    }
-    if (!folder || !folder[0]) {
-        snprintf(app->report_status, sizeof(app->report_status), "Choose a folder for the AI review bundle.");
-        return 0;
-    }
-    if (!voxelpilot_cli_prepare_export_folder(folder, folder_error, sizeof(folder_error))) {
-        snprintf(app->report_status,
-                 sizeof(app->report_status),
-                 "Could not prepare AI review bundle folder: %s",
-                 folder_error[0] ? folder_error : folder);
-        return 0;
-    }
-
-    if (app->semantic_region_count < 1) {
-        run_semantic_demo_workflow(app, "AI review bundle");
-    }
-    if (app->semantic_region_count < 1 || !app->label_mask || app->annotation_count < 1) {
-        snprintf(app->report_status, sizeof(app->report_status),
-                 "AI review bundle needs ASD regions. Run Semantic Demo or tune ASD settings first.");
-        return 0;
-    }
-
-    voxelpilot_make_ai_review_bundle_stem_from_source(app->upload_path, stem, sizeof(stem));
-    if (!voxelpilot_make_review_bundle_paths(folder, stem, &paths)) {
-        snprintf(app->report_status, sizeof(app->report_status), "Could not prepare AI review bundle paths.");
-        return 0;
-    }
-
-    update_quant_metrics(app);
-    update_object_summary(app);
-    update_streaming_estimate(app);
-    build_ai_review_bundle_content(app, &bundle_content);
-
-    render_frame_gpu_snapshot(app);
-    if (!app->renderer.h_out ||
-        write_png_file((const unsigned char *)app->renderer.h_out, app->render_w, app->render_h, paths.snapshot_png) != 0) {
-        snprintf(app->report_status, sizeof(app->report_status), "Could not write AI review snapshot.");
-        return 0;
-    }
-    if (!voxelpilot_ai_review_write_regions_json(&bundle_content, paths.regions_json)) {
-        snprintf(app->report_status, sizeof(app->report_status), "Could not write AI review regions JSON.");
-        return 0;
-    }
-    if (!voxelpilot_ai_review_write_relationships_json(&bundle_content, paths.relationships_json)) {
-        snprintf(app->report_status, sizeof(app->report_status), "Could not write AI review relationships JSON.");
-        return 0;
-    }
-    if (!voxelpilot_ai_review_write_label_mask(&bundle_content, paths.label_mask_raw)) {
-        snprintf(app->report_status, sizeof(app->report_status), "Could not write AI review label mask.");
-        return 0;
-    }
-    if (!voxelpilot_ai_review_write_bundle_report(&bundle_content, &paths, paths.report_html)) {
-        snprintf(app->report_status, sizeof(app->report_status), "Could not write AI review bundle report.");
-        return 0;
-    }
-
-    strncpy(app->report_path, paths.report_html, sizeof(app->report_path) - 1);
-    app->report_path[sizeof(app->report_path) - 1] = '\0';
-    snprintf(app->report_status, sizeof(app->report_status),
-             "Exported AI review bundle: %s", paths.report_html);
-    return 1;
-}
-
-static void export_ai_review_bundle(StandaloneApp *app)
-{
-    const char *folder = tinyfd_selectFolderDialog("Export VoxelPilot AI Review Bundle", ".");
-    if (!folder) {
-        if (app) snprintf(app->report_status, sizeof(app->report_status), "AI review bundle export canceled.");
-        return;
-    }
-    export_ai_review_bundle_to_folder(app, folder);
-}
-
-static void build_insight_report_content(
-    StandaloneApp                    *app,
-    VoxelPilotInsightReportContent   *content,
-    VoxelPilotInsightAnnotation      *annotations,
-    int                               annotation_capacity)
-{
-    int i;
-    int count = 0;
-
-    if (!content) return;
-    voxelpilot_insight_report_content_defaults(content);
-    if (!app) return;
-
-    content->volume_width = app->renderer.W;
-    content->volume_height = app->renderer.H;
-    content->volume_depth = app->renderer.D;
-    content->hist_min_value = app->hist_min_value;
-    content->hist_max_value = app->hist_max_value;
-    memcpy(content->voxel_spacing, app->voxel_spacing, sizeof(content->voxel_spacing));
-    content->source_path = app->upload_path[0] ? app->upload_path : "startup/synthetic volume";
-    content->quant_metrics = &app->quant_metrics;
-    content->quant_metrics_status = app->quant_metrics_status;
-    content->object_summary = &app->object_summary;
-    content->object_summary_status = app->object_summary_status;
-    memcpy(content->measure_a, app->measure_a, sizeof(content->measure_a));
-    memcpy(content->measure_b, app->measure_b, sizeof(content->measure_b));
-    content->measurement_distance_voxels = measurement_distance(app);
-    content->measurement_distance_world = measurement_distance_world(app);
-    content->last_render_ms = app->last_render_ms;
-    content->gui_fps = app->gui_fps;
-    content->streaming_visible_bricks = app->streaming_visible_bricks;
-    content->streaming_resident_candidates = app->streaming_resident_candidates;
-    content->streaming_stream_now = app->streaming_stream_now;
-    content->streaming_queue = app->streaming_queue;
-    content->streaming_evictable = app->streaming_evictable;
-
-    if (annotations && annotation_capacity > 0) {
-        for (i = 0; i < app->annotation_count && count < annotation_capacity; ++i) {
-            AnnotationRegion *region = &app->annotations[i];
-            annotations[count].active = region->active;
-            annotations[count].label_id = (unsigned int)region->label_id;
-            annotations[count].name = region->name;
-            annotations[count].voxel_count = region->voxel_count;
-            annotations[count].min_intensity = region->min_intensity;
-            annotations[count].max_intensity = region->max_intensity;
-            count++;
-        }
-    }
-    content->annotations = annotations;
-    content->annotation_count = count;
-}
-
-static void export_insight_report(StandaloneApp *app)
-{
-    const char *patterns[] = { "*.html" };
-    const char *selected;
-    VoxelPilotInsightReportContent content;
-    VoxelPilotInsightAnnotation report_annotations[MAX_ANNOTATIONS];
-
-    if (!app->renderer.volume_data || app->renderer.W < 1 || app->renderer.H < 1 || app->renderer.D < 1) {
-        snprintf(app->report_status, sizeof(app->report_status),
-                 "Load a volume before exporting a report.");
-        return;
-    }
-
-    selected = tinyfd_saveFileDialog(
-        "Export VoxelPilot Insight Report",
-        app->report_path[0] ? app->report_path : "voxelpilot_insight_report.html",
-        1,
-        patterns,
-        "HTML Report (*.html)");
-
-    if (!selected) {
-        snprintf(app->report_status, sizeof(app->report_status),
-                 "Report export canceled.");
-        return;
-    }
-
-    update_quant_metrics(app);
-    if (!app->object_summary_ready) {
-        update_object_summary(app);
-    }
-    update_streaming_estimate(app);
-    build_insight_report_content(app, &content, report_annotations, MAX_ANNOTATIONS);
-
-    if (!voxelpilot_insight_write_report(&content, selected)) {
-        snprintf(app->report_status, sizeof(app->report_status),
-                 "Could not write report file.");
-        return;
-    }
-
-    strncpy(app->report_path, selected, sizeof(app->report_path) - 1);
-    app->report_path[sizeof(app->report_path) - 1] = '\0';
-    snprintf(app->report_status, sizeof(app->report_status),
-             "Exported insight report: %s", selected);
-}
 static int performance_allows_optional_action(
     StandaloneApp *app,
     const char    *action_label,
