@@ -305,6 +305,34 @@ int write_png_file(
 float measurement_distance(const StandaloneApp *app);
 float measurement_distance_world(const StandaloneApp *app);
 
+/* Defined in annotation_and_semantic_memory.cpp, called from
+   standalone_main.cu (specifically from run_adaptive_semantic_discovery
+   and a handful of UI/reset call sites) */
+void reset_semantic_discovery(StandaloneApp *app);
+void reset_annotations(StandaloneApp *app);
+int ensure_label_mask(StandaloneApp *app);
+int point_to_voxel_index(
+    const StandaloneApp *app,
+    const float          point[3],
+    int                 *out_x,
+    int                 *out_y,
+    int                 *out_z,
+    size_t              *out_index);
+void point_from_slice_uv(
+    const StandaloneApp *app,
+    int                  plane,
+    float                u,
+    float                v,
+    float                point[3]);
+const char *semantic_relationship_note(
+    StandaloneApp *app,
+    unsigned char  label_id);
+size_t semantic_total_voxels(StandaloneApp *app);
+void refresh_semantic_annotation_overlays(StandaloneApp *app);
+void create_annotation_region_at_point(
+    StandaloneApp *app,
+    const float    point[3]);
+
 /* Defined in export_bundles.cpp, called from standalone_main.cu */
 int export_ai_review_bundle_to_folder(StandaloneApp *app, const char *folder);
 void export_ai_review_bundle(StandaloneApp *app);
