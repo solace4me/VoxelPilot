@@ -42,6 +42,12 @@
 #define MAX_ANNOTATIONS  VOXELPILOT_DEFAULT_MAX_ANNOTATIONS
 #define ANNOTATION_NAME_MAX 64
 
+enum {
+    VOXELPILOT_RIBBON_HOME = 0,
+    VOXELPILOT_RIBBON_VIEW = 1,
+    VOXELPILOT_RIBBON_COUNT = 2
+};
+
 typedef struct {
     const char *label;
     int         width;
@@ -309,6 +315,12 @@ float measurement_distance_world(const StandaloneApp *app);
    standalone_main.cu (specifically from run_adaptive_semantic_discovery
    and a handful of UI/reset call sites) */
 void reset_semantic_discovery(StandaloneApp *app);
+AnnotationRegion *find_annotation_by_label(
+    StandaloneApp *app,
+    unsigned char label_id);
+VoxelPilotSemanticRegion *find_semantic_region_by_label(
+    StandaloneApp *app,
+    unsigned char label_id);
 void reset_annotations(StandaloneApp *app);
 int ensure_label_mask(StandaloneApp *app);
 int point_to_voxel_index(
@@ -337,5 +349,20 @@ void create_annotation_region_at_point(
 int export_ai_review_bundle_to_folder(StandaloneApp *app, const char *folder);
 void export_ai_review_bundle(StandaloneApp *app);
 void export_insight_report(StandaloneApp *app);
+
+/* Defined in standalone_main.cu, called from workspace_presets.cpp */
+void clamp_cinematic_settings(StandaloneApp *app);
+void sync_resolution_selection(StandaloneApp *app);
+
+/* Defined in workspace_presets.cpp, called from standalone_main.cu */
+int parse_cli_int(const char *text, int *out_value);
+int parse_cli_float(
+    const char *text,
+    float       min_value,
+    float       max_value,
+    float      *out_value);
+int parse_cli_data_type(const char *text, int *out_data_type);
+int save_workspace_preset(StandaloneApp *app, const char *path);
+int load_workspace_preset(StandaloneApp *app, const char *path);
 
 #endif /* VOXELPILOT_STANDALONE_APP_H */

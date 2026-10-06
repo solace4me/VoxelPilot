@@ -6,6 +6,7 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 VERIFY_SCRIPT = ROOT / "tools" / "verify_render_snapshot.py"
 STANDALONE_MAIN = ROOT / "standalone_main.cu"
+WORKSPACE_PRESETS = ROOT / "workspace_presets.cpp"
 DEFAULT_STATE_HEADER = ROOT / "common" / "default_state.h"
 
 
@@ -136,13 +137,18 @@ class RenderRegressionTests(unittest.TestCase):
 
 
     def test_right_panel_visibility_is_configurable_and_saved_with_presets(self):
-        source = STANDALONE_MAIN.read_text(encoding="utf-8")
-        ribbon = extract_static_function(source, "draw_top_ribbon")
-        save_start = source.index("static int save_workspace_preset")
-        load_start = source.index("static int load_workspace_preset")
-        next_fn = source.index("static void scroll_callback", load_start)
-        save_fn = source[save_start:load_start]
-        load_fn = source[load_start:next_fn]
+        main_source = STANDALONE_MAIN.read_text(encoding="utf-8")
+        ribbon = extract_static_function(main_source, "draw_top_ribbon")
+
+        # save_workspace_preset / load_workspace_preset live in
+        # workspace_presets.cpp (Tier 3c module split), not
+        # standalone_main.cu, and are no longer static (they're called
+        # cross-file from standalone_main.cu).
+        presets_source = WORKSPACE_PRESETS.read_text(encoding="utf-8")
+        save_start = presets_source.index("int save_workspace_preset")
+        load_start = presets_source.index("int load_workspace_preset")
+        save_fn = presets_source[save_start:load_start]
+        load_fn = presets_source[load_start:]
 
         self.assertIn('ImGui::Checkbox("Insights##panel_insights"', ribbon)
         self.assertIn('ImGui::Checkbox("AI Assist##panel_ai"', ribbon)
