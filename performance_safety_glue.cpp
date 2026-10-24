@@ -11,17 +11,42 @@
 
    refresh_performance_governor calls the CUDA Runtime API directly
    (cudaMemGetInfo) for GPU memory telemetry - the first extracted file
-   to do so. cuda_runtime.h reaches this file transitively through
-   standalone_app.h -> common/volume_structs.h, the same path that
-   already let export_bundles.cpp, annotation_and_semantic_memory.cpp
-   and workspace_presets.cpp compile cleanly with cl.exe despite
-   including standalone_app.h. The symbol itself resolves at link time
-   against the cudart that the final nvcc link step already pulls in
-   via -cudart hybrid (the same mechanism that resolves
-   detect_cuda_runtime()'s cudaGetDeviceCount call in standalone_main.cu
-   today). This is still new ground for the cl.exe-extraction approach,
-   so if build_windows.ps1 reports an unresolved external symbol here,
-   that's the first place to look.
+   to do so, and it took two attempts to get the headers right.
+
+   First attempt: assumed cuda_runtime.h reached this file transitively
+   via standalone_app.h -> common/volume_structs.h. Wrong - that header
+   only includes the real cuda_runtime.h when __CUDACC__ is defined
+   (i.e. compiled by nvcc); under cl.exe it falls back to a minimal
+   compatibility shim (float3/float4/uchar4 as plain structs,
+   cudaArray_t/cudaTextureObject_t/cudaGraphicsResource_t/cudaEvent_t/
+   cudaStream_t as void*) that has no cudaError_t, cudaSuccess, or
+   cudaMemGetInfo. build_windows.ps1 caught this as C2065/C3861
+   undeclared-identifier errors.
+
+   Second attempt (this one): tried including <cuda_runtime_api.h>
+   directly (the host-callable C API subset, without __CUDACC__-gated
+   kernel-launch syntax) plus -I"%CUDA_HOME%\include" in
+   build_windows.bat. Rejected before it reached a build: that header
+   declares cudaArray_t/cudaTextureObject_t/cudaGraphicsResource_t/
+   cudaEvent_t/cudaStream_t as real opaque CUDA types, which collide
+   with volume_structs.h's void*-based shim typedefs of the exact same
+   names - a hard redefinition error whichever order the two includes
+   land in, since cl.exe never defines __CUDACC__ either way.
+
+   Fixed by not including any CUDA header here at all: cudaError_t,
+   cudaSuccess, and cudaMemGetInfo are declared by hand, scoped to this
+   file. None of the three names appear in volume_structs.h's shim, so
+   there's no redefinition risk. cudaError_t is declared as `int`
+   rather than the real ~100-value enum: every cudaError_t value fits
+   in int, and every compiler CUDA supports (cl.exe included) lays out
+   a plain C enum as int, so this matches the real ABI for the purposes
+   of a function return value and an equality comparison against 0
+   (cudaSuccess), without needing the enum's other names. The
+   cudaMemGetInfo symbol itself still resolves at link time against the
+   cudart that the final nvcc link step already pulls in via -cudart
+   hybrid (the same mechanism that resolves detect_cuda_runtime()'s
+   cudaGetDeviceCount call in standalone_main.cu today) - that part of
+   the original reasoning held up across both attempts.
 
    voxelpilot_pressure_color and draw_performance_safety_block use
    ImGui directly - the first extracted file to need it. standalone_app.h
@@ -44,6 +69,13 @@
 #include <stdio.h>
 
 #include "standalone_app.h"
+
+/* Hand-declared in place of a CUDA header - see the file comment above. */
+extern "C" {
+typedef int cudaError_t;
+cudaError_t cudaMemGetInfo(size_t *free, size_t *total);
+}
+#define cudaSuccess 0
 
 void refresh_adaptive_quality_for_frame(StandaloneApp *app)
 {
