@@ -538,7 +538,7 @@ void draw_cinematic_semantic_callouts(StandaloneApp *app)
 
     viewport_w = viewport->Size.x;
     viewport_h = viewport->Size.y;
-    draw_list = ImGui::GetForegroundDrawList(viewport);
+    draw_list = ImGui::GetForegroundDrawList();
 
     if (app->semantic_callout_top_regions < 1) app->semantic_callout_top_regions = 1;
     if (app->semantic_callout_top_regions > MAX_ANNOTATIONS) app->semantic_callout_top_regions = MAX_ANNOTATIONS;
