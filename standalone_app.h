@@ -303,7 +303,6 @@ void run_semantic_demo_workflow(StandaloneApp *app, const char *reason);
 void update_quant_metrics(StandaloneApp *app);
 void update_object_summary(StandaloneApp *app);
 void update_streaming_estimate(StandaloneApp *app);
-void render_frame_gpu_snapshot(StandaloneApp *app);
 int write_png_file(
     const unsigned char *pixels,
     int                  width,
@@ -460,5 +459,20 @@ void draw_startup_splash(StandaloneApp *app);
 void draw_status_bar(StandaloneApp *app);
 void draw_guided_review_overlay(StandaloneApp *app);
 void draw_cinematic_semantic_callouts(StandaloneApp *app);
+
+/* Defined in gl_viewport_and_render.cpp, called from standalone_main.cu
+   (and, for render_frame_gpu_snapshot, from export_bundles.cpp). */
+int setup_gl_resources(StandaloneApp *app);
+void process_mouse_camera_controls(StandaloneApp *app);
+void sync_render_target_to_framebuffer(
+    StandaloneApp *app,
+    int            framebuffer_width,
+    int            framebuffer_height);
+void update_slice_previews(StandaloneApp *app);
+void render_frame_gpu_snapshot(StandaloneApp *app);
+void render_frame_standalone(StandaloneApp *app);
+void draw_fullscreen_quad(StandaloneApp *app);
+void update_main_render_hover_pick(StandaloneApp *app);
+void draw_main_render_hover_tooltip(StandaloneApp *app);
 
 #endif /* VOXELPILOT_STANDALONE_APP_H */
