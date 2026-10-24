@@ -65,7 +65,7 @@ Each script also still works standalone if you only want to run one
 check while iterating.
 
 `tests/render_regression_tests.py` is pure Python and only reads
-`standalone_main.cu` as text (no compiler needed), so it can be run on
+`standalone_main.cpp` as text (no compiler needed), so it can be run on
 its own for a quick structural check:
 
 ```
@@ -76,12 +76,12 @@ python tests\render_regression_tests.py
 
 This project has one specific, hard-won rule: **before adding a button,
 panel, tab, or section, check whether the control already exists
-somewhere else in the app.** `standalone_main.cu` has several UI
+somewhere else in the app.** `standalone_main.cpp` has several UI
 surfaces (top ribbon, Controls panel, AI Assist panel, Insights panel),
 and it's easy to "fix" one of them by copy-pasting a control that
 already lives in another - which just adds duplication without adding
 value. Grep for the button/checkbox label first
-(`grep -n 'ImGui::Button("Your Label"' standalone_main.cu`); if it's
+(`grep -n 'ImGui::Button("Your Label"' standalone_main.cpp`); if it's
 already there, either wire the existing one up differently or find a
 genuinely new thing for that space to do.
 
@@ -90,7 +90,7 @@ genuinely new thing for that space to do.
 See `docs/ARCHITECTURE.md` for the full picture. The two things most
 likely to bite you on a first change:
 
-- **Forward declarations.** `standalone_main.cu` is one large
+- **Forward declarations.** `standalone_main.cpp` is one large
   top-to-bottom translation unit. A function called earlier in the file
   than it's defined needs an explicit forward declaration in the block
   starting around line 431. Forgetting this is a compile error, not a

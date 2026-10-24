@@ -5,7 +5,7 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 VERIFY_SCRIPT = ROOT / "tools" / "verify_render_snapshot.py"
-STANDALONE_MAIN = ROOT / "standalone_main.cu"
+STANDALONE_MAIN = ROOT / "standalone_main.cpp"
 WORKSPACE_PRESETS = ROOT / "workspace_presets.cpp"
 AI_ASSIST_PANEL = ROOT / "ui_ai_assist_panel.cpp"
 CONTROLS_PANEL = ROOT / "ui_controls_panel.cpp"
@@ -88,7 +88,7 @@ class RenderRegressionTests(unittest.TestCase):
         ai_assist_panel = extract_nonstatic_function(ai_assist_source, "draw_ai_assist_panel")
 
         # draw_ai_assist_panel moved to ui_ai_assist_panel.cpp (Tier 3c module
-        # split), so the button literal no longer appears in standalone_main.cu
+        # split), so the button literal no longer appears in standalone_main.cpp
         # at all; the "single home" invariant is checked across both files.
         total_count = (
             source.count('ImGui::Button("Auto Enhance View")')
@@ -169,8 +169,8 @@ class RenderRegressionTests(unittest.TestCase):
 
         # save_workspace_preset / load_workspace_preset live in
         # workspace_presets.cpp (Tier 3c module split), not
-        # standalone_main.cu, and are no longer static (they're called
-        # cross-file from standalone_main.cu).
+        # standalone_main.cpp, and are no longer static (they're called
+        # cross-file from standalone_main.cpp).
         presets_source = WORKSPACE_PRESETS.read_text(encoding="utf-8")
         save_start = presets_source.index("int save_workspace_preset")
         load_start = presets_source.index("int load_workspace_preset")
@@ -193,7 +193,7 @@ class RenderRegressionTests(unittest.TestCase):
         ribbon = extract_nonstatic_function(ribbon_source, "draw_top_ribbon")
 
         # handle_keyboard_shortcuts moved to ui_controls_panel.cpp (Tier 3c
-        # module split) and is no longer static; standalone_main.cu still
+        # module split) and is no longer static; standalone_main.cpp still
         # calls it, the shortcut key checks themselves moved with it.
         self.assertIn("void handle_keyboard_shortcuts(StandaloneApp *app)", controls_source)
         self.assertIn("handle_keyboard_shortcuts(&app);", source)

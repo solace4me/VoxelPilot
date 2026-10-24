@@ -11,7 +11,7 @@ built.
 
 ## Build model: one translation unit
 
-`standalone_main.cu` (~5,900 lines) is the entire application - window
+`standalone_main.cpp` (~5,900 lines) is the entire application - window
 setup, ImGui UI, app state, and the glue that calls into the CUDA
 renderer - compiled as a single translation unit alongside
 `renderer/*.cu`. There's no header/source split for the app logic
@@ -79,7 +79,7 @@ AI/Analysis/Export tab set from the ribbon specifically because it had
 drifted into duplicating buttons already present in AI Assist and
 Controls - see `CHANGELOG.md` under Unreleased. The rule going forward:
 check for an existing control with the same label
-(`grep -n 'ImGui::Button("..."' standalone_main.cu`) before adding a
+(`grep -n 'ImGui::Button("..."' standalone_main.cpp`) before adding a
 new one.
 
 ## AI-assist features
@@ -141,7 +141,7 @@ See `CONTRIBUTING.md` for how to run tests. Structurally:
   more. This is where AI-heuristic-threshold coverage lives; check here
   before assuming a heuristic is untested.
 - `tests/render_regression_tests.py` - pure-Python structural
-  assertions against `standalone_main.cu` (no compiler needed) plus PNG
+  assertions against `standalone_main.cpp` (no compiler needed) plus PNG
   metric unit tests. Cheap to run on its own while iterating on UI
   layout.
 - `tools/verify_render_snapshot.py`, `tools/verify_headsq_snapshot.py`,

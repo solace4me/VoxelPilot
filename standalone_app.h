@@ -2,9 +2,9 @@
 #define VOXELPILOT_STANDALONE_APP_H
 
 /* Shared state and cross-file declarations for the standalone app.
-   Extracted from standalone_main.cu as part of the Tier 3c module
+   Extracted from standalone_main.cpp as part of the Tier 3c module
    split (see docs/superpowers/plans/2026-09-30-standalone-main-split.md).
-   Every file that is split out of standalone_main.cu includes this. */
+   Every file that is split out of standalone_main.cpp includes this. */
 
 #include <stdint.h>
 #include <stddef.h>
@@ -290,15 +290,15 @@ typedef struct {
    Cross-file declarations
 
    These functions are defined in one file and called from another
-   (standalone_main.cu <-> export_bundles.cpp today; more pairs will
+   (standalone_main.cpp <-> export_bundles.cpp today; more pairs will
    be added here as later split steps extract more files). Each was
-   `static` when it lived alone in standalone_main.cu; moving a caller
+   `static` when it lived alone in standalone_main.cpp; moving a caller
    or a callee across a file boundary requires dropping `static` at
    the definition site too, since `static` gives internal (this-file-
    only) linkage in C/C++.
    ============================================================ */
 
-/* Defined in standalone_main.cu, called from export_bundles.cpp */
+/* Defined in standalone_main.cpp, called from export_bundles.cpp */
 void run_semantic_demo_workflow(StandaloneApp *app, const char *reason);
 void update_quant_metrics(StandaloneApp *app);
 void update_object_summary(StandaloneApp *app);
@@ -312,7 +312,7 @@ float measurement_distance(const StandaloneApp *app);
 float measurement_distance_world(const StandaloneApp *app);
 
 /* Defined in annotation_and_semantic_memory.cpp, called from
-   standalone_main.cu (specifically from run_adaptive_semantic_discovery
+   standalone_main.cpp (specifically from run_adaptive_semantic_discovery
    and a handful of UI/reset call sites) */
 void reset_semantic_discovery(StandaloneApp *app);
 AnnotationRegion *find_annotation_by_label(
@@ -345,16 +345,16 @@ void create_annotation_region_at_point(
     StandaloneApp *app,
     const float    point[3]);
 
-/* Defined in export_bundles.cpp, called from standalone_main.cu */
+/* Defined in export_bundles.cpp, called from standalone_main.cpp */
 int export_ai_review_bundle_to_folder(StandaloneApp *app, const char *folder);
 void export_ai_review_bundle(StandaloneApp *app);
 void export_insight_report(StandaloneApp *app);
 
-/* Defined in standalone_main.cu, called from workspace_presets.cpp */
+/* Defined in standalone_main.cpp, called from workspace_presets.cpp */
 void clamp_cinematic_settings(StandaloneApp *app);
 void sync_resolution_selection(StandaloneApp *app);
 
-/* Defined in workspace_presets.cpp, called from standalone_main.cu */
+/* Defined in workspace_presets.cpp, called from standalone_main.cpp */
 int parse_cli_int(const char *text, int *out_value);
 int parse_cli_float(
     const char *text,
@@ -365,13 +365,13 @@ int parse_cli_data_type(const char *text, int *out_data_type);
 int save_workspace_preset(StandaloneApp *app, const char *path);
 int load_workspace_preset(StandaloneApp *app, const char *path);
 
-/* Defined in standalone_main.cu, called from performance_safety_glue.cpp */
+/* Defined in standalone_main.cpp, called from performance_safety_glue.cpp */
 void apply_render_quality_preset(StandaloneApp *app, int quality_mode);
 
-/* Defined in performance_safety_glue.cpp, called from standalone_main.cu.
+/* Defined in performance_safety_glue.cpp, called from standalone_main.cpp.
    ImVec4 is declared in imgui.h, included transitively wherever this
    header is included from a file that already includes imgui.h
-   (standalone_main.cu); performance_safety_glue.cpp includes it
+   (standalone_main.cpp); performance_safety_glue.cpp includes it
    directly. */
 void refresh_adaptive_quality_for_frame(StandaloneApp *app);
 void refresh_performance_governor(StandaloneApp *app);
@@ -383,7 +383,7 @@ int performance_allows_optional_action(
 ImVec4 voxelpilot_pressure_color(int status);
 void draw_performance_safety_block(StandaloneApp *app);
 
-/* Defined in standalone_main.cu, called from ui_ai_assist_panel.cpp.
+/* Defined in standalone_main.cpp, called from ui_ai_assist_panel.cpp.
    apply_ai_prompt_to_app, start_guided_review and
    undo_transfer_settings have no other caller today, but stayed
    here with their closely related siblings rather than being
@@ -407,11 +407,11 @@ void apply_ai_prompt_to_app(StandaloneApp *app);
 void start_guided_review(StandaloneApp *app);
 extern const char *k_tf_palette_labels[];
 
-/* Defined in ui_ai_assist_panel.cpp, called from standalone_main.cu */
+/* Defined in ui_ai_assist_panel.cpp, called from standalone_main.cpp */
 void draw_ai_assist_panel(StandaloneApp *app);
 void draw_metadata_panel(StandaloneApp *app);
 
-/* Defined in standalone_main.cu, called from ui_controls_panel.cpp.
+/* Defined in standalone_main.cpp, called from ui_controls_panel.cpp.
    refresh_upload_file_details, reset_workspace, and save_screenshot
    have no other caller today, but stayed here with their five
    closely related siblings rather than being split out separately -
@@ -433,11 +433,11 @@ extern const int k_resolution_preset_count;
 extern const char *k_render_quality_labels[];
 extern const char *k_volume_data_type_labels[];
 
-/* Defined in ui_controls_panel.cpp, called from standalone_main.cu */
+/* Defined in ui_controls_panel.cpp, called from standalone_main.cpp */
 void draw_controls_panel(StandaloneApp *app);
 void handle_keyboard_shortcuts(StandaloneApp *app);
 
-/* Defined in ui_ribbon_and_layout.cpp, called from standalone_main.cu
+/* Defined in ui_ribbon_and_layout.cpp, called from standalone_main.cpp
    and (for set_default_window_layout) from ui_ai_assist_panel.cpp and
    ui_controls_panel.cpp. */
 void draw_dockspace(StandaloneApp *app);
@@ -447,13 +447,13 @@ void set_default_window_layout(
     const char          *name);
 void draw_top_ribbon(StandaloneApp *app);
 
-/* Defined in standalone_main.cu, called from ui_demo_and_onboarding.cpp */
+/* Defined in standalone_main.cpp, called from ui_demo_and_onboarding.cpp */
 int select_guided_review_region(StandaloneApp *app, int direction);
 
-/* Defined in standalone_main.cu, called from gl_viewport_and_render.cpp */
+/* Defined in standalone_main.cpp, called from gl_viewport_and_render.cpp */
 void sync_orbit_from_camera(StandaloneApp *app);
 
-/* Defined in ui_demo_and_onboarding.cpp, called from standalone_main.cu */
+/* Defined in ui_demo_and_onboarding.cpp, called from standalone_main.cpp */
 void draw_demo_banner(StandaloneApp *app);
 void draw_walkthrough_overlay(StandaloneApp *app);
 void update_startup_splash(StandaloneApp *app);
@@ -463,7 +463,7 @@ void draw_status_bar(StandaloneApp *app);
 void draw_guided_review_overlay(StandaloneApp *app);
 void draw_cinematic_semantic_callouts(StandaloneApp *app);
 
-/* Defined in gl_viewport_and_render.cpp, called from standalone_main.cu
+/* Defined in gl_viewport_and_render.cpp, called from standalone_main.cpp
    (and, for render_frame_gpu_snapshot, from export_bundles.cpp). */
 int setup_gl_resources(StandaloneApp *app);
 void process_mouse_camera_controls(StandaloneApp *app);

@@ -136,7 +136,7 @@ Generate an opt-in Cinematic Lite snapshot without changing the default renderer
 
 ## Repo Layout
 
-- `standalone_main.cu` - main application entry point and UI
+- `standalone_main.cpp` - main application entry point and UI
 - `renderer/` - CUDA renderer implementation
 - `common/` - shared structs, math helpers, and renderer API
 - `imgui/` and `glfw/` - UI dependencies

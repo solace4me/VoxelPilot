@@ -1,7 +1,7 @@
 # Future Work: Unity-style Workstation Layout
 
 Date: 2026-10-23
-Status: Deferred until Tier 3c (standalone_main.cu module split) is complete
+Status: Deferred until Tier 3c (standalone_main.cpp module split) is complete
 Branch: `codex/v2-cinematic-ai`
 
 ## What this is
@@ -18,7 +18,7 @@ layout).
 
 Do this after Tier 3c finishes, not during it or before it. Reasoning: this
 redesign will touch nearly every panel-drawing function in the app, and most
-of them still live together in `standalone_main.cu` today. Doing a large UI
+of them still live together in `standalone_main.cpp` today. Doing a large UI
 rewrite against that file at the same time as the in-progress, incremental,
 build-verified extraction (see
 `docs/superpowers/plans/2026-09-30-standalone-main-split.md`) risks the two

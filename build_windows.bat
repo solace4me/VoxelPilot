@@ -62,7 +62,8 @@ if errorlevel 1 exit /b 1
 call :run_nvcc "renderer\volume_textures.cu" "%BUILD_DIR%\volume_textures.obj"
 if errorlevel 1 exit /b 1
 
-call :run_nvcc "standalone_main.cu" "%BUILD_DIR%\standalone_main.obj"
+echo [build] standalone_main.cpp
+cl /nologo /EHsc /std:c++17 /O2 /D_CRT_SECURE_NO_WARNINGS /DGLEW_STATIC /DGLFW_HAS_PER_MONITOR_DPI=0 /DGLFW_HAS_GAMEPAD_API=0 /DGLFW_HAS_GETERROR=0 /Icommon /Iimgui /Iimgui\backends /Ithird_party\tinyfiledialogs /Ithird_party\glew-2.2.0\include /Iglfw\include /I"%CUDA_HOME%\include" /Fo"%BUILD_DIR%\standalone_main.obj" /c "standalone_main.cpp"
 if errorlevel 1 exit /b 1
 
 call :run_nvcc_xcu "imgui\imgui.cpp" "%BUILD_DIR%\imgui.obj"
