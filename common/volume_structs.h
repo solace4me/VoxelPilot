@@ -12,7 +12,16 @@ extern "C" {
    CUDA Compatibility
    ============================================================ */
 
-#ifdef __CUDACC__
+/* VOXELPILOT_USE_REAL_CUDA_HEADERS: for a cl.exe-compiled (non-nvcc)
+   translation unit that still needs real CUDA Runtime API
+   declarations (standalone_main.cpp: cudaGetDeviceCount,
+   cudaDeviceReset, etc. via its own <cuda_runtime.h> include). Lets
+   that one file pull in the real vector_types.h/driver_types.h
+   definitions instead of this header's shim types below, avoiding a
+   redefinition conflict between the two. Every other cl.exe-compiled
+   module leaves this undefined and gets the lightweight shim types,
+   as before. */
+#if defined(__CUDACC__) || defined(VOXELPILOT_USE_REAL_CUDA_HEADERS)
 #include <cuda_runtime.h>
 #else
 /* If not compiling with NVCC, define minimal CUDA-like types */
