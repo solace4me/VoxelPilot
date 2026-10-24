@@ -110,12 +110,16 @@ echo [build] ui_ai_assist_panel.cpp
 cl /nologo /EHsc /std:c++17 /O2 /D_CRT_SECURE_NO_WARNINGS /DGLEW_STATIC /DGLFW_HAS_PER_MONITOR_DPI=0 /DGLFW_HAS_GAMEPAD_API=0 /DGLFW_HAS_GETERROR=0 /Icommon /Iimgui /Iimgui\backends /Ithird_party\tinyfiledialogs /Ithird_party\glew-2.2.0\include /Iglfw\include /Fo"%BUILD_DIR%\ui_ai_assist_panel.obj" /c "ui_ai_assist_panel.cpp"
 if errorlevel 1 exit /b 1
 
+echo [build] ui_controls_panel.cpp
+cl /nologo /EHsc /std:c++17 /O2 /D_CRT_SECURE_NO_WARNINGS /DGLEW_STATIC /DGLFW_HAS_PER_MONITOR_DPI=0 /DGLFW_HAS_GAMEPAD_API=0 /DGLFW_HAS_GETERROR=0 /Icommon /Iimgui /Iimgui\backends /Ithird_party\tinyfiledialogs /Ithird_party\glew-2.2.0\include /Iglfw\include /Fo"%BUILD_DIR%\ui_controls_panel.obj" /c "ui_controls_panel.cpp"
+if errorlevel 1 exit /b 1
+
 echo [build] third_party\glew-2.2.0\src\glew.c
 cl /nologo /TP /EHsc /std:c++17 /O2 /D_CRT_SECURE_NO_WARNINGS /DGLEW_STATIC /DGLFW_HAS_PER_MONITOR_DPI=0 /DGLFW_HAS_GAMEPAD_API=0 /DGLFW_HAS_GETERROR=0 /Icommon /Iimgui /Iimgui\backends /Ithird_party\tinyfiledialogs /Ithird_party\glew-2.2.0\include /Iglfw\include /Fo"%BUILD_DIR%\glew.obj" /c "third_party\glew-2.2.0\src\glew.c"
 if errorlevel 1 exit /b 1
 
 echo [link] %STANDALONE_BIN%
-"%CUDA_HOME%\bin\nvcc.exe" -rdc=true -cudart hybrid -arch=%CUDA_ARCH% "%BUILD_DIR%\renderer.obj" "%BUILD_DIR%\raymarch_kernel.obj" "%BUILD_DIR%\volume_textures.obj" "%BUILD_DIR%\standalone_main.obj" "%BUILD_DIR%\glew.obj" "%BUILD_DIR%\imgui.obj" "%BUILD_DIR%\imgui_draw.obj" "%BUILD_DIR%\imgui_tables.obj" "%BUILD_DIR%\imgui_widgets.obj" "%BUILD_DIR%\imgui_impl_glfw.obj" "%BUILD_DIR%\imgui_impl_opengl3.obj" "%BUILD_DIR%\tinyfiledialogs.obj" "%BUILD_DIR%\volume_import.obj" "%BUILD_DIR%\export_bundles.obj" "%BUILD_DIR%\annotation_and_semantic_memory.obj" "%BUILD_DIR%\workspace_presets.obj" "%BUILD_DIR%\performance_safety_glue.obj" "%BUILD_DIR%\ui_ai_assist_panel.obj" -o "%STANDALONE_BIN%" -Xcompiler="/MD" -Xlinker /NODEFAULTLIB:LIBCMT -Xlinker /DEFAULTLIB:MSVCRT opengl32.lib gdi32.lib user32.lib shell32.lib comdlg32.lib ole32.lib "%GLFW_LIB%"
+"%CUDA_HOME%\bin\nvcc.exe" -rdc=true -cudart hybrid -arch=%CUDA_ARCH% "%BUILD_DIR%\renderer.obj" "%BUILD_DIR%\raymarch_kernel.obj" "%BUILD_DIR%\volume_textures.obj" "%BUILD_DIR%\standalone_main.obj" "%BUILD_DIR%\glew.obj" "%BUILD_DIR%\imgui.obj" "%BUILD_DIR%\imgui_draw.obj" "%BUILD_DIR%\imgui_tables.obj" "%BUILD_DIR%\imgui_widgets.obj" "%BUILD_DIR%\imgui_impl_glfw.obj" "%BUILD_DIR%\imgui_impl_opengl3.obj" "%BUILD_DIR%\tinyfiledialogs.obj" "%BUILD_DIR%\volume_import.obj" "%BUILD_DIR%\export_bundles.obj" "%BUILD_DIR%\annotation_and_semantic_memory.obj" "%BUILD_DIR%\workspace_presets.obj" "%BUILD_DIR%\performance_safety_glue.obj" "%BUILD_DIR%\ui_ai_assist_panel.obj" "%BUILD_DIR%\ui_controls_panel.obj" -o "%STANDALONE_BIN%" -Xcompiler="/MD" -Xlinker /NODEFAULTLIB:LIBCMT -Xlinker /DEFAULTLIB:MSVCRT opengl32.lib gdi32.lib user32.lib shell32.lib comdlg32.lib ole32.lib "%GLFW_LIB%"
 if errorlevel 1 exit /b 1
 
 echo.

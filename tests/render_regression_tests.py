@@ -8,6 +8,7 @@ VERIFY_SCRIPT = ROOT / "tools" / "verify_render_snapshot.py"
 STANDALONE_MAIN = ROOT / "standalone_main.cu"
 WORKSPACE_PRESETS = ROOT / "workspace_presets.cpp"
 AI_ASSIST_PANEL = ROOT / "ui_ai_assist_panel.cpp"
+CONTROLS_PANEL = ROOT / "ui_controls_panel.cpp"
 DEFAULT_STATE_HEADER = ROOT / "common" / "default_state.h"
 
 
@@ -81,7 +82,8 @@ class RenderRegressionTests(unittest.TestCase):
     def test_auto_enhance_view_has_single_home_in_ai_assist(self):
         source = STANDALONE_MAIN.read_text(encoding="utf-8")
         ai_assist_source = AI_ASSIST_PANEL.read_text(encoding="utf-8")
-        controls_panel = extract_static_function(source, "draw_controls_panel")
+        controls_source = CONTROLS_PANEL.read_text(encoding="utf-8")
+        controls_panel = extract_nonstatic_function(controls_source, "draw_controls_panel")
         ai_assist_panel = extract_nonstatic_function(ai_assist_source, "draw_ai_assist_panel")
 
         # draw_ai_assist_panel moved to ui_ai_assist_panel.cpp (Tier 3c module
@@ -109,8 +111,8 @@ class RenderRegressionTests(unittest.TestCase):
         self.assertIn('DockBuilderDockWindow("Insights", dock_right_id)', dock_layout)
 
     def test_left_controls_panel_retains_import_and_export_actions(self):
-        source = STANDALONE_MAIN.read_text(encoding="utf-8")
-        controls_panel = extract_static_function(source, "draw_controls_panel")
+        controls_source = CONTROLS_PANEL.read_text(encoding="utf-8")
+        controls_panel = extract_nonstatic_function(controls_source, "draw_controls_panel")
 
         self.assertIn('ImGui::Text("Volume Import")', controls_panel)
         self.assertIn('ImGui::Button("Browse...")', controls_panel)
@@ -120,7 +122,7 @@ class RenderRegressionTests(unittest.TestCase):
     def test_workspace_defaults_are_shared_between_startup_and_reset(self):
         source = STANDALONE_MAIN.read_text(encoding="utf-8")
         header_text = DEFAULT_STATE_HEADER.read_text(encoding="utf-8")
-        reset_fn = extract_static_function(source, "reset_workspace")
+        reset_fn = extract_nonstatic_function(source, "reset_workspace")
         main_fn = source[source.index("int main("):]
 
         self.assertIn("VoxelPilotDefaultState", header_text)
@@ -132,7 +134,8 @@ class RenderRegressionTests(unittest.TestCase):
         self.assertNotIn("app.annotation_tolerance = 0.035f", main_fn)
     def test_sidebar_removes_cinematic_duplication_and_about_panel(self):
         source = STANDALONE_MAIN.read_text(encoding="utf-8")
-        controls_panel = extract_static_function(source, "draw_controls_panel")
+        controls_source = CONTROLS_PANEL.read_text(encoding="utf-8")
+        controls_panel = extract_nonstatic_function(controls_source, "draw_controls_panel")
         ribbon = extract_static_function(source, "draw_top_ribbon")
         dock_layout = extract_static_function(source, "ensure_default_dock_layout")
         gui = extract_static_function(source, "draw_gui")
@@ -182,13 +185,17 @@ class RenderRegressionTests(unittest.TestCase):
         self.assertIn('strcmp(key, "metadata_visible")', load_fn)
     def test_shortcuts_and_layout_reset_are_discoverable(self):
         source = STANDALONE_MAIN.read_text(encoding="utf-8")
+        controls_source = CONTROLS_PANEL.read_text(encoding="utf-8")
         ribbon = extract_static_function(source, "draw_top_ribbon")
 
-        self.assertIn("static void handle_keyboard_shortcuts", source)
+        # handle_keyboard_shortcuts moved to ui_controls_panel.cpp (Tier 3c
+        # module split) and is no longer static; standalone_main.cu still
+        # calls it, the shortcut key checks themselves moved with it.
+        self.assertIn("void handle_keyboard_shortcuts(StandaloneApp *app)", controls_source)
         self.assertIn("handle_keyboard_shortcuts(&app);", source)
-        self.assertIn("ImGuiKey_O", source)
-        self.assertIn("ImGuiKey_S", source)
-        self.assertIn("ImGuiKey_T", source)
+        self.assertIn("ImGuiKey_O", controls_source)
+        self.assertIn("ImGuiKey_S", controls_source)
+        self.assertIn("ImGuiKey_T", controls_source)
         self.assertIn('ImGui::Button("Reset Layout")', ribbon)
 if __name__ == "__main__":
     unittest.main()

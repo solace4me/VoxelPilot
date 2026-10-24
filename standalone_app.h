@@ -415,4 +415,30 @@ extern const char *k_tf_palette_labels[];
 void draw_ai_assist_panel(StandaloneApp *app);
 void draw_metadata_panel(StandaloneApp *app);
 
+/* Defined in standalone_main.cu, called from ui_controls_panel.cpp.
+   refresh_upload_file_details, reset_workspace, and save_screenshot
+   have no other caller today, but stayed here with their five
+   closely related siblings rather than being split out separately -
+   see ui_controls_panel.cpp's header comment. */
+void update_histogram(StandaloneApp *app);
+void set_camera_preset(
+    StandaloneApp *app,
+    float pos_x, float pos_y, float pos_z,
+    float dir_x, float dir_y, float dir_z,
+    float up_x,  float up_y,  float up_z);
+void apply_orbit_camera(StandaloneApp *app);
+void reset_workspace(StandaloneApp *app);
+int clamp_import_dimension(int value);
+void refresh_upload_file_details(StandaloneApp *app);
+void save_screenshot(StandaloneApp *app);
+int apply_auto_enhance_on_load_if_safe(StandaloneApp *app, const char *reason);
+extern const ResolutionPreset k_resolution_presets[];
+extern const int k_resolution_preset_count;
+extern const char *k_render_quality_labels[];
+extern const char *k_volume_data_type_labels[];
+
+/* Defined in ui_controls_panel.cpp, called from standalone_main.cu */
+void draw_controls_panel(StandaloneApp *app);
+void handle_keyboard_shortcuts(StandaloneApp *app);
+
 #endif /* VOXELPILOT_STANDALONE_APP_H */
