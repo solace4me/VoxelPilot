@@ -448,4 +448,17 @@ void set_default_window_layout(
     const char          *name);
 void draw_top_ribbon(StandaloneApp *app);
 
+/* Defined in standalone_main.cu, called from ui_demo_and_onboarding.cpp */
+int select_guided_review_region(StandaloneApp *app, int direction);
+
+/* Defined in ui_demo_and_onboarding.cpp, called from standalone_main.cu */
+void draw_demo_banner(StandaloneApp *app);
+void draw_walkthrough_overlay(StandaloneApp *app);
+void update_startup_splash(StandaloneApp *app);
+void update_auto_demo_sequence(StandaloneApp *app, double now);
+void draw_startup_splash(StandaloneApp *app);
+void draw_status_bar(StandaloneApp *app);
+void draw_guided_review_overlay(StandaloneApp *app);
+void draw_cinematic_semantic_callouts(StandaloneApp *app);
+
 #endif /* VOXELPILOT_STANDALONE_APP_H */
