@@ -409,6 +409,7 @@ void run_adaptive_semantic_discovery(StandaloneApp *app);
 int apply_auto_enhance_transfer(StandaloneApp *app, const char *reason);
 void apply_ai_prompt_to_app(StandaloneApp *app);
 void start_guided_review(StandaloneApp *app);
+extern const char *k_tf_palette_labels[];
 
 /* Defined in ui_ai_assist_panel.cpp, called from standalone_main.cu */
 void draw_ai_assist_panel(StandaloneApp *app);

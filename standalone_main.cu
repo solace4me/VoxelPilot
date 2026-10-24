@@ -61,7 +61,7 @@ static const ResolutionPreset k_resolution_presets[] = {
 static const int k_resolution_preset_count =
     (int)(sizeof(k_resolution_presets) / sizeof(k_resolution_presets[0]));
 
-static const char *k_tf_palette_labels[] = {
+const char *k_tf_palette_labels[] = {
     "Grayscale",
     "Bone",
     "Heat",
