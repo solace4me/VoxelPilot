@@ -15,6 +15,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "tinyfiledialogs.h"
+
 #include "standalone_app.h"
 
 void reset_semantic_discovery(StandaloneApp *app)
@@ -147,7 +149,7 @@ void point_from_slice_uv(
     }
 }
 
-static AnnotationRegion *find_annotation_by_label(
+AnnotationRegion *find_annotation_by_label(
     StandaloneApp *app,
     unsigned char  label_id)
 {
@@ -163,7 +165,7 @@ static AnnotationRegion *find_annotation_by_label(
     return NULL;
 }
 
-static VoxelPilotSemanticRegion *find_semantic_region_by_label(
+VoxelPilotSemanticRegion *find_semantic_region_by_label(
     StandaloneApp *app,
     unsigned char  label_id)
 {
@@ -598,5 +600,3 @@ static void export_annotation_mask(StandaloneApp *app)
     snprintf(app->annotation_status, sizeof(app->annotation_status),
              "Exported annotation mask: %s", selected);
 }
-
-
