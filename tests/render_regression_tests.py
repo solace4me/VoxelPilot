@@ -7,6 +7,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 VERIFY_SCRIPT = ROOT / "tools" / "verify_render_snapshot.py"
 STANDALONE_MAIN = ROOT / "standalone_main.cu"
 WORKSPACE_PRESETS = ROOT / "workspace_presets.cpp"
+AI_ASSIST_PANEL = ROOT / "ui_ai_assist_panel.cpp"
 DEFAULT_STATE_HEADER = ROOT / "common" / "default_state.h"
 
 
@@ -19,6 +20,18 @@ def extract_static_function(source, name):
     if next_static == -1:
         return source[start:]
     return source[start:next_static]
+
+def extract_nonstatic_function(source, name):
+    marker = f"void {name}("
+    start = source.index(marker)
+    boundaries = []
+    for prefix in ("\nvoid ", "\nstatic ", "\nint "):
+        idx = source.find(prefix, start + len(marker))
+        if idx != -1:
+            boundaries.append(idx)
+    if not boundaries:
+        return source[start:]
+    return source[start:min(boundaries)]
 
 def load_verifier():
     assert VERIFY_SCRIPT.exists(), f"missing verifier script: {VERIFY_SCRIPT}"
@@ -67,10 +80,18 @@ class RenderRegressionTests(unittest.TestCase):
 
     def test_auto_enhance_view_has_single_home_in_ai_assist(self):
         source = STANDALONE_MAIN.read_text(encoding="utf-8")
+        ai_assist_source = AI_ASSIST_PANEL.read_text(encoding="utf-8")
         controls_panel = extract_static_function(source, "draw_controls_panel")
-        ai_assist_panel = extract_static_function(source, "draw_ai_assist_panel")
+        ai_assist_panel = extract_nonstatic_function(ai_assist_source, "draw_ai_assist_panel")
 
-        self.assertEqual(source.count('ImGui::Button("Auto Enhance View")'), 1)
+        # draw_ai_assist_panel moved to ui_ai_assist_panel.cpp (Tier 3c module
+        # split), so the button literal no longer appears in standalone_main.cu
+        # at all; the "single home" invariant is checked across both files.
+        total_count = (
+            source.count('ImGui::Button("Auto Enhance View")')
+            + ai_assist_source.count('ImGui::Button("Auto Enhance View")')
+        )
+        self.assertEqual(total_count, 1)
         self.assertNotIn('ImGui::Button("Auto Enhance View")', controls_panel)
         self.assertIn('ImGui::Button("Auto Enhance View")', ai_assist_panel)
 
@@ -124,13 +145,13 @@ class RenderRegressionTests(unittest.TestCase):
         self.assertNotIn("about_visible", source)
 
     def test_ai_assist_uses_progressive_disclosure_and_compact_copy(self):
-        source = STANDALONE_MAIN.read_text(encoding="utf-8")
-        ai_assist_panel = extract_static_function(source, "draw_ai_assist_panel")
+        ai_assist_source = AI_ASSIST_PANEL.read_text(encoding="utf-8")
+        ai_assist_panel = extract_nonstatic_function(ai_assist_source, "draw_ai_assist_panel")
 
         self.assertIn('ImGui::CollapsingHeader("More AI Tools"', ai_assist_panel)
         self.assertIn('ImGui::Button("Restore Previous View")', ai_assist_panel)
         self.assertIn("Preview - not applied", ai_assist_panel)
-        self.assertIn("draw_help_marker", source)
+        self.assertIn("draw_help_marker", ai_assist_panel)
         self.assertNotIn("Collapsed review tools", ai_assist_panel)
         self.assertNotIn("AI Assist uses histogram state", ai_assist_panel)
         self.assertNotIn('ImGui::CollapsingHeader("Semantic Review", ImGuiTreeNodeFlags_DefaultOpen)', ai_assist_panel)

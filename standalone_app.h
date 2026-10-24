@@ -384,4 +384,34 @@ int performance_allows_optional_action(
 ImVec4 voxelpilot_pressure_color(int status);
 void draw_performance_safety_block(StandaloneApp *app);
 
+/* Defined in standalone_main.cu, called from ui_ai_assist_panel.cpp.
+   apply_ai_prompt_to_app, start_guided_review and
+   undo_transfer_settings have no other caller today, but stayed
+   here with their closely related siblings rather than being
+   special-cased into ui_ai_assist_panel.cpp - see that file's
+   header comment. */
+const char *dataset_health_level_label(int level);
+void update_dataset_health(StandaloneApp *app);
+int clipping_is_active(const StandaloneApp *app);
+void set_default_window_layout(
+    const StandaloneApp *app,
+    const char          *name);
+void set_ui_toast(StandaloneApp *app, const char *message);
+void apply_transfer_settings_with_undo(
+    StandaloneApp *app,
+    float          center,
+    float          width,
+    float          opacity_scale,
+    const char    *label);
+int undo_transfer_settings(StandaloneApp *app);
+void draw_help_marker(const char *description);
+void run_adaptive_semantic_discovery(StandaloneApp *app);
+int apply_auto_enhance_transfer(StandaloneApp *app, const char *reason);
+void apply_ai_prompt_to_app(StandaloneApp *app);
+void start_guided_review(StandaloneApp *app);
+
+/* Defined in ui_ai_assist_panel.cpp, called from standalone_main.cu */
+void draw_ai_assist_panel(StandaloneApp *app);
+void draw_metadata_panel(StandaloneApp *app);
+
 #endif /* VOXELPILOT_STANDALONE_APP_H */
