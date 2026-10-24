@@ -9,6 +9,7 @@ STANDALONE_MAIN = ROOT / "standalone_main.cu"
 WORKSPACE_PRESETS = ROOT / "workspace_presets.cpp"
 AI_ASSIST_PANEL = ROOT / "ui_ai_assist_panel.cpp"
 CONTROLS_PANEL = ROOT / "ui_controls_panel.cpp"
+RIBBON_AND_LAYOUT = ROOT / "ui_ribbon_and_layout.cpp"
 DEFAULT_STATE_HEADER = ROOT / "common" / "default_state.h"
 
 
@@ -99,10 +100,11 @@ class RenderRegressionTests(unittest.TestCase):
 
     def test_workspace_uses_collapsible_top_ribbon_left_controls_and_right_panels(self):
         source = STANDALONE_MAIN.read_text(encoding="utf-8")
+        ribbon_source = RIBBON_AND_LAYOUT.read_text(encoding="utf-8")
         gui = extract_static_function(source, "draw_gui")
-        dock_layout = extract_static_function(source, "ensure_default_dock_layout")
+        dock_layout = extract_nonstatic_function(ribbon_source, "ensure_default_dock_layout")
 
-        self.assertIn("static void draw_top_ribbon", source)
+        self.assertIn("void draw_top_ribbon(StandaloneApp *app)", ribbon_source)
         self.assertLess(gui.index("draw_top_ribbon(app);"), gui.index("draw_controls_panel(app);"))
         self.assertIn("ImGuiDir_Left", dock_layout)
         self.assertIn("ImGuiDir_Right", dock_layout)
@@ -135,9 +137,10 @@ class RenderRegressionTests(unittest.TestCase):
     def test_sidebar_removes_cinematic_duplication_and_about_panel(self):
         source = STANDALONE_MAIN.read_text(encoding="utf-8")
         controls_source = CONTROLS_PANEL.read_text(encoding="utf-8")
+        ribbon_source = RIBBON_AND_LAYOUT.read_text(encoding="utf-8")
         controls_panel = extract_nonstatic_function(controls_source, "draw_controls_panel")
-        ribbon = extract_static_function(source, "draw_top_ribbon")
-        dock_layout = extract_static_function(source, "ensure_default_dock_layout")
+        ribbon = extract_nonstatic_function(ribbon_source, "draw_top_ribbon")
+        dock_layout = extract_nonstatic_function(ribbon_source, "ensure_default_dock_layout")
         gui = extract_static_function(source, "draw_gui")
 
         self.assertIn('ImGui::Checkbox("Cinematic"', ribbon)
@@ -161,8 +164,8 @@ class RenderRegressionTests(unittest.TestCase):
 
 
     def test_right_panel_visibility_is_configurable_and_saved_with_presets(self):
-        main_source = STANDALONE_MAIN.read_text(encoding="utf-8")
-        ribbon = extract_static_function(main_source, "draw_top_ribbon")
+        ribbon_source = RIBBON_AND_LAYOUT.read_text(encoding="utf-8")
+        ribbon = extract_nonstatic_function(ribbon_source, "draw_top_ribbon")
 
         # save_workspace_preset / load_workspace_preset live in
         # workspace_presets.cpp (Tier 3c module split), not
@@ -186,7 +189,8 @@ class RenderRegressionTests(unittest.TestCase):
     def test_shortcuts_and_layout_reset_are_discoverable(self):
         source = STANDALONE_MAIN.read_text(encoding="utf-8")
         controls_source = CONTROLS_PANEL.read_text(encoding="utf-8")
-        ribbon = extract_static_function(source, "draw_top_ribbon")
+        ribbon_source = RIBBON_AND_LAYOUT.read_text(encoding="utf-8")
+        ribbon = extract_nonstatic_function(ribbon_source, "draw_top_ribbon")
 
         # handle_keyboard_shortcuts moved to ui_controls_panel.cpp (Tier 3c
         # module split) and is no longer static; standalone_main.cu still

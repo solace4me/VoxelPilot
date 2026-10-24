@@ -393,9 +393,6 @@ void draw_performance_safety_block(StandaloneApp *app);
 const char *dataset_health_level_label(int level);
 void update_dataset_health(StandaloneApp *app);
 int clipping_is_active(const StandaloneApp *app);
-void set_default_window_layout(
-    const StandaloneApp *app,
-    const char          *name);
 void set_ui_toast(StandaloneApp *app, const char *message);
 void apply_transfer_settings_with_undo(
     StandaloneApp *app,
@@ -440,5 +437,15 @@ extern const char *k_volume_data_type_labels[];
 /* Defined in ui_controls_panel.cpp, called from standalone_main.cu */
 void draw_controls_panel(StandaloneApp *app);
 void handle_keyboard_shortcuts(StandaloneApp *app);
+
+/* Defined in ui_ribbon_and_layout.cpp, called from standalone_main.cu
+   and (for set_default_window_layout) from ui_ai_assist_panel.cpp and
+   ui_controls_panel.cpp. */
+void draw_dockspace(StandaloneApp *app);
+void ensure_default_dock_layout(StandaloneApp *app);
+void set_default_window_layout(
+    const StandaloneApp *app,
+    const char          *name);
+void draw_top_ribbon(StandaloneApp *app);
 
 #endif /* VOXELPILOT_STANDALONE_APP_H */
