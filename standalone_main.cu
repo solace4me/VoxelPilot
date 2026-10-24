@@ -139,7 +139,6 @@ static void apply_demo_theme(void)
     colors[ImGuiCol_TextDisabled] = ImVec4(0.58f, 0.66f, 0.72f, 1.0f);
 }
 
-static void sync_orbit_from_camera(StandaloneApp *app);
 
 static int detect_cuda_runtime(char *message, size_t message_size)
 {
@@ -335,7 +334,7 @@ void apply_orbit_camera(StandaloneApp *app)
     app->cam_up[2] = up.z;
 }
 
-static void sync_orbit_from_camera(StandaloneApp *app)
+void sync_orbit_from_camera(StandaloneApp *app)
 {
     float dx = app->cam_pos[0] - app->orbit_target[0];
     float dy = app->cam_pos[1] - app->orbit_target[1];

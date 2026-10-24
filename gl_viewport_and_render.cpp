@@ -30,6 +30,7 @@
 #include "imgui.h"
 
 #include "common/renderer_api.h"
+#include "common/math_utils.h"
 #include "common/render_command_builder.h"
 #include "common/ui_state_helpers.h"
 #include "common/ai_features.h"

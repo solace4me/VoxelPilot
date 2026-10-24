@@ -450,6 +450,9 @@ void draw_top_ribbon(StandaloneApp *app);
 /* Defined in standalone_main.cu, called from ui_demo_and_onboarding.cpp */
 int select_guided_review_region(StandaloneApp *app, int direction);
 
+/* Defined in standalone_main.cu, called from gl_viewport_and_render.cpp */
+void sync_orbit_from_camera(StandaloneApp *app);
+
 /* Defined in ui_demo_and_onboarding.cpp, called from standalone_main.cu */
 void draw_demo_banner(StandaloneApp *app);
 void draw_walkthrough_overlay(StandaloneApp *app);
