@@ -79,7 +79,6 @@ static const char *k_ribbon_tab_labels[] = {
     "View"
 };
 
-static void apply_render_quality_preset(StandaloneApp *app, int quality_mode);
 static int apply_auto_enhance_transfer(StandaloneApp *app, const char *reason);
 static int apply_auto_enhance_on_load_if_safe(StandaloneApp *app, const char *reason);
 
@@ -180,15 +179,7 @@ static void start_guided_review(StandaloneApp *app);
 static void draw_guided_review_overlay(StandaloneApp *app);
 static void update_render_performance_average(StandaloneApp *app);
 static void reset_default_layout(StandaloneApp *app);
-static void refresh_adaptive_quality_for_frame(StandaloneApp *app);
-static void refresh_performance_governor(StandaloneApp *app);
-static int performance_allows_optional_action(
-    StandaloneApp *app,
-    const char    *action_label,
-    int            requires_asd,
-    int            requires_mask_export);
 static void voxelpilot_same_line_if_fits(const char *next_label);
-static ImVec4 voxelpilot_pressure_color(int status);
 
 static int detect_cuda_runtime(char *message, size_t message_size)
 {
@@ -544,7 +535,7 @@ void clamp_cinematic_settings(StandaloneApp *app)
     app->cinematic_contrast = cinematic.contrast;
 }
 
-static void apply_render_quality_preset(StandaloneApp *app, int quality_mode)
+void apply_render_quality_preset(StandaloneApp *app, int quality_mode)
 {
     if (!app) {
         return;
@@ -2704,119 +2695,6 @@ static void update_render_performance_average(StandaloneApp *app)
     app->render_ms_average_ready = 1;
 }
 
-static void refresh_adaptive_quality_for_frame(StandaloneApp *app)
-{
-    VoxelPilotAdaptiveQualityInputs inputs;
-    VoxelPilotAdaptiveQualityResult result;
-
-    if (!app) return;
-
-    voxelpilot_adaptive_quality_inputs_defaults(&inputs);
-    inputs.enabled = app->adaptive_quality_enabled;
-    inputs.interaction_active = app->camera_motion_active;
-    inputs.cinematic_enabled = app->cinematic_enabled;
-    inputs.base_step_size = app->step_size;
-    inputs.base_skip_mult = app->skip_mult;
-    inputs.current_multiplier = app->adaptive_quality_multiplier > 0.0f
-                                    ? app->adaptive_quality_multiplier
-                                    : 1.0f;
-    inputs.render_ms_last = app->last_render_ms;
-    inputs.render_ms_average = app->render_ms_average_ready
-                                    ? app->render_ms_average
-                                    : app->last_render_ms;
-
-    if (!voxelpilot_update_adaptive_quality(&inputs, &result)) {
-        app->adaptive_quality_multiplier = 1.0f;
-        app->adaptive_quality_active = 0;
-        app->adaptive_step_size = app->step_size;
-        app->adaptive_skip_mult = app->skip_mult;
-        snprintf(app->adaptive_quality_status,
-                 sizeof(app->adaptive_quality_status),
-                 "Adaptive quality unavailable: using the selected GPU preset.");
-        return;
-    }
-
-    app->adaptive_quality_multiplier = result.multiplier;
-    app->adaptive_quality_active = result.active;
-    app->adaptive_step_size = result.step_size;
-    app->adaptive_skip_mult = result.skip_mult;
-    snprintf(app->adaptive_quality_status,
-             sizeof(app->adaptive_quality_status),
-             "%s",
-             result.status);
-}
-static size_t estimate_current_volume_bytes(const StandaloneApp *app)
-{
-    if (!app || app->renderer.W < 1 || app->renderer.H < 1 || app->renderer.D < 1) {
-        return 0;
-    }
-    return (size_t)app->renderer.W *
-           (size_t)app->renderer.H *
-           (size_t)app->renderer.D *
-           sizeof(float);
-}
-
-static size_t estimate_current_label_mask_bytes(const StandaloneApp *app)
-{
-    if (!app || !app->label_mask ||
-        app->label_mask_W < 1 || app->label_mask_H < 1 || app->label_mask_D < 1) {
-        return 0;
-    }
-    return (size_t)app->label_mask_W *
-           (size_t)app->label_mask_H *
-           (size_t)app->label_mask_D;
-}
-
-static void refresh_performance_governor(StandaloneApp *app)
-{
-    VoxelPilotPerformanceInputs inputs;
-    size_t free_bytes = 0;
-    size_t total_bytes = 0;
-    cudaError_t telemetry_status;
-
-    if (!app) return;
-
-    voxelpilot_performance_inputs_defaults(&inputs);
-    inputs.volume_width = app->renderer.W;
-    inputs.volume_height = app->renderer.H;
-    inputs.volume_depth = app->renderer.D;
-    inputs.render_width = app->render_w;
-    inputs.render_height = app->render_h;
-    inputs.estimated_volume_bytes = estimate_current_volume_bytes(app);
-    inputs.estimated_gradient_bytes = inputs.estimated_volume_bytes * 3u;
-    inputs.estimated_label_mask_bytes = estimate_current_label_mask_bytes(app);
-    inputs.estimated_render_target_bytes = voxelpilot_estimate_render_target_bytes(app->render_w, app->render_h);
-    inputs.render_ms_last = app->last_render_ms;
-    inputs.render_ms_average = app->render_ms_average_ready ? app->render_ms_average : app->last_render_ms;
-    inputs.render_quality_mode = app->render_quality_mode;
-    inputs.cinematic_enabled = app->cinematic_enabled;
-    inputs.label_overlay_enabled = app->label_overlay_visible;
-    inputs.label_mask_present = app->label_mask != NULL;
-    inputs.semantic_callouts_enabled = app->semantic_callouts_enabled;
-    inputs.semantic_callout_top_regions = app->semantic_callout_top_regions;
-    inputs.semantic_region_count = app->semantic_region_count;
-
-    telemetry_status = cudaMemGetInfo(&free_bytes, &total_bytes);
-    if (telemetry_status == cudaSuccess && free_bytes > 0 && total_bytes > 0) {
-        inputs.has_gpu_memory_telemetry = 1;
-        inputs.gpu_memory_available = free_bytes;
-        inputs.gpu_memory_total = total_bytes;
-    }
-
-    if (!voxelpilot_evaluate_performance(&inputs, &app->performance_result)) {
-        voxelpilot_performance_result_defaults(&app->performance_result);
-        snprintf(app->performance_status, sizeof(app->performance_status),
-                 "Performance Safety: telemetry unavailable.");
-        return;
-    }
-
-    snprintf(app->performance_status, sizeof(app->performance_status),
-             "Performance Safety: %s (%d/100). %s",
-             app->performance_result.status_label,
-             app->performance_result.pressure_score,
-             app->performance_result.recommendation);
-}
-
 void update_streaming_estimate(StandaloneApp *app)
 {
     VoxelPilotBrickCachePlan plan;
@@ -2875,34 +2753,6 @@ void update_streaming_estimate(StandaloneApp *app)
              app->streaming_evictable);
 }
 
-static int performance_allows_optional_action(
-    StandaloneApp *app,
-    const char    *action_label,
-    int            requires_asd,
-    int            requires_mask_export)
-{
-    if (!app) return 0;
-
-    refresh_performance_governor(app);
-
-    if (requires_asd && !app->performance_result.safe_to_run_asd) {
-        snprintf(app->ai_assist_status, sizeof(app->ai_assist_status),
-                 "%s paused by Performance Safety: %s",
-                 action_label,
-                 app->performance_result.recommendation);
-        return 0;
-    }
-
-    if (requires_mask_export && !app->performance_result.safe_to_export_mask) {
-        snprintf(app->ai_assist_status, sizeof(app->ai_assist_status),
-                 "%s paused by Performance Safety: full label-mask export is not recommended for this memory pressure. Use metadata/export snapshot first.",
-                 action_label);
-        return 0;
-    }
-
-    return 1;
-}
-
 static ImVec4 voxelpilot_score_color(float t)
 {
     if (t < 0.0f) t = 0.0f;
@@ -2917,14 +2767,6 @@ static ImVec4 voxelpilot_score_color(float t)
     }
 }
 
-static ImVec4 voxelpilot_pressure_color(int status)
-{
-    if (status == VOXELPILOT_GOVERNOR_CRITICAL) return ImVec4(0.90f, 0.30f, 0.30f, 1.0f);
-    if (status == VOXELPILOT_GOVERNOR_PRESSURE) return ImVec4(0.90f, 0.60f, 0.20f, 1.0f);
-    if (status == VOXELPILOT_GOVERNOR_WATCH)    return ImVec4(0.85f, 0.80f, 0.25f, 1.0f);
-    return ImVec4(0.35f, 0.85f, 0.55f, 1.0f);
-}
-
 static void voxelpilot_same_line_if_fits(const char *next_label)
 {
     ImGuiStyle *style = &ImGui::GetStyle();
@@ -2933,64 +2775,6 @@ static void voxelpilot_same_line_if_fits(const char *next_label)
     float avail = ImGui::GetContentRegionAvail().x;
     if (avail > next_width + style->ItemSpacing.x) {
         ImGui::SameLine();
-    }
-}
-
-static void draw_performance_safety_block(StandaloneApp *app)
-{
-    if (!app) return;
-
-    refresh_performance_governor(app);
-
-    ImGui::Separator();
-    ImGui::Text("Performance Safety");
-    ImGui::TextColored(voxelpilot_pressure_color(app->performance_result.status),
-                "Status: %s", app->performance_result.status_label);
-    {
-        char pressure_overlay[16];
-        snprintf(pressure_overlay, sizeof(pressure_overlay), "%d/100", app->performance_result.pressure_score);
-        ImGui::PushStyleColor(ImGuiCol_PlotHistogram, voxelpilot_pressure_color(app->performance_result.status));
-        ImGui::ProgressBar(app->performance_result.pressure_score / 100.0f, ImVec2(120.0f, 0.0f), pressure_overlay);
-        ImGui::PopStyleColor();
-    }
-    ImGui::TextWrapped("%s", app->performance_result.primary_reason);
-    ImGui::TextWrapped("Recommendation: %s", app->performance_result.recommendation);
-
-    if (app->performance_result.suggest_interactive_gpu &&
-        app->render_quality_mode != VOXELPILOT_RENDER_QUALITY_INTERACTIVE) {
-        if (ImGui::Button("Use Interactive GPU")) {
-            apply_render_quality_preset(app, VOXELPILOT_RENDER_QUALITY_INTERACTIVE);
-            snprintf(app->ai_assist_status, sizeof(app->ai_assist_status),
-                     "Performance Safety applied Interactive GPU. Return to Balanced GPU for screenshots when stable.");
-            refresh_performance_governor(app);
-        }
-        ImGui::SameLine();
-    }
-
-    if (app->render_quality_mode == VOXELPILOT_RENDER_QUALITY_INTERACTIVE) {
-        if (ImGui::Button("Return to Balanced GPU")) {
-            apply_render_quality_preset(app, VOXELPILOT_RENDER_QUALITY_BALANCED);
-            snprintf(app->ai_assist_status, sizeof(app->ai_assist_status),
-                     "Performance Safety returned rendering to Balanced GPU.");
-            refresh_performance_governor(app);
-        }
-    }
-
-    if (app->performance_result.suggest_reduce_callouts &&
-        app->semantic_callouts_enabled &&
-        app->semantic_callout_top_regions > 1) {
-        if (ImGui::Button("Limit Callouts to 1")) {
-            app->semantic_callout_top_regions = 1;
-            snprintf(app->ai_assist_status, sizeof(app->ai_assist_status),
-                     "Performance Safety limited cinematic callouts to one highlighted region.");
-            refresh_performance_governor(app);
-        }
-    }
-
-    if (ImGui::Button("Refresh Safety Check")) {
-        refresh_performance_governor(app);
-        snprintf(app->ai_assist_status, sizeof(app->ai_assist_status),
-                 "%s", app->performance_status);
     }
 }
 

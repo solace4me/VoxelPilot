@@ -11,6 +11,7 @@
 
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
+#include "imgui.h"
 
 #include "common/volume_structs.h"
 #include "common/math_utils.h"
@@ -364,5 +365,23 @@ int parse_cli_float(
 int parse_cli_data_type(const char *text, int *out_data_type);
 int save_workspace_preset(StandaloneApp *app, const char *path);
 int load_workspace_preset(StandaloneApp *app, const char *path);
+
+/* Defined in standalone_main.cu, called from performance_safety_glue.cpp */
+void apply_render_quality_preset(StandaloneApp *app, int quality_mode);
+
+/* Defined in performance_safety_glue.cpp, called from standalone_main.cu.
+   ImVec4 is declared in imgui.h, included transitively wherever this
+   header is included from a file that already includes imgui.h
+   (standalone_main.cu); performance_safety_glue.cpp includes it
+   directly. */
+void refresh_adaptive_quality_for_frame(StandaloneApp *app);
+void refresh_performance_governor(StandaloneApp *app);
+int performance_allows_optional_action(
+    StandaloneApp *app,
+    const char    *action_label,
+    int            requires_asd,
+    int            requires_mask_export);
+ImVec4 voxelpilot_pressure_color(int status);
+void draw_performance_safety_block(StandaloneApp *app);
 
 #endif /* VOXELPILOT_STANDALONE_APP_H */
