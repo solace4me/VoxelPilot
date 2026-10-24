@@ -42,6 +42,7 @@
 #define HISTOGRAM_BINS   128
 #define MAX_ANNOTATIONS  VOXELPILOT_DEFAULT_MAX_ANNOTATIONS
 #define ANNOTATION_NAME_MAX 64
+#define LOG_HISTORY_MAX  64
 
 enum {
     VOXELPILOT_RIBBON_HOME = 0,
@@ -172,6 +173,9 @@ typedef struct {
     float         transfer_undo_opacity_scale;
     int           transfer_undo_available;
     char          ui_toast[256];
+    char          log_history[LOG_HISTORY_MAX][256];
+    int           log_history_count;
+    int           log_history_next;
     char          ai_prompt[256];
     int           annotation_mode;
     char          annotation_name[ANNOTATION_NAME_MAX];
@@ -253,6 +257,7 @@ typedef struct {
     int           insights_visible;
     int           ai_visible;
     int           metadata_visible;
+    int           log_visible;
     int           ribbon_expanded;
     int           ribbon_active_tab;
     int           demo_mode_enabled;
