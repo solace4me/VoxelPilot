@@ -220,3 +220,47 @@ Start with step 4 (bottom dock content corrections) - it's the cheapest
 and most isolated of what's left, it fixes direct contradictions in
 already-shipped work before more gets built on top of it, and it touches
 only files steps 2-3 already proved build clean.
+
+## Infra fix: the vendored ImGui never actually had docking (found after step 5)
+
+After step 5 (commit 4a9b32a) built successfully, the user sent a screenshot
+of the actually-running app for the first time in this whole redesign
+project - every step before this had only been confirmed by build success
+(artifact timestamps), never an actual look at the rendered UI. The
+screenshot showed overlapping floating windows, not a docked layout, and
+the new Scene panel's content wasn't visible anywhere.
+
+Root cause: `imgui/` was vendored from Dear ImGui's plain/master branch, not
+the 'docking' branch. `IMGUI_HAS_DOCK` was never `#define`d anywhere in it -
+confirmed by direct inspection (zero DockBuilder*/DockNode/DockContext
+implementations in imgui.cpp/imgui_internal.h; the only mentions of those
+symbols anywhere in the repo were our own calls to them in
+ui_ribbon_and_layout.cpp). Every `#ifdef IMGUI_HAS_DOCK` block in
+`draw_dockspace()`/`ensure_default_dock_layout()` had therefore always
+compiled to nothing, for every panel, since whichever earlier step first
+wrote that dock-based layout (predates step 5 - the Controls/Insights/
+Status/Bottom-Panels splits already existed). `ImGuiConfigFlags_
+DockingEnable` being set did nothing on a non-docking build. This was not
+a step-5 regression; step 5 just happened to be the point where someone
+finally looked at a screenshot.
+
+Fix (commit cee6a89): replaced the 6 core vendored ImGui files (imgui.h,
+imgui.cpp, imgui_internal.h, imgui_widgets.cpp, imgui_tables.cpp,
+imgui_draw.cpp) with the real upstream 'docking' branch sources
+(IMGUI_VERSION 1.93.1; the vendored copy was 1.92.7 - no exact-matching
+historical docking-branch commit could be used safely, see the commit
+message for why) and added the now-required `#include "imgui_internal.h"`
+to ui_ribbon_and_layout.cpp (DockBuilder* lives there, not in imgui.h).
+Backend files (imgui_impl_glfw.*, imgui_impl_opengl3.*) and imconfig.h were
+confirmed byte-identical (CRLF-normalized) to the matching docking-branch
+commit, so left untouched. Every ImGui:: symbol, io-> field, and enum/flag
+constant this codebase actually uses was checked present in the new
+headers before committing.
+
+**Not yet build-verified.** This is the first change in the whole redesign
+project that touches the ImGui library itself (compiled as CUDA via nvcc's
+`-x cu`, same as before) rather than app code on top of it - real
+compile-time risk that static symbol-checking can't fully rule out.
+Everything downstream of this (step 5's actual correctness, and steps
+6-11) is blocked on the user rebuilding AND looking at the running app,
+not just reporting "done."
