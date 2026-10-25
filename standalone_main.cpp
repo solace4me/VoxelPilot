@@ -1456,8 +1456,12 @@ static void draw_gui(StandaloneApp *app)
     }
 
     draw_top_ribbon(app);
+    /* draw_dockspace now also calls ensure_default_dock_layout itself,
+       against the dockspace id it computes inside DockSpaceRoot's own
+       Begin/End - see both functions in ui_ribbon_and_layout.cpp. It used
+       to be called separately, from out here with no ImGui window active,
+       which is what let the dockspace id mismatch slip in. */
     draw_dockspace(app);
-    ensure_default_dock_layout(app);
     draw_demo_banner(app);
     draw_scene_panel(app);
     draw_controls_panel(app);

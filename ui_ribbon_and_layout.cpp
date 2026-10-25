@@ -78,15 +78,33 @@ void draw_dockspace(StandaloneApp *app)
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
     ImGui::Begin("DockSpaceRoot", NULL, window_flags);
     ImGui::PopStyleVar(3);
-    ImGui::DockSpace(ImGui::GetID("VoxelPilotDockspace"), ImVec2(0.0f, 0.0f), dockspace_flags);
+    {
+        /* ImGui::GetID() hashes relative to the CURRENT window's ID stack,
+           so this must be computed right here, inside DockSpaceRoot's
+           Begin/End, and that exact ImGuiID is what DockBuilder has to
+           build against. ensure_default_dock_layout used to call
+           ImGui::GetID("VoxelPilotDockspace") again on its own from
+           standalone_main.cpp's draw_gui, with no ImGui window active at
+           that call site - very likely hashing to a different id than
+           this one. That meant DockBuilderDockWindow() was pre-docking
+           Scene/Controls/Status/Insights/Bottom Panels into a dock-node
+           tree that this DockSpace() call never actually submitted, so
+           every one of those windows silently fell back to floating -
+           exactly the "windows sitting on each other" symptom reported
+           after the docking-branch ImGui swap (commit cee6a89) made this
+           code run for the first time. Fixed by building the layout
+           against this one shared, correctly-scoped id instead. */
+        ImGuiID dockspace_id = ImGui::GetID("VoxelPilotDockspace");
+        ensure_default_dock_layout(app, dockspace_id);
+        ImGui::DockSpace(dockspace_id, ImVec2(0.0f, 0.0f), dockspace_flags);
+    }
     ImGui::End();
 #endif
 }
 
-void ensure_default_dock_layout(StandaloneApp *app)
+void ensure_default_dock_layout(StandaloneApp *app, ImGuiID dockspace_id)
 {
 #ifdef IMGUI_HAS_DOCK
-    ImGuiID dockspace_id;
     ImGuiID dock_main_id;
     ImGuiID dock_scene_id;
     ImGuiID dock_left_id;
@@ -96,7 +114,11 @@ void ensure_default_dock_layout(StandaloneApp *app)
     float ribbon_height = voxelpilot_ribbon_height(app);
     ImVec2 dock_size = ImVec2(viewport->Size.x, fmaxf(120.0f, viewport->Size.y - ribbon_height));
 
-    dockspace_id = ImGui::GetID("VoxelPilotDockspace");
+    /* dockspace_id is passed in by draw_dockspace, computed inside
+       DockSpaceRoot's Begin/End (see the comment there) - it must NOT be
+       recomputed here via ImGui::GetID(), which would run with no ImGui
+       window active and could hash to a different id than the one
+       DockSpace() actually submits. */
 
     if (app->dock_layout_ready &&
         !voxelpilot_should_rebuild_dock_layout(
@@ -150,6 +172,7 @@ void ensure_default_dock_layout(StandaloneApp *app)
     app->dock_layout_ready = 1;
 #else
     (void)app;
+    (void)dockspace_id;
 #endif
 }
 void set_default_window_layout(

@@ -504,7 +504,11 @@ int browse_volume_file(StandaloneApp *app);
    and (for set_default_window_layout) from ui_ai_assist_panel.cpp and
    ui_controls_panel.cpp. */
 void draw_dockspace(StandaloneApp *app);
-void ensure_default_dock_layout(StandaloneApp *app);
+/* Takes the dockspace's ImGuiID (computed inside DockSpaceRoot's
+   Begin/End by draw_dockspace, which also calls this) rather than
+   recomputing it internally via ImGui::GetID() with no window active -
+   see the comment at the call site in ui_ribbon_and_layout.cpp. */
+void ensure_default_dock_layout(StandaloneApp *app, ImGuiID dockspace_id);
 void set_default_window_layout(
     const StandaloneApp *app,
     const char          *name);
