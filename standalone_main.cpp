@@ -135,7 +135,12 @@ static void apply_demo_theme(void)
     colors[ImGuiCol_ResizeGripHovered] = ImVec4(0.330f, 0.780f, 0.720f, 0.80f);
     colors[ImGuiCol_Tab] = ImVec4(0.100f, 0.155f, 0.185f, 0.92f);
     colors[ImGuiCol_TabHovered] = ImVec4(0.180f, 0.320f, 0.350f, 1.0f);
-    colors[ImGuiCol_TabActive] = ImVec4(0.130f, 0.250f, 0.270f, 1.0f);
+    /* ImGuiCol_TabActive was renamed to ImGuiCol_TabSelected in 1.90.9;
+       the old name's compat alias is commented out upstream (see
+       imgui.h's ImGuiCol_ obsolete-enum block), so it has to be the new
+       name here now that imgui/ is the real docking branch (commit
+       cee6a89, docs/superpowers/plans/2026-10-24-unity-style-redesign.md). */
+    colors[ImGuiCol_TabSelected] = ImVec4(0.130f, 0.250f, 0.270f, 1.0f);
     colors[ImGuiCol_Text] = ImVec4(0.92f, 0.95f, 0.97f, 1.0f);
     colors[ImGuiCol_TextDisabled] = ImVec4(0.58f, 0.66f, 0.72f, 1.0f);
 }
