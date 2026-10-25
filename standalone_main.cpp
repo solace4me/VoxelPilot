@@ -436,7 +436,6 @@ static void apply_default_workspace_state(StandaloneApp *app, int include_window
     app->insights_visible = 1;
     app->ai_visible = 1;
     app->metadata_visible = 1;
-    app->log_visible = 1;
     app->adaptive_quality_enabled = defaults.adaptive_quality_enabled;
     apply_render_quality_preset(app, VOXELPILOT_RENDER_QUALITY_BALANCED);
 
@@ -1014,55 +1013,8 @@ static void draw_insights_panel(StandaloneApp *app)
         ImGui::Text("World distance: %.3f units", measurement_distance_world(app));
     }
 
-    ImGui::Separator();
-    ImGui::Text("Intensity Histogram");
-    if (app->histogram_ready) {
-        ImGui::Text("Range: %.4f to %.4f", app->hist_min_value, app->hist_max_value);
-        ImGui::PlotHistogram(
-            "##volume_histogram",
-            app->histogram,
-            HISTOGRAM_BINS,
-            0,
-            "Volume intensity distribution",
-            0.0f,
-            FLT_MAX,
-            ImVec2(0.0f, 180.0f));
-    } else {
-        ImGui::TextWrapped("Histogram becomes available after a volume is loaded.");
-    }
-
     }
     app->insights_visible = insights_open ? 1 : 0;
-    ImGui::End();
-}
-
-/* Temporary home for step 1 of the Unity-style redesign (see
-   docs/superpowers/plans/2026-10-24-unity-style-redesign.md) - this
-   content moves into ui_bottom_panels.cpp as a tab in step 2, at which
-   point the ImGui::Begin/End here comes out, matching the same
-   Begin/End-stripping step 3 does for AI Assist/Metadata. */
-static void draw_log_panel(StandaloneApp *app)
-{
-    if (!app->log_visible) {
-        return;
-    }
-
-    bool log_open = app->log_visible != 0;
-    if (ImGui::Begin("Log", &log_open)) {
-
-    if (app->log_history_count < 1) {
-        ImGui::TextWrapped("No actions logged yet.");
-    } else {
-        ImGui::BeginChild("##log_scroll", ImVec2(0.0f, 0.0f), false);
-        for (int i = 0; i < app->log_history_count; ++i) {
-            int idx = (app->log_history_next - 1 - i + LOG_HISTORY_MAX) % LOG_HISTORY_MAX;
-            ImGui::TextWrapped("%s", app->log_history[idx]);
-        }
-        ImGui::EndChild();
-    }
-
-    }
-    app->log_visible = log_open ? 1 : 0;
     ImGui::End();
 }
 
@@ -1461,7 +1413,7 @@ static void draw_gui(StandaloneApp *app)
     draw_insights_panel(app);
     draw_ai_assist_panel(app);
     draw_metadata_panel(app);
-    draw_log_panel(app);
+    draw_bottom_panels(app);
     draw_walkthrough_overlay(app);
     draw_guided_review_overlay(app);
     draw_status_bar(app);

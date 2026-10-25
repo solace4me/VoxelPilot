@@ -257,7 +257,6 @@ typedef struct {
     int           insights_visible;
     int           ai_visible;
     int           metadata_visible;
-    int           log_visible;
     int           ribbon_expanded;
     int           ribbon_active_tab;
     int           demo_mode_enabled;
@@ -482,5 +481,11 @@ void render_frame_standalone(StandaloneApp *app);
 void draw_fullscreen_quad(StandaloneApp *app);
 void update_main_render_hover_pick(StandaloneApp *app);
 void draw_main_render_hover_tooltip(StandaloneApp *app);
+
+/* Defined in ui_bottom_panels.cpp, called from standalone_main.cpp.
+   Step 2 of docs/superpowers/plans/2026-10-24-unity-style-redesign.md -
+   only Histogram and Log land here this step; AI Assist and Metadata
+   join as tabs in step 3. */
+void draw_bottom_panels(StandaloneApp *app);
 
 #endif /* VOXELPILOT_STANDALONE_APP_H */
