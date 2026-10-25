@@ -27,6 +27,16 @@
 #include <string.h>
 
 #include "standalone_app.h"
+/* imgui_internal.h: needed for the DockBuilder* functions and the
+   ImGuiDockNodeFlags_DockSpace private flag used below. The vendored
+   ImGui was swapped from the plain/master branch to the real 'docking'
+   branch (see the fix for the step-5 broken-layout screenshot,
+   docs/superpowers/plans/2026-10-24-unity-style-redesign.md) - before
+   that swap, IMGUI_HAS_DOCK was never defined, so every block in this
+   file guarded by "#ifdef IMGUI_HAS_DOCK" silently compiled to nothing
+   and no window was ever actually docked. standalone_main.cpp already
+   includes this header for the same reason. */
+#include "imgui_internal.h"
 
 
 static const char *k_ribbon_tab_labels[] = {
