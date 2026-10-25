@@ -53,6 +53,24 @@ enum {
     VOXELPILOT_RIBBON_COUNT = 2
 };
 
+/* What the Scene panel's tree currently has selected (step 5 of
+   docs/superpowers/plans/2026-10-24-unity-style-redesign.md). REGION and
+   ANNOTATION use scene_selection_index as an index into
+   semantic_regions[]/annotations[]; the singleton kinds (VOLUME,
+   MEASUREMENT, CLIP_BOX, CAMERA, KEY_LIGHT) leave it at -1. This is the
+   selection model a future Inspector (step 10) will read to decide which
+   section to show - today only the Scene panel itself reads it. */
+enum {
+    VOXELPILOT_SCENE_SELECTION_NONE = 0,
+    VOXELPILOT_SCENE_SELECTION_VOLUME,
+    VOXELPILOT_SCENE_SELECTION_REGION,
+    VOXELPILOT_SCENE_SELECTION_ANNOTATION,
+    VOXELPILOT_SCENE_SELECTION_MEASUREMENT,
+    VOXELPILOT_SCENE_SELECTION_CLIP_BOX,
+    VOXELPILOT_SCENE_SELECTION_CAMERA,
+    VOXELPILOT_SCENE_SELECTION_KEY_LIGHT
+};
+
 typedef struct {
     const char *label;
     int         width;
@@ -166,6 +184,13 @@ typedef struct {
     GLuint        sagittal_tex;
     float         clip_min[3];
     float         clip_max[3];
+    /* Scene-tree eye icon for Clip box (step 5): hiding caches the real
+       bounds here and forces clip_min/clip_max to the full 0..1 range
+       (a real, immediate effect on the render, unlike the annotation/
+       region eye icons below); showing restores them. */
+    float         clip_cached_min[3];
+    float         clip_cached_max[3];
+    int           clip_hidden;
     float         histogram[HISTOGRAM_BINS];
     float         hist_min_value;
     float         hist_max_value;
@@ -193,6 +218,16 @@ typedef struct {
     AnnotationRegion annotations[MAX_ANNOTATIONS];
     int           annotation_count;
     int           selected_annotation;
+    /* Per-annotation Scene-tree eye icon (step 5). Toggling this hides
+       the row in the tree (dimmed label, eye-off icon) and excludes the
+       annotation from UI lists, but does NOT yet hide its voxels in the
+       3D label overlay: that overlay blends by label id for every
+       active label every frame (see attach_label_overlay_to_render_command
+       in gl_viewport_and_render.cpp), and truly suppressing one label
+       needs either a per-frame masked-copy upload (real GPU-upload cost)
+       or a shader change - both out of scope for this step. Flagged
+       rather than faked; see the plan doc's step 5 notes. */
+    int           annotation_hidden[MAX_ANNOTATIONS];
     unsigned char *label_mask;
     int           label_mask_W;
     int           label_mask_H;
@@ -204,6 +239,9 @@ typedef struct {
     float         label_selected_emphasis_strength;
     VoxelPilotSemanticRegion semantic_regions[VOXELPILOT_ASD_MAX_REGIONS];
     int           semantic_region_count;
+    /* Per-region Scene-tree eye icon (step 5); same renderer limitation
+       as annotation_hidden above - see its comment. */
+    int           semantic_region_hidden[VOXELPILOT_ASD_MAX_REGIONS];
     VoxelPilotRegionRelation semantic_relations[VOXELPILOT_ASD_MAX_RELATIONS];
     int           semantic_relation_count;
     int           semantic_selected_region;
@@ -264,8 +302,19 @@ typedef struct {
     int           dock_layout_variant;
     int           controls_visible;
     int           insights_visible;
+    int           scene_visible;
     int           ribbon_expanded;
     int           ribbon_active_tab;
+    /* Scene panel interaction state (step 5). */
+    int           scene_selection_kind;   /* VOXELPILOT_SCENE_SELECTION_* */
+    int           scene_selection_index;  /* region/annotation index, else -1 */
+    char          scene_search_query[64];
+    int           scene_rename_kind;      /* 0 = not renaming, else REGION/ANNOTATION */
+    int           scene_rename_index;
+    char          scene_rename_buffer[ANNOTATION_NAME_MAX];
+    int           scene_undo_kind;        /* 0 = none, else REGION/ANNOTATION */
+    int           scene_undo_index;
+    char          scene_undo_label[ANNOTATION_NAME_MAX];
     int           demo_mode_enabled;
     int           demo_auto_enabled;
     double        demo_auto_start_time;
@@ -444,9 +493,12 @@ extern const int k_resolution_preset_count;
 extern const char *k_render_quality_labels[];
 extern const char *k_volume_data_type_labels[];
 
-/* Defined in ui_controls_panel.cpp, called from standalone_main.cpp */
+/* Defined in ui_controls_panel.cpp, called from standalone_main.cpp
+   (and, for browse_volume_file, from ui_scene_panel.cpp's empty-state
+   "Open volume" button - step 5). */
 void draw_controls_panel(StandaloneApp *app);
 void handle_keyboard_shortcuts(StandaloneApp *app);
+int browse_volume_file(StandaloneApp *app);
 
 /* Defined in ui_ribbon_and_layout.cpp, called from standalone_main.cpp
    and (for set_default_window_layout) from ui_ai_assist_panel.cpp and
@@ -494,5 +546,11 @@ void draw_main_render_hover_tooltip(StandaloneApp *app);
    only Histogram and Log land here this step; AI Assist and Metadata
    join as tabs in step 3. */
 void draw_bottom_panels(StandaloneApp *app);
+
+/* Defined in ui_scene_panel.cpp, called from standalone_main.cpp.
+   Step 5 of docs/superpowers/plans/2026-10-24-unity-style-redesign.md -
+   the Scene tree over existing annotation/region/measurement/clip-box
+   data, per the spec's "Scene panel" region. */
+void draw_scene_panel(StandaloneApp *app);
 
 #endif /* VOXELPILOT_STANDALONE_APP_H */

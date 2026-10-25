@@ -329,10 +329,18 @@ void draw_ai_assist_panel(StandaloneApp *app)
                 ImGui::TextWrapped("Status: %s", app->semantic_status);
             }
             ImGui::BeginGroup();
-            int visible_regions = app->semantic_region_count < 3 ? app->semantic_region_count : 3;
-            for (int i = 0; i < visible_regions; ++i) {
+            /* Iterate all regions (not just the first 3) and skip any that
+               are rejected or hidden via the Scene panel eye icon (step 5,
+               ui_scene_panel.cpp) - Delete there sets rejected=1, so a
+               region the user just removed should not keep showing up
+               here. Still caps the list at 3 shown, same as before. */
+            for (int i = 0, shown = 0; i < app->semantic_region_count && shown < 3; ++i) {
                 VoxelPilotSemanticRegion *region = &app->semantic_regions[i];
                 char label[128];
+                if (region->rejected || app->semantic_region_hidden[i]) {
+                    continue;
+                }
+                shown++;
                 snprintf(label, sizeof(label), "#%d %s", i + 1, region->name[0] ? region->name : "ASD candidate");
                 bool selected = (app->semantic_selected_region == i);
                 ImGui::Selectable(label, selected, ImGuiSelectableFlags_SpanAllColumns);

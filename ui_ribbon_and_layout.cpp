@@ -78,6 +78,7 @@ void ensure_default_dock_layout(StandaloneApp *app)
 #ifdef IMGUI_HAS_DOCK
     ImGuiID dockspace_id;
     ImGuiID dock_main_id;
+    ImGuiID dock_scene_id;
     ImGuiID dock_left_id;
     ImGuiID dock_right_id;
     ImGuiID dock_bottom_id;
@@ -108,9 +109,19 @@ void ensure_default_dock_layout(StandaloneApp *app)
 
     dock_main_id = dockspace_id;
     dock_bottom_id = ImGui::DockBuilderSplitNode(dock_main_id, ImGuiDir_Down, 0.12f, NULL, &dock_main_id);
+    /* Scene panel (step 5 of the spec) - a narrow strip carved off the far
+       left, ahead of Controls. 0.167 of dock_main_id approximates the
+       spec default_widths of the spec's Scene panel (240px of 1440px)
+       since this dock split works in fractions, not pixels; Controls
+       keeps its existing position/width untouched. Controls itself
+       moves to the right and becomes the spec Inspector in step 10/11 -
+       not attempted here, per the plan doc's smallest-blast-radius
+       ordering. */
+    dock_scene_id = ImGui::DockBuilderSplitNode(dock_main_id, ImGuiDir_Left, 0.167f, NULL, &dock_main_id);
     dock_left_id = ImGui::DockBuilderSplitNode(dock_main_id, ImGuiDir_Left, 0.26f, NULL, &dock_main_id);
     dock_right_id = ImGui::DockBuilderSplitNode(dock_main_id, ImGuiDir_Right, 0.30f, NULL, &dock_main_id);
 
+    ImGui::DockBuilderDockWindow("Scene", dock_scene_id);
     ImGui::DockBuilderDockWindow("Controls", dock_left_id);
     ImGui::DockBuilderDockWindow("Status", dock_bottom_id);
 
@@ -212,6 +223,7 @@ static void reset_default_layout(StandaloneApp *app)
     if (!app) return;
     app->controls_visible = 1;
     app->insights_visible = 1;
+    app->scene_visible = 1;
     app->dock_layout_ready = 0;
     app->layout_refit_next_frame = 1;
     snprintf(app->preset_status, sizeof(app->preset_status), "Layout reset to default.");
@@ -310,6 +322,17 @@ void draw_top_ribbon(StandaloneApp *app)
                 ImGui::SameLine();
                 if (ImGui::Checkbox("Insights##panel_insights", &insights_visible)) {
                     app->insights_visible = insights_visible ? 1 : 0;
+                }
+            }
+            {
+                /* Scene panel visibility (step 5). The spec eventually
+                   wants this on Ctrl+1 in a real View menu (step 11); this
+                   checkbox is the only way to bring Scene back once hidden
+                   until that exists. */
+                bool scene_visible = app->scene_visible != 0;
+                ImGui::SameLine();
+                if (ImGui::Checkbox("Scene##panel_scene", &scene_visible)) {
+                    app->scene_visible = scene_visible ? 1 : 0;
                 }
             }
         } else if (app->ribbon_active_tab == VOXELPILOT_RIBBON_VIEW) {

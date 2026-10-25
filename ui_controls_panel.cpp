@@ -4,10 +4,12 @@
    Extracted from standalone_main.cu as part of the Tier 3c module
    split (see docs/superpowers/plans/2026-09-30-standalone-main-split.md).
 
-   browse_volume_file and load_selected_volume stay static here -
-   private helpers with no caller outside this file (both are only
-   called from handle_keyboard_shortcuts and draw_controls_panel,
-   both of which live in this same file).
+   load_selected_volume stays static here - a private helper with no
+   caller outside this file. browse_volume_file was also private until
+   step 5 (docs/superpowers/plans/2026-10-24-unity-style-redesign.md),
+   which dropped its `static` so the Scene panel's empty-state "Open
+   volume" button (ui_scene_panel.cpp) could call it too - see its
+   cross-file declaration in standalone_app.h.
 
    Of what handle_keyboard_shortcuts and draw_controls_panel call that
    isn't a common/*.h library function: apply_render_quality_preset,
@@ -37,7 +39,7 @@
 
 #include "standalone_app.h"
 
-static int browse_volume_file(StandaloneApp *app)
+int browse_volume_file(StandaloneApp *app)
 {
     const char *filter_patterns[] = { "*.raw", "*.bin", "*.dat", "*" };
     const char *selected;

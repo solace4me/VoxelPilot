@@ -90,6 +90,7 @@ int save_workspace_preset(StandaloneApp *app, const char *path)
     fprintf(fp, "ribbon_active_tab %d\n", app->ribbon_active_tab);
     fprintf(fp, "controls_visible %d\n", app->controls_visible);
     fprintf(fp, "insights_visible %d\n", app->insights_visible);
+    fprintf(fp, "scene_visible %d\n", app->scene_visible);
     fprintf(fp, "step_size %.9f\n", app->step_size);
     fprintf(fp, "threshold %.9f\n", app->threshold);
     fprintf(fp, "skip_mult %.9f\n", app->skip_mult);
@@ -139,6 +140,7 @@ int load_workspace_preset(StandaloneApp *app, const char *path)
         else if (strcmp(key, "ribbon_active_tab") == 0) fscanf(fp, "%d", &app->ribbon_active_tab);
         else if (strcmp(key, "controls_visible") == 0) fscanf(fp, "%d", &app->controls_visible);
         else if (strcmp(key, "insights_visible") == 0) fscanf(fp, "%d", &app->insights_visible);
+        else if (strcmp(key, "scene_visible") == 0) fscanf(fp, "%d", &app->scene_visible);
         else if (strcmp(key, "step_size") == 0) fscanf(fp, "%f", &app->step_size);
         else if (strcmp(key, "threshold") == 0) fscanf(fp, "%f", &app->threshold);
         else if (strcmp(key, "skip_mult") == 0) fscanf(fp, "%f", &app->skip_mult);
@@ -175,6 +177,7 @@ int load_workspace_preset(StandaloneApp *app, const char *path)
     }
     app->controls_visible = app->controls_visible ? 1 : 0;
     app->insights_visible = app->insights_visible ? 1 : 0;
+    app->scene_visible = app->scene_visible ? 1 : 0;
     clamp_cinematic_settings(app);
     sync_resolution_selection(app);
     return 0;

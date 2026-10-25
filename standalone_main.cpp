@@ -435,6 +435,7 @@ static void apply_default_workspace_state(StandaloneApp *app, int include_window
     app->ribbon_active_tab = defaults.ribbon_active_tab;
     app->controls_visible = 1;
     app->insights_visible = 1;
+    app->scene_visible = 1;
     app->adaptive_quality_enabled = defaults.adaptive_quality_enabled;
     apply_render_quality_preset(app, VOXELPILOT_RENDER_QUALITY_BALANCED);
 
@@ -831,6 +832,7 @@ static void draw_slice_card(
         if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
             if (app->annotation_mode) {
                 create_annotation_region_at_point(app, point);
+                app->annotation_mode = 0;
             } else if (app->measurement_visible) {
                 float *target = (app->measurement_target == 0) ? app->measure_a : app->measure_b;
                 target[0] = point[0];
@@ -856,6 +858,48 @@ static void scroll_callback(
     }
 
     app->pending_scroll += (float)yoffset;
+}
+
+/* Scene panel empty-state drop zone (step 5 of
+   docs/superpowers/plans/2026-10-24-unity-style-redesign.md): OS-level
+   file drop onto the VoxelPilot window. A .vpilot path loads it as a
+   workspace, same as File > Open Workspace; anything else is treated as
+   a volume file path, same as Controls' Browse... button - the user
+   still reviews Width/Height/Depth/Data Type and clicks Load Volume
+   afterward, this just fills in the path. Only paths[0] is used; a
+   multi-file drop ignores the rest. */
+static void drop_callback(
+    GLFWwindow  *window,
+    int          count,
+    const char **paths)
+{
+    StandaloneApp *app;
+    const char    *path;
+    const char    *ext;
+
+    app = (StandaloneApp *)glfwGetWindowUserPointer(window);
+    if (!app || count < 1 || !paths || !paths[0]) {
+        return;
+    }
+
+    path = paths[0];
+    ext = strrchr(path, '.');
+    if (ext && (strcmp(ext, ".vpilot") == 0 || strcmp(ext, ".VPILOT") == 0)) {
+        if (load_workspace_preset(app, path) == 0) {
+            app->dock_layout_ready = 0;
+            set_ui_toast(app, "Workspace loaded.");
+        } else {
+            set_ui_toast(app, "Could not load workspace file.", VOXELPILOT_LOG_ERROR);
+        }
+        return;
+    }
+
+    strncpy(app->upload_path, path, sizeof(app->upload_path) - 1);
+    app->upload_path[sizeof(app->upload_path) - 1] = '\0';
+    refresh_upload_file_details(app);
+    snprintf(app->upload_status, sizeof(app->upload_status),
+             "File selected. Review import settings, then load volume.");
+    set_ui_toast(app, "Volume file selected.");
 }
 
 void save_screenshot(StandaloneApp *app)
@@ -1410,6 +1454,7 @@ static void draw_gui(StandaloneApp *app)
     draw_dockspace(app);
     ensure_default_dock_layout(app);
     draw_demo_banner(app);
+    draw_scene_panel(app);
     draw_controls_panel(app);
     draw_insights_panel(app);
     draw_bottom_panels(app);
@@ -1885,6 +1930,7 @@ int main(int argc, char **argv)
     glfwSwapInterval(1);
     glfwSetWindowUserPointer(app.window, &app);
     glfwSetScrollCallback(app.window, scroll_callback);
+    glfwSetDropCallback(app.window, drop_callback);
 
     /* GLEW */
     glewExperimental = GL_TRUE;
