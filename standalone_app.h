@@ -300,6 +300,14 @@ typedef struct {
     float         dock_layout_viewport_w;
     float         dock_layout_viewport_h;
     int           dock_layout_variant;
+    /* The dockspace's own ImGuiID, set by draw_dockspace (ui_ribbon_and_
+       layout.cpp) each frame before anything else needs it. Lets other
+       overlays find the dockspace's central-node rect via
+       ImGui::DockBuilderGetCentralNode(app->main_dockspace_id) instead of
+       recomputing/re-deriving the id themselves - see the dockspace-id-
+       mismatch bug this avoided a repeat of, docs/superpowers/plans/
+       2026-10-24-unity-style-redesign.md. */
+    ImGuiID       main_dockspace_id;
     int           controls_visible;
     int           insights_visible;
     int           scene_visible;
@@ -343,6 +351,11 @@ typedef struct {
     float          slice_prev_y;
     float          slice_prev_z;
     int            slice_preview_dirty;
+
+    /* Viewport slice-strip overlay (step 6, ui_viewport_overlay.cpp):
+       -1 = showing the normal 3-up strip; 0/1/2 = that plane (Axial/
+       Coronal/Sagittal) is enlarged to fill the viewport. */
+    int            slice_strip_enlarged_plane;
 
 } StandaloneApp;
 
@@ -504,6 +517,11 @@ int browse_volume_file(StandaloneApp *app);
    and (for set_default_window_layout) from ui_ai_assist_panel.cpp and
    ui_controls_panel.cpp. */
 void draw_dockspace(StandaloneApp *app);
+/* Defined in ui_viewport_overlay.cpp, called from standalone_main.cpp
+   right after draw_dockspace - step 6 of docs/superpowers/plans/
+   2026-10-24-unity-style-redesign.md, the interactive orthogonal
+   slice strip anchored to the viewport's own dock node. */
+void draw_viewport_slice_strip(StandaloneApp *app);
 /* Takes the dockspace's ImGuiID (computed inside DockSpaceRoot's
    Begin/End by draw_dockspace, which also calls this) rather than
    recomputing it internally via ImGui::GetID() with no window active -

@@ -441,6 +441,10 @@ static void apply_default_workspace_state(StandaloneApp *app, int include_window
     app->controls_visible = 1;
     app->insights_visible = 1;
     app->scene_visible = 1;
+    /* -1 = showing the normal 3-up strip, not a single enlarged plane
+       (step 6, ui_viewport_overlay.cpp). 0 is a valid plane index
+       (Axial), so this can't just rely on zero-init. */
+    app->slice_strip_enlarged_plane = -1;
     app->adaptive_quality_enabled = defaults.adaptive_quality_enabled;
     apply_render_quality_preset(app, VOXELPILOT_RENDER_QUALITY_BALANCED);
 
@@ -740,114 +744,13 @@ void run_adaptive_semantic_discovery(StandaloneApp *app)
              applied_corrections);
 }
 
-static void draw_slice_card(
-    StandaloneApp *app,
-    const char    *label,
-    GLuint         texture,
-    int            width,
-    int            height,
-    int            plane)
-{
-    float max_width = 120.0f;
-    float scale = 1.0f;
+/* draw_slice_card used to live here (static, called only from
+   draw_insights_panel below). Step 6 of docs/superpowers/plans/
+   2026-10-24-unity-style-redesign.md relocates the orthogonal slice
+   strip to an interactive overlay anchored to the viewport itself -
+   see draw_viewport_slice_strip in the new ui_viewport_overlay.cpp,
+   called from draw_gui below. */
 
-    if (width > 0 && (float)width > max_width) {
-        scale = max_width / (float)width;
-    }
-
-    ImGui::Text("%s", label);
-    ImGui::Image(
-        (ImTextureID)(intptr_t)texture,
-        ImVec2((float)width * scale, (float)height * scale));
-
-    if (ImGui::IsItemHovered()) {
-        ImVec2 min = ImGui::GetItemRectMin();
-        ImVec2 max = ImGui::GetItemRectMax();
-        ImVec2 mouse = ImGui::GetIO().MousePos;
-        float u = (mouse.x - min.x) / fmaxf(max.x - min.x, 1.0f);
-        float v = (mouse.y - min.y) / fmaxf(max.y - min.y, 1.0f);
-        float point[3];
-        int vx = 0;
-        int vy = 0;
-        int vz = 0;
-        size_t voxel_index = 0;
-
-        u = fminf(fmaxf(u, 0.0f), 1.0f);
-        v = fminf(fmaxf(v, 0.0f), 1.0f);
-        point_from_slice_uv(app, plane, u, v, point);
-
-        if (point_to_voxel_index(app, point, &vx, &vy, &vz, &voxel_index) &&
-            app->renderer.volume_data) {
-            float intensity = app->renderer.volume_data[voxel_index];
-            unsigned char label_id = 0;
-            AnnotationRegion *region = NULL;
-            VoxelPilotSemanticRegion *semantic = NULL;
-
-            if (app->label_mask &&
-                app->label_mask_W == app->renderer.W &&
-                app->label_mask_H == app->renderer.H &&
-                app->label_mask_D == app->renderer.D) {
-                label_id = app->label_mask[voxel_index];
-                region = find_annotation_by_label(app, label_id);
-                semantic = find_semantic_region_by_label(app, label_id);
-            }
-
-            if (semantic) {
-                const char *note = semantic_relationship_note(app, label_id);
-                snprintf(app->hover_description,
-                         sizeof(app->hover_description),
-                         "%s | %s | confidence %.0f%% | stability %.0f%% | source ASD-Lite. %s%s%s",
-                         semantic->name,
-                         semantic->archetype,
-                         semantic->confidence * 100.0f,
-                         semantic->stability_score * 100.0f,
-                         semantic->description,
-                         (note && note[0]) ? " " : "",
-                         (note && note[0]) ? note : "");
-            } else {
-                voxelpilot_describe_voxel_context(
-                    intensity,
-                    label_id,
-                    region ? region->name : "",
-                    app->hover_description,
-                    sizeof(app->hover_description));
-            }
-
-            ImGui::BeginTooltip();
-            ImGui::Text("%s", app->hover_description);
-            ImGui::Text("Voxel: %d, %d, %d", vx, vy, vz);
-            if (semantic) {
-                ImGui::Text("ASD rank: %d | importance %.0f%%",
-                            semantic->importance_rank,
-                            semantic->importance_score * 100.0f);
-            }
-            if (region) {
-                ImGui::Text("Region voxels: %zu", region->voxel_count);
-                ImGui::ColorButton("##label_color",
-                                   ImVec4(region->color[0],
-                                          region->color[1],
-                                          region->color[2],
-                                          1.0f),
-                                   ImGuiColorEditFlags_NoTooltip,
-                                   ImVec2(18.0f, 18.0f));
-            }
-            ImGui::EndTooltip();
-        }
-
-        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-            if (app->annotation_mode) {
-                create_annotation_region_at_point(app, point);
-                app->annotation_mode = 0;
-            } else if (app->measurement_visible) {
-                float *target = (app->measurement_target == 0) ? app->measure_a : app->measure_b;
-                target[0] = point[0];
-                target[1] = point[1];
-                target[2] = point[2];
-                app->measurement_target = 1 - app->measurement_target;
-            }
-        }
-    }
-}
 
 static void scroll_callback(
     GLFWwindow *window,
@@ -1040,17 +943,14 @@ static void draw_insights_panel(StandaloneApp *app)
     bool insights_open = app->insights_visible != 0;
     if (ImGui::Begin("Insights", &insights_open)) {
 
-    ImGui::Text("Orthogonal Slice Review");
-    ImGui::SliderFloat("Sagittal X", &app->slice_x, 0.0f, 1.0f);
-    ImGui::SliderFloat("Coronal Y", &app->slice_y, 0.0f, 1.0f);
-    ImGui::SliderFloat("Axial Z", &app->slice_z, 0.0f, 1.0f);
-
-    if (app->renderer.W > 0 && app->renderer.H > 0 && app->renderer.D > 0) {
-        draw_slice_card(app, "Axial", app->axial_tex, app->renderer.W, app->renderer.H, 0);
-        ImGui::SameLine();
-        draw_slice_card(app, "Coronal", app->coronal_tex, app->renderer.W, app->renderer.D, 1);
-        draw_slice_card(app, "Sagittal", app->sagittal_tex, app->renderer.H, app->renderer.D, 2);
-    }
+    /* Orthogonal Slice Review (sliders + the three slice thumbnails)
+       moved to an interactive overlay anchored to the viewport itself -
+       step 6 of docs/superpowers/plans/2026-10-24-unity-style-redesign.md,
+       draw_viewport_slice_strip in the new ui_viewport_overlay.cpp. Drag
+       a thumbnail there to move the crosshair (same app->slice_x/y/z this
+       panel used to expose via sliders), scroll to step through depth,
+       double-click to enlarge. */
+    ImGui::TextDisabled("Slice review moved to the viewport (drag to pan, scroll to step, double-click to enlarge).");
 
     if (app->measurement_visible) {
         ImGui::Separator();
@@ -1462,6 +1362,11 @@ static void draw_gui(StandaloneApp *app)
        to be called separately, from out here with no ImGui window active,
        which is what let the dockspace id mismatch slip in. */
     draw_dockspace(app);
+    /* Reads app->main_dockspace_id (set by draw_dockspace just above) to
+       anchor itself to the dockspace's actual central-node rect - must
+       run after draw_dockspace has built the layout this frame. Step 6,
+       ui_viewport_overlay.cpp. */
+    draw_viewport_slice_strip(app);
     draw_demo_banner(app);
     draw_scene_panel(app);
     draw_controls_panel(app);

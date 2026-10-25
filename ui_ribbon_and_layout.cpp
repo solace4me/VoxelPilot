@@ -95,6 +95,11 @@ void draw_dockspace(StandaloneApp *app)
            code run for the first time. Fixed by building the layout
            against this one shared, correctly-scoped id instead. */
         ImGuiID dockspace_id = ImGui::GetID("VoxelPilotDockspace");
+        /* Exposed on app so other overlays (step 6's viewport slice strip,
+           ui_viewport_overlay.cpp) can find the dockspace's central-node
+           rect via ImGui::DockBuilderGetCentralNode without having to
+           recompute - or worse, re-derive - this same id themselves. */
+        app->main_dockspace_id = dockspace_id;
         ensure_default_dock_layout(app, dockspace_id);
         ImGui::DockSpace(dockspace_id, ImVec2(0.0f, 0.0f), dockspace_flags);
     }
