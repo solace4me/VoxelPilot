@@ -434,8 +434,6 @@ static void apply_default_workspace_state(StandaloneApp *app, int include_window
     app->ribbon_active_tab = defaults.ribbon_active_tab;
     app->controls_visible = 1;
     app->insights_visible = 1;
-    app->ai_visible = 1;
-    app->metadata_visible = 1;
     app->adaptive_quality_enabled = defaults.adaptive_quality_enabled;
     apply_render_quality_preset(app, VOXELPILOT_RENDER_QUALITY_BALANCED);
 
@@ -1411,8 +1409,6 @@ static void draw_gui(StandaloneApp *app)
     draw_demo_banner(app);
     draw_controls_panel(app);
     draw_insights_panel(app);
-    draw_ai_assist_panel(app);
-    draw_metadata_panel(app);
     draw_bottom_panels(app);
     draw_walkthrough_overlay(app);
     draw_guided_review_overlay(app);

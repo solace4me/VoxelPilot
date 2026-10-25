@@ -109,8 +109,8 @@ class RenderRegressionTests(unittest.TestCase):
         self.assertIn("ImGuiDir_Left", dock_layout)
         self.assertIn("ImGuiDir_Right", dock_layout)
         self.assertIn('DockBuilderDockWindow("Controls", dock_left_id)', dock_layout)
-        self.assertIn('DockBuilderDockWindow("AI Assist", dock_right_id)', dock_layout)
         self.assertIn('DockBuilderDockWindow("Insights", dock_right_id)', dock_layout)
+        self.assertIn('DockBuilderDockWindow("Bottom Panels", dock_right_id)', dock_layout)
 
     def test_left_controls_panel_retains_import_and_export_actions(self):
         controls_source = CONTROLS_PANEL.read_text(encoding="utf-8")
@@ -177,15 +177,20 @@ class RenderRegressionTests(unittest.TestCase):
         save_fn = presets_source[save_start:load_start]
         load_fn = presets_source[load_start:]
 
+        # AI Assist and Metadata lost their own visibility flags in the
+        # Unity redesign (step 3): they are now always-present tabs in
+        # ui_bottom_panels.cpp's "Bottom Panels" window, not independently
+        # dockable/toggleable windows, so only Insights still has a
+        # checkbox and a saved preset flag.
         self.assertIn('ImGui::Checkbox("Insights##panel_insights"', ribbon)
-        self.assertIn('ImGui::Checkbox("AI Assist##panel_ai"', ribbon)
-        self.assertIn('ImGui::Checkbox("Metadata##panel_metadata"', ribbon)
+        self.assertNotIn('ImGui::Checkbox("AI Assist##panel_ai"', ribbon)
+        self.assertNotIn('ImGui::Checkbox("Metadata##panel_metadata"', ribbon)
         self.assertIn('fprintf(fp, "insights_visible %d\\n"', save_fn)
-        self.assertIn('fprintf(fp, "ai_visible %d\\n"', save_fn)
-        self.assertIn('fprintf(fp, "metadata_visible %d\\n"', save_fn)
+        self.assertNotIn('fprintf(fp, "ai_visible %d\\n"', save_fn)
+        self.assertNotIn('fprintf(fp, "metadata_visible %d\\n"', save_fn)
         self.assertIn('strcmp(key, "insights_visible")', load_fn)
-        self.assertIn('strcmp(key, "ai_visible")', load_fn)
-        self.assertIn('strcmp(key, "metadata_visible")', load_fn)
+        self.assertNotIn('strcmp(key, "ai_visible")', load_fn)
+        self.assertNotIn('strcmp(key, "metadata_visible")', load_fn)
     def test_shortcuts_and_layout_reset_are_discoverable(self):
         source = STANDALONE_MAIN.read_text(encoding="utf-8")
         controls_source = CONTROLS_PANEL.read_text(encoding="utf-8")

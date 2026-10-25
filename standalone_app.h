@@ -255,8 +255,6 @@ typedef struct {
     int           dock_layout_variant;
     int           controls_visible;
     int           insights_visible;
-    int           ai_visible;
-    int           metadata_visible;
     int           ribbon_expanded;
     int           ribbon_active_tab;
     int           demo_mode_enabled;

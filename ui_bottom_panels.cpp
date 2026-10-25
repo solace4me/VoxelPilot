@@ -1,17 +1,22 @@
 /* Bottom tabbed panel host (AI Assist / Histogram / Metadata / Log).
-   Step 2 of the Unity-style redesign (see
-   docs/superpowers/plans/2026-10-24-unity-style-redesign.md): only the
-   Histogram and Log tabs land here this step, lifted out of
-   draw_insights_panel and the step-1 draw_log_panel (both
-   standalone_main.cpp). AI Assist and Metadata tabs are deferred to
-   step 3, which needs to strip ImGui::Begin/End out of
-   draw_ai_assist_panel/draw_metadata_panel first - a separate,
-   slightly riskier change, since those functions currently own their
-   own top-level dockable window identity.
+   Step 3 of the Unity-style redesign (see
+   docs/superpowers/plans/2026-10-24-unity-style-redesign.md): adds the
+   AI Assist and Metadata tabs, deferred from step 2. Getting them
+   here needed ImGui::Begin/End (and the set_default_window_layout
+   call, and the ai_visible/metadata_visible flags that gated it)
+   stripped out of draw_ai_assist_panel/draw_metadata_panel
+   (ui_ai_assist_panel.cpp) - those functions no longer own their own
+   top-level dockable window identity, so they can only be called from
+   inside this window's tab items now, never on their own.
 
-   No dockspace positioning yet (see ensure_default_dock_layout in
-   ui_ribbon_and_layout.cpp, step 10 of the plan) - this opens as an
-   undocked floating window for now, same as step 1's Log panel did.
+   That also orphaned the "AI Assist"/"Metadata" window names that
+   ensure_default_dock_layout (ui_ribbon_and_layout.cpp) used to dock
+   by name, and the per-panel visibility checkboxes in
+   ui_ribbon_and_layout.cpp's ribbon - both updated in this step to
+   dock/toggle this window ("Bottom Panels") as a whole instead.
+   ensure_default_dock_layout now docks "Bottom Panels" for both
+   existing layout variants (0 and 1); a dedicated position for the
+   still-unbuilt "Unity" variant (dock_layout_variant == 2) is step 10.
 */
 
 #include <float.h>
@@ -26,6 +31,11 @@ void draw_bottom_panels(StandaloneApp *app)
 
     if (ImGui::Begin("Bottom Panels")) {
         if (ImGui::BeginTabBar("##bottom_panels_tabs")) {
+
+            if (ImGui::BeginTabItem("AI Assist")) {
+                draw_ai_assist_panel(app);
+                ImGui::EndTabItem();
+            }
 
             if (ImGui::BeginTabItem("Histogram")) {
                 if (app->histogram_ready) {
@@ -42,6 +52,11 @@ void draw_bottom_panels(StandaloneApp *app)
                 } else {
                     ImGui::TextWrapped("Histogram becomes available after a volume is loaded.");
                 }
+                ImGui::EndTabItem();
+            }
+
+            if (ImGui::BeginTabItem("Metadata")) {
+                draw_metadata_panel(app);
                 ImGui::EndTabItem();
             }
 

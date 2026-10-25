@@ -18,8 +18,7 @@
    made cross-file by this step: apply_ai_prompt_to_app,
    apply_auto_enhance_transfer, apply_transfer_settings_with_undo,
    clipping_is_active, dataset_health_level_label, draw_help_marker,
-   run_adaptive_semantic_discovery, set_default_window_layout,
-   set_ui_toast, start_guided_review, undo_transfer_settings, and
+   run_adaptive_semantic_discovery, set_ui_toast, start_guided_review, undo_transfer_settings, and
    update_dataset_health all stay defined in standalone_main.cu
    (most have callers elsewhere too - the ribbon, controls panel,
    keyboard shortcuts - that aren't moving), dropped `static`, and
@@ -34,7 +33,14 @@
    ones would have meant three more separate, scattered edits to
    standalone_main.cu for no real benefit - "defined there, declared
    here" is a one-line entry per function here regardless of which
-   file ends up defining it. */
+   file ends up defining it.
+   Step 3 of docs/superpowers/plans/2026-10-24-unity-style-redesign.md
+   (Unity-style redesign): draw_ai_assist_panel and draw_metadata_panel
+   no longer call ImGui::Begin/End or set_default_window_layout - they
+   lost their own top-level window identity and the ai_visible/
+   metadata_visible flags that gated it, and are now called only from
+   ui_bottom_panels.cpp's tab bar (alongside Histogram and Log) as
+   plain content inside that shared window/tab context. */
 
 #include <stdio.h>
 
@@ -75,7 +81,7 @@ void draw_ai_assist_panel(StandaloneApp *app)
     VoxelPilotTransferAdvisorResult transfer_advisor;
     int has_transfer_advisor = 0;
 
-    if (!app || !app->ai_visible) {
+    if (!app) {
         return;
     }
 
@@ -103,10 +109,7 @@ void draw_ai_assist_panel(StandaloneApp *app)
             &transfer_advisor);
     }
 
-    set_default_window_layout(app, "AI Assist");
-    bool ai_open = app->ai_visible != 0;
-    if (ImGui::Begin("AI Assist", &ai_open)) {
-        ImGui::Text("AI Assist");
+    ImGui::Text("AI Assist");
         draw_help_marker("Local tools only: transfer suggestions, health checks, semantic discovery, and export helpers.");
         ImGui::Separator();
 
@@ -325,13 +328,10 @@ void draw_ai_assist_panel(StandaloneApp *app)
                 }
             }
         }
-    }
-    app->ai_visible = ai_open ? 1 : 0;
-    ImGui::End();
 }
 void draw_metadata_panel(StandaloneApp *app)
 {
-    if (!app->metadata_visible) {
+    if (!app) {
         return;
     }
 
@@ -340,9 +340,6 @@ void draw_metadata_panel(StandaloneApp *app)
         (size_t)app->renderer.H *
         (size_t)app->renderer.D;
 
-    set_default_window_layout(app, "Metadata");
-    bool metadata_open = app->metadata_visible != 0;
-    if (ImGui::Begin("Metadata", &metadata_open)) {
     ImGui::Text("Dataset Summary");
     ImGui::Separator();
     ImGui::Text("Dimensions: %d x %d x %d",
@@ -367,7 +364,4 @@ void draw_metadata_panel(StandaloneApp *app)
         ImGui::TextWrapped("Health summary: %s", app->dataset_health_status);
     }
     ImGui::TextWrapped("Dataset status: %s", app->upload_status);
-    }
-    app->metadata_visible = metadata_open ? 1 : 0;
-    ImGui::End();
 }

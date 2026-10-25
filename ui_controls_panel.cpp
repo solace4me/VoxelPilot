@@ -209,8 +209,8 @@ void draw_controls_panel(StandaloneApp *app)
             ImVec4(0.62f, 0.68f, 0.74f, 1.0f),
             "%s",
             app->dock_layout_variant == 1
-                ? "Deep Review: Insights and Metadata both stay visible for close analysis."
-                : "Demo: Insights, AI Assist, and Metadata share one tabbed panel.");
+                ? "Deep Review: Insights stays visible above the AI Assist/Histogram/Metadata/Log tabs."
+                : "Demo: Insights and the AI Assist/Histogram/Metadata/Log tabs share one panel.");
     }
 
     ImGui::Separator();

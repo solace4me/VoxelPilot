@@ -118,12 +118,10 @@ void ensure_default_dock_layout(StandaloneApp *app)
         ImGuiID dock_right_bottom_id =
             ImGui::DockBuilderSplitNode(dock_right_id, ImGuiDir_Down, 0.45f, NULL, &dock_right_id);
         ImGui::DockBuilderDockWindow("Insights", dock_right_id);
-        ImGui::DockBuilderDockWindow("AI Assist", dock_right_bottom_id);
-        ImGui::DockBuilderDockWindow("Metadata", dock_right_bottom_id);
+        ImGui::DockBuilderDockWindow("Bottom Panels", dock_right_bottom_id);
     } else {
-        ImGui::DockBuilderDockWindow("AI Assist", dock_right_id);
         ImGui::DockBuilderDockWindow("Insights", dock_right_id);
-        ImGui::DockBuilderDockWindow("Metadata", dock_right_id);
+        ImGui::DockBuilderDockWindow("Bottom Panels", dock_right_id);
     }
 
     ImGui::DockBuilderFinish(dockspace_id);
@@ -180,22 +178,6 @@ void set_default_window_layout(
         ImGui::SetNextWindowSize(
             ImVec2(right_width, right_top_height),
             layout_cond);
-    } else if (strcmp(name, "AI Assist") == 0) {
-        ImGui::SetNextWindowPos(
-            ImVec2(viewport->Pos.x + viewport->Size.x - right_width,
-                   viewport->Pos.y + ribbon_height + right_top_height),
-            layout_cond);
-        ImGui::SetNextWindowSize(
-            ImVec2(right_width, right_ai_height),
-            layout_cond);
-    } else if (strcmp(name, "Metadata") == 0) {
-        ImGui::SetNextWindowPos(
-            ImVec2(viewport->Pos.x + viewport->Size.x - right_width,
-                   viewport->Pos.y + ribbon_height + right_top_height + right_ai_height),
-            layout_cond);
-        ImGui::SetNextWindowSize(
-            ImVec2(right_width, right_mid_height),
-            layout_cond);
     } else if (strcmp(name, "Status") == 0) {
         ImGui::SetNextWindowPos(
             ImVec2(viewport->Pos.x,
@@ -230,8 +212,6 @@ static void reset_default_layout(StandaloneApp *app)
     if (!app) return;
     app->controls_visible = 1;
     app->insights_visible = 1;
-    app->ai_visible = 1;
-    app->metadata_visible = 1;
     app->dock_layout_ready = 0;
     app->layout_refit_next_frame = 1;
     snprintf(app->preset_status, sizeof(app->preset_status), "Layout reset to default.");
@@ -327,19 +307,9 @@ void draw_top_ribbon(StandaloneApp *app)
             ImGui::Text("Right rail:");
             {
                 bool insights_visible = app->insights_visible != 0;
-                bool ai_visible = app->ai_visible != 0;
-                bool metadata_visible = app->metadata_visible != 0;
                 ImGui::SameLine();
                 if (ImGui::Checkbox("Insights##panel_insights", &insights_visible)) {
                     app->insights_visible = insights_visible ? 1 : 0;
-                }
-                ImGui::SameLine();
-                if (ImGui::Checkbox("AI Assist##panel_ai", &ai_visible)) {
-                    app->ai_visible = ai_visible ? 1 : 0;
-                }
-                ImGui::SameLine();
-                if (ImGui::Checkbox("Metadata##panel_metadata", &metadata_visible)) {
-                    app->metadata_visible = metadata_visible ? 1 : 0;
                 }
             }
         } else if (app->ribbon_active_tab == VOXELPILOT_RIBBON_VIEW) {
