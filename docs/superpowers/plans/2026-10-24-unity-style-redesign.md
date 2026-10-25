@@ -29,9 +29,36 @@ spec disagree, the spec wins; this doc should stay in sync with it.
   tab host with Histogram + Log tabs.
 - Step 3 - done, build-verified (commit 93c3a9f): AI Assist + Metadata join
   the tab host as tabs (Begin/End stripped out of both).
-- Step 4 (corrections) - not started. See below; this is new work the spec
-  revealed, not in the original mockup-based plan.
-- Steps 5-11 (renumbered from the original plan's 4-10) - not started,
+- Step 4 (corrections) - done, build-verified (commit 47ccea4): AI Assist
+  panel redesign (prompt + chips + Last-action card, progressive
+  disclosure). The other three corrections listed below it (Log reorder,
+  Histogram resize/coloring/drag, Metadata 4-column grid) were not part
+  of this pass - still open, see below.
+- Step 5 (`ui_scene_panel.cpp`) - done, build-verified and visually
+  confirmed (commit 4a9b32a for the panel itself). Getting it to actually
+  render correctly took four follow-up fixes, all build- and screenshot-
+  verified against the user's running app:
+  - cee6a89: the vendored imgui/ tree turned out to be Dear ImGui's
+    plain/master branch, not the 'docking' branch - `IMGUI_HAS_DOCK` was
+    never defined, so every DockBuilder/DockSpace call anywhere in the
+    app (not just step 5's) had always silently compiled to nothing.
+    Replaced the 6 core vendored files with the real docking branch.
+  - 9c26994: that swap exposed one build error (`ImGuiCol_TabActive` was
+    renamed to `ImGuiCol_TabSelected` upstream).
+  - 5e47cd4: build succeeded but windows still floated on top of each
+    other - `draw_dockspace` and `ensure_default_dock_layout` were each
+    independently computing the dockspace's `ImGuiID` via
+    `ImGui::GetID()`, one inside a window scope and one outside, very
+    likely hashing to two different ids. Fixed by computing it once and
+    threading it through.
+  - 9aed21e: with docking actually working, Controls' dock-split fraction
+    turned out to be measured against the wrong base and was 4.3 points
+    narrower than before Scene existed, clipping several labels. Widened
+    to compensate.
+  User confirmed the resulting layout (Scene / Controls / viewport /
+  Insights+Bottom Panels tabbed / Status, all properly tiled, no
+  overlap, no clipped labels) by screenshot after the last of these.
+- Steps 6-11 (renumbered from the original plan's 4-10) - not started,
   scope revised against the spec; see below.
 
 ## Corrections needed to steps 1-3's already-shipped work (new step 4)
