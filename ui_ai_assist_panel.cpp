@@ -49,7 +49,50 @@
    upload_data_type/upload_file_size_bytes, already tracked but not
    shown here before), and keeps the full health-status sentence
    (dataset_health_status) as a wrapped line below the grid rather
-   than only inside the grid cell. */
+   than only inside the grid cell.
+
+   Step 4 (part 2) rebuilds draw_ai_assist_panel's body against the
+   same spec's "AI Assist" section: a prompt input + five
+   quick-action chips (Auto enhance, Discover regions, Health check,
+   Guided review, Export bundle) + a "Last action" card on the
+   right (an ImGui table, two columns) replace the old "Auto Enhance
+   View"/"Health Check"/"Export Bundle"/standalone "Prompt" controls
+   that lived inside the always-open "Transfer & Health" header.
+   The old Discovery/Transfer & Health/More AI Tools collapsing
+   headers stay - renamed to default-closed, per the spec's own
+   progressive-disclosure principle now that the primary surface
+   covers the common case - and keep everything that has no
+   primary-chip equivalent: the ASD sliders and region-browsing list,
+   Preview Auto Window (preview without applying - distinct from
+   Auto enhance), Restore Previous View (same undo_transfer_settings
+   call the new "Undo" button in the Last Action card makes - two
+   entry points to the same action), the Transfer Advisor, Quant
+   Metrics, Export Insight Report, and Scout Focus Slice. The
+   duplicate "Apply Prompt"/"Health Check"/"Export Bundle" controls
+   that had no distinct behavior from their new primary-chip
+   equivalents were removed rather than kept as redundant copies.
+
+   The "Last action" card leans on whatever each action already
+   wrote - apply_auto_enhance_transfer already sets ai_assist_status
+   with a full description and the transfer_undo_* fields with real
+   before/after values; Discover regions/Health check/Export bundle
+   copy their own richer status fields (semantic_status/
+   dataset_health_status/report_status) into ai_assist_status right
+   after the call, since those functions do not set it themselves.
+   Guided review has no status field of its own, so it gets a fixed
+   one-line description. Before/after values only show for the
+   transfer-related actions, since transfer_undo_* is the only
+   before/after state this app tracks - the card does not fabricate
+   one for the others.
+
+   Discover regions/Export bundle read
+   performance_result.safe_to_run_asd/safe_to_export_mask directly
+   to decide whether to show the chip disabled, rather than calling
+   performance_allows_optional_action every frame for that check -
+   that function also writes ai_assist_status when it blocks
+   something, which would stomp the Last Action text every frame
+   while blocked, not just on a real click. It is still called at
+   click time, same as before, as the authoritative gate. */
 
 #include <stdio.h>
 
@@ -119,29 +162,137 @@ void draw_ai_assist_panel(StandaloneApp *app)
     }
 
     ImGui::Text("AI Assist");
-        draw_help_marker("Local tools only: transfer suggestions, health checks, semantic discovery, and export helpers.");
-        ImGui::Separator();
+    draw_help_marker("Local tools only: transfer suggestions, health checks, semantic discovery, and export helpers.");
+    ImGui::Separator();
 
-        if (!has_volume) {
-            ImGui::TextWrapped(
-                "AI Assist needs a loaded volume first: use Browse... in Controls to set "
-                "Width, Height, Depth, and Data Type, then click Load Volume.");
-            if (ImGui::Button("Show Me: Volume Import Step")) {
-                app->walkthrough_visible = 1;
-                app->walkthrough_step = 1;
-            }
-        } else {
-            ImGui::Text("Volume: %d x %d x %d", app->renderer.W, app->renderer.H, app->renderer.D);
-            ImGui::Text("Range: %.4f to %.4f", app->hist_min_value, app->hist_max_value);
-            ImGui::Text("ASD: %d region(s), %d relation(s)", app->semantic_region_count, app->semantic_relation_count);
-            ImGui::Text("ASD memory: %d correction(s)", app->semantic_correction_count);
-            ImGui::Text("ASD safety: %s", app->performance_result.safe_to_run_asd ? "Ready" : "Blocked");
-            if (app->performance_result.status != VOXELPILOT_GOVERNOR_HEALTHY) {
-                draw_performance_safety_block(app);
-            }
+    if (!has_volume) {
+        ImGui::TextWrapped(
+            "AI Assist needs a loaded volume first: use Browse... in Controls to set "
+            "Width, Height, Depth, and Data Type, then click Load Volume.");
+        if (ImGui::Button("Show Me: Volume Import Step")) {
+            app->walkthrough_visible = 1;
+            app->walkthrough_step = 1;
+        }
+    } else {
+        ImGui::Text("Volume: %d x %d x %d", app->renderer.W, app->renderer.H, app->renderer.D);
+        ImGui::Text("Range: %.4f to %.4f", app->hist_min_value, app->hist_max_value);
+        ImGui::Text("ASD: %d region(s), %d relation(s)", app->semantic_region_count, app->semantic_relation_count);
+        ImGui::Text("ASD memory: %d correction(s)", app->semantic_correction_count);
+        ImGui::Text("ASD safety: %s", app->performance_result.safe_to_run_asd ? "Ready" : "Blocked");
+        if (app->performance_result.status != VOXELPILOT_GOVERNOR_HEALTHY) {
+            draw_performance_safety_block(app);
+        }
+    }
+
+    ImGui::Separator();
+
+    /* Primary surface, per docs/superpowers/specs/2026-10-24-ui-ux-
+       interaction-and-flow-spec.md's "Bottom dock > AI Assist": a
+       prompt input, a row of quick-action chips, and a "Last action"
+       card. Two columns via a table so the card sits on the right.
+       Discover regions/Export bundle stay gated by the same Safety
+       checks the old Discovery/Transfer & Health buttons used
+       (safe_to_run_asd/safe_to_export_mask, already refreshed every
+       frame by draw_top_ribbon) - read directly here instead of
+       through performance_allows_optional_action, since that function
+       also writes ai_assist_status as a side effect and calling it
+       every frame just to decide whether to disable a chip would
+       stomp the Last Action text even when nothing was clicked. */
+    if (ImGui::BeginTable("##ai_assist_layout", 2, ImGuiTableFlags_None)) {
+        int blocked_asd = !app->performance_result.safe_to_run_asd;
+        int blocked_export = !app->performance_result.safe_to_export_mask;
+        bool prompt_submitted;
+
+        ImGui::TableSetupColumn("Main", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("LastAction", ImGuiTableColumnFlags_WidthFixed, 220.0f);
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+
+        prompt_submitted = ImGui::InputTextWithHint(
+            "##ai_prompt",
+            "Ask VoxelPilot",
+            app->ai_prompt,
+            sizeof(app->ai_prompt),
+            ImGuiInputTextFlags_EnterReturnsTrue);
+        ImGui::SameLine();
+        if (ImGui::Button("Apply") || prompt_submitted) {
+            apply_ai_prompt_to_app(app);
         }
 
-        if (ImGui::CollapsingHeader("Discovery", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (ImGui::Button("Auto enhance")) {
+            apply_auto_enhance_transfer(app, "AI Assist");
+        }
+
+        voxelpilot_same_line_if_fits("Discover regions");
+        ImGui::BeginDisabled(blocked_asd);
+        if (ImGui::Button("Discover regions")) {
+            if (performance_allows_optional_action(app, "Discover regions", 1, 0)) {
+                run_adaptive_semantic_discovery(app);
+                refresh_performance_governor(app);
+                snprintf(app->ai_assist_status, sizeof(app->ai_assist_status), "%s", app->semantic_status);
+            }
+        }
+        ImGui::EndDisabled();
+        if (blocked_asd && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+            ImGui::SetTooltip("%s", app->performance_result.recommendation);
+        }
+
+        voxelpilot_same_line_if_fits("Health check");
+        if (ImGui::Button("Health check")) {
+            update_dataset_health(app);
+            snprintf(app->ai_assist_status, sizeof(app->ai_assist_status), "%s", app->dataset_health_status);
+        }
+
+        voxelpilot_same_line_if_fits("Guided review");
+        if (ImGui::Button("Guided review")) {
+            start_guided_review(app);
+            snprintf(app->ai_assist_status, sizeof(app->ai_assist_status), "Guided review started.");
+        }
+
+        voxelpilot_same_line_if_fits("Export bundle");
+        ImGui::BeginDisabled(blocked_export);
+        if (ImGui::Button("Export bundle")) {
+            if (performance_allows_optional_action(app, "Export bundle", 0, 1)) {
+                export_ai_review_bundle(app);
+                refresh_performance_governor(app);
+                snprintf(app->ai_assist_status, sizeof(app->ai_assist_status), "%s", app->report_status);
+            }
+        }
+        ImGui::EndDisabled();
+        if (blocked_export && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+            ImGui::SetTooltip("%s", app->performance_result.recommendation);
+        }
+
+        ImGui::TableSetColumnIndex(1);
+        ImGui::TextColored(ImVec4(0.624f, 0.690f, 0.737f, 1.0f), "LAST ACTION");
+        ImGui::Separator();
+        if (app->ai_assist_status[0]) {
+            ImGui::TextWrapped("%s", app->ai_assist_status);
+        } else {
+            ImGui::TextWrapped("No AI action yet.");
+        }
+        if (app->transfer_undo_available) {
+            ImGui::Spacing();
+            ImGui::Text("Before: %.3f / %.3f / %.2f",
+                        app->transfer_undo_center, app->transfer_undo_width, app->transfer_undo_opacity_scale);
+            ImGui::Text("After:  %.3f / %.3f / %.2f",
+                        app->tf_center, app->tf_width, app->tf_opacity_scale);
+            if (ImGui::Button("Undo")) {
+                undo_transfer_settings(app);
+            }
+        }
+        ImGui::Separator();
+        ImGui::TextColored(
+            voxelpilot_pressure_color(app->performance_result.status),
+            "Safety: %s", app->performance_result.status_label);
+        if (app->performance_result.primary_reason[0]) {
+            ImGui::TextWrapped("%s", app->performance_result.primary_reason);
+        }
+
+        ImGui::EndTable();
+    }
+
+        if (ImGui::CollapsingHeader("Discovery")) {
         draw_help_marker("Adaptive Semantic Discovery finds candidate regions and labels them cautiously.");
         if (ImGui::Button("Discover Regions")) {
             if (performance_allows_optional_action(app, "ASD discovery", 1, 0)) {
@@ -228,14 +379,10 @@ void draw_ai_assist_panel(StandaloneApp *app)
         }
         }
 
-        if (ImGui::CollapsingHeader("Transfer & Health", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (ImGui::CollapsingHeader("Transfer & Health")) {
             if (!has_volume || !app->histogram_ready) {
                 ImGui::TextWrapped("Load a volume and build its histogram to enable transfer advice.");
             } else {
-                if (ImGui::Button("Auto Enhance View")) {
-                    apply_auto_enhance_transfer(app, "AI Assist");
-                }
-                voxelpilot_same_line_if_fits("Preview Auto Window");
                 if (ImGui::Button("Preview Auto Window")) {
                     if (has_transfer_suggestion) {
                         snprintf(app->ai_assist_status,
@@ -257,25 +404,8 @@ void draw_ai_assist_panel(StandaloneApp *app)
                         undo_transfer_settings(app);
                     }
                 }
-                ImGui::InputText("Prompt", app->ai_prompt, sizeof(app->ai_prompt));
-                if (ImGui::Button("Apply Prompt")) {
-                    apply_ai_prompt_to_app(app);
-                }
-                voxelpilot_same_line_if_fits("Health Check");
-                if (ImGui::Button("Health Check")) {
-                    update_dataset_health(app);
-                }
-                voxelpilot_same_line_if_fits("Export Bundle");
-                if (ImGui::Button("Export Bundle")) {
-                    if (performance_allows_optional_action(app, "AI review bundle", 1, 1)) {
-                        export_ai_review_bundle(app);
-                        refresh_performance_governor(app);
-                    }
-                }
             }
         }
-
-        ImGui::TextWrapped("%s", app->ai_assist_status);
 
         if (ImGui::CollapsingHeader("More AI Tools")) {
             ImGui::Text("Advisor");

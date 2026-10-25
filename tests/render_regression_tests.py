@@ -87,16 +87,19 @@ class RenderRegressionTests(unittest.TestCase):
         controls_panel = extract_nonstatic_function(controls_source, "draw_controls_panel")
         ai_assist_panel = extract_nonstatic_function(ai_assist_source, "draw_ai_assist_panel")
 
-        # draw_ai_assist_panel moved to ui_ai_assist_panel.cpp (Tier 3c module
-        # split), so the button literal no longer appears in standalone_main.cpp
-        # at all; the "single home" invariant is checked across both files.
+        # Step 4 of the Unity redesign (see docs/superpowers/specs/2026-10-24-
+        # ui-ux-interaction-and-flow-spec.md's "Bottom dock > AI Assist")
+        # renamed this from a Transfer & Health button labeled "Auto Enhance
+        # View" to a primary-surface quick-action chip labeled "Auto
+        # enhance", matching the spec's exact wording - same underlying
+        # apply_auto_enhance_transfer call, same "single home" invariant.
         total_count = (
-            source.count('ImGui::Button("Auto Enhance View")')
-            + ai_assist_source.count('ImGui::Button("Auto Enhance View")')
+            source.count('ImGui::Button("Auto enhance")')
+            + ai_assist_source.count('ImGui::Button("Auto enhance")')
         )
         self.assertEqual(total_count, 1)
-        self.assertNotIn('ImGui::Button("Auto Enhance View")', controls_panel)
-        self.assertIn('ImGui::Button("Auto Enhance View")', ai_assist_panel)
+        self.assertNotIn('ImGui::Button("Auto enhance")', controls_panel)
+        self.assertIn('ImGui::Button("Auto enhance")', ai_assist_panel)
 
     def test_workspace_uses_collapsible_top_ribbon_left_controls_and_right_panels(self):
         source = STANDALONE_MAIN.read_text(encoding="utf-8")
