@@ -81,7 +81,7 @@ static int load_selected_volume(StandaloneApp *app)
 
     if (!app->upload_path[0]) {
         strcpy(app->upload_status, "Select a raw volume file before loading.");
-        set_ui_toast(app, "Select a volume file first.");
+        set_ui_toast(app, "Select a volume file first.", VOXELPILOT_LOG_WARNING);
         return 0;
     }
 
@@ -93,7 +93,7 @@ static int load_selected_volume(StandaloneApp *app)
             error,
             sizeof(error)) != 0) {
         snprintf(app->upload_status, sizeof(app->upload_status), "%s", error);
-        set_ui_toast(app, "Volume load failed.");
+        set_ui_toast(app, "Volume load failed.", VOXELPILOT_LOG_ERROR);
         return 0;
     }
 

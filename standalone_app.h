@@ -43,6 +43,9 @@
 #define MAX_ANNOTATIONS  VOXELPILOT_DEFAULT_MAX_ANNOTATIONS
 #define ANNOTATION_NAME_MAX 64
 #define LOG_HISTORY_MAX  64
+#define VOXELPILOT_LOG_INFO     0
+#define VOXELPILOT_LOG_WARNING  1
+#define VOXELPILOT_LOG_ERROR    2
 
 enum {
     VOXELPILOT_RIBBON_HOME = 0,
@@ -68,6 +71,12 @@ typedef struct {
     float         min_intensity;
     float         max_intensity;
 } AnnotationRegion;
+
+typedef struct {
+    char          message[256];
+    char          timestamp[12];
+    int           severity;
+} VoxelPilotLogEntry;
 
 /* ============================================================
    Standalone App State
@@ -173,7 +182,7 @@ typedef struct {
     float         transfer_undo_opacity_scale;
     int           transfer_undo_available;
     char          ui_toast[256];
-    char          log_history[LOG_HISTORY_MAX][256];
+    VoxelPilotLogEntry log_history[LOG_HISTORY_MAX];
     int           log_history_count;
     int           log_history_next;
     char          ai_prompt[256];
@@ -394,7 +403,7 @@ void draw_performance_safety_block(StandaloneApp *app);
 const char *dataset_health_level_label(int level);
 void update_dataset_health(StandaloneApp *app);
 int clipping_is_active(const StandaloneApp *app);
-void set_ui_toast(StandaloneApp *app, const char *message);
+void set_ui_toast(StandaloneApp *app, const char *message, int severity = VOXELPILOT_LOG_INFO);
 void apply_transfer_settings_with_undo(
     StandaloneApp *app,
     float          center,

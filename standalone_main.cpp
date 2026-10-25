@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
@@ -904,17 +905,19 @@ void save_screenshot(StandaloneApp *app)
 }
 
 
-void set_ui_toast(StandaloneApp *app, const char *message)
+void set_ui_toast(StandaloneApp *app, const char *message, int severity)
 {
     if (!app) return;
     snprintf(app->ui_toast, sizeof(app->ui_toast), "%s", message ? message : "");
 
     if (message && message[0] != '\0') {
-        snprintf(
-            app->log_history[app->log_history_next],
-            sizeof(app->log_history[0]),
-            "%s",
-            message);
+        VoxelPilotLogEntry *entry = &app->log_history[app->log_history_next];
+        time_t now = time(NULL);
+        struct tm local_tm;
+        snprintf(entry->message, sizeof(entry->message), "%s", message);
+        entry->severity = severity;
+        localtime_s(&local_tm, &now);
+        strftime(entry->timestamp, sizeof(entry->timestamp), "%H:%M:%S", &local_tm);
         app->log_history_next = (app->log_history_next + 1) % LOG_HISTORY_MAX;
         if (app->log_history_count < LOG_HISTORY_MAX) {
             app->log_history_count++;

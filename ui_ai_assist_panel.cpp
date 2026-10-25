@@ -40,7 +40,16 @@
    lost their own top-level window identity and the ai_visible/
    metadata_visible flags that gated it, and are now called only from
    ui_bottom_panels.cpp's tab bar (alongside Histogram and Log) as
-   plain content inside that shared window/tab context. */
+   plain content inside that shared window/tab context.
+
+   Step 4 (docs/superpowers/specs/2026-10-24-ui-ux-interaction-and-
+   flow-spec.md's "Metadata" section) rebuilds draw_metadata_panel's
+   body as a 4-column label/value grid (ImGui table) instead of a
+   plain vertical Text list, adds Data type and Size (from
+   upload_data_type/upload_file_size_bytes, already tracked but not
+   shown here before), and keeps the full health-status sentence
+   (dataset_health_status) as a wrapped line below the grid rather
+   than only inside the grid cell. */
 
 #include <stdio.h>
 
@@ -331,37 +340,82 @@ void draw_ai_assist_panel(StandaloneApp *app)
 }
 void draw_metadata_panel(StandaloneApp *app)
 {
+    char dims_text[64];
+    char voxels_text[32];
+    char size_text[32];
+    char spacing_text[64];
+    char range_text[64];
+    ImVec4 label_color = ImVec4(0.624f, 0.690f, 0.737f, 1.0f); /* text/secondary #9FB0BC */
+    size_t voxel_count;
+
     if (!app) {
         return;
     }
 
-    size_t voxel_count =
+    voxel_count =
         (size_t)app->renderer.W *
         (size_t)app->renderer.H *
         (size_t)app->renderer.D;
 
+    snprintf(dims_text, sizeof(dims_text), "%d x %d x %d", app->renderer.W, app->renderer.H, app->renderer.D);
+    snprintf(voxels_text, sizeof(voxels_text), "%zu", voxel_count);
+    if (app->upload_file_size_known) {
+        snprintf(size_text, sizeof(size_text), "%.1f MB", (double)app->upload_file_size_bytes / (1024.0 * 1024.0));
+    } else {
+        snprintf(size_text, sizeof(size_text), "Unknown");
+    }
+    snprintf(spacing_text, sizeof(spacing_text), "%.3f / %.3f / %.3f",
+             app->voxel_spacing[0], app->voxel_spacing[1], app->voxel_spacing[2]);
+    snprintf(range_text, sizeof(range_text), "%.4f to %.4f", app->hist_min_value, app->hist_max_value);
+
     ImGui::Text("Dataset Summary");
     ImGui::Separator();
-    ImGui::Text("Dimensions: %d x %d x %d",
-                app->renderer.W, app->renderer.H, app->renderer.D);
-    ImGui::Text("Voxel Count: %zu", voxel_count);
-    ImGui::Text("Value Range: %.4f to %.4f",
-                app->hist_min_value, app->hist_max_value);
-    ImGui::Text("Histogram Peak: %.0f samples", app->hist_peak_count);
-    ImGui::Text("Render Target: %d x %d", app->render_w, app->render_h);
-    ImGui::Text("Voxel Spacing: %.3f / %.3f / %.3f",
-                app->voxel_spacing[0],
-                app->voxel_spacing[1],
-                app->voxel_spacing[2]);
-    ImGui::Text("Transfer Palette: %s", k_tf_palette_labels[app->tf_palette]);
-    ImGui::Text("Clipping State: %s", clipping_is_active(app) ? "Active" : "Full Volume");
-    if (app->dataset_health_ready) {
-        ImGui::Text("Health: %s %.0f/100",
-                    dataset_health_level_label(app->dataset_health.level),
-                    app->dataset_health.score);
-        ImGui::TextWrapped("Health summary: %s", app->dataset_health.summary);
-    } else {
-        ImGui::TextWrapped("Health summary: %s", app->dataset_health_status);
+
+    /* 4-column label/value grid, per docs/superpowers/specs/2026-10-24-
+       ui-ux-interaction-and-flow-spec.md's Metadata tab: Dimensions,
+       Data type, Voxels, Size, Spacing, Value range, Palette, Clipping,
+       Health score - two label/value pairs per row. */
+    if (ImGui::BeginTable("##metadata_grid", 4, ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0); ImGui::TextColored(label_color, "Dimensions");
+        ImGui::TableSetColumnIndex(1); ImGui::Text("%s", dims_text);
+        ImGui::TableSetColumnIndex(2); ImGui::TextColored(label_color, "Data type");
+        ImGui::TableSetColumnIndex(3); ImGui::Text("%s", k_volume_data_type_labels[app->upload_data_type]);
+
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0); ImGui::TextColored(label_color, "Voxels");
+        ImGui::TableSetColumnIndex(1); ImGui::Text("%s", voxels_text);
+        ImGui::TableSetColumnIndex(2); ImGui::TextColored(label_color, "Size");
+        ImGui::TableSetColumnIndex(3); ImGui::Text("%s", size_text);
+
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0); ImGui::TextColored(label_color, "Spacing");
+        ImGui::TableSetColumnIndex(1); ImGui::Text("%s", spacing_text);
+        ImGui::TableSetColumnIndex(2); ImGui::TextColored(label_color, "Value range");
+        ImGui::TableSetColumnIndex(3); ImGui::Text("%s", range_text);
+
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0); ImGui::TextColored(label_color, "Palette");
+        ImGui::TableSetColumnIndex(1); ImGui::Text("%s", k_tf_palette_labels[app->tf_palette]);
+        ImGui::TableSetColumnIndex(2); ImGui::TextColored(label_color, "Clipping");
+        ImGui::TableSetColumnIndex(3); ImGui::Text("%s", clipping_is_active(app) ? "Active" : "Full Volume");
+
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0); ImGui::TextColored(label_color, "Health score");
+        ImGui::TableSetColumnIndex(1);
+        if (app->dataset_health_ready) {
+            ImGui::Text("%.0f/100", app->dataset_health.score);
+        } else {
+            ImGui::TextWrapped("Not yet checked");
+        }
+
+        ImGui::EndTable();
     }
+
+    /* dataset_health_status already folds in level/score/summary when
+       ready (see update_dataset_health, standalone_main.cpp), or a
+       fallback explanation otherwise - the grid cell above is just the
+       quick-glance number. */
+    ImGui::TextWrapped("Health: %s", app->dataset_health_status);
     ImGui::TextWrapped("Dataset status: %s", app->upload_status);
 }
