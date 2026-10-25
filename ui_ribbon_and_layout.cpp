@@ -150,7 +150,18 @@ void ensure_default_dock_layout(StandaloneApp *app, ImGuiID dockspace_id)
        not attempted here, per the plan doc's smallest-blast-radius
        ordering. */
     dock_scene_id = ImGui::DockBuilderSplitNode(dock_main_id, ImGuiDir_Left, 0.167f, NULL, &dock_main_id);
-    dock_left_id = ImGui::DockBuilderSplitNode(dock_main_id, ImGuiDir_Left, 0.26f, NULL, &dock_main_id);
+    /* Controls' split fraction is taken against what's left AFTER Scene's
+       cut, not against the full width, so leaving this at the pre-Scene
+       0.26f silently shrank Controls from 26% of the window to ~0.26 *
+       (1 - 0.167) = ~21.7% - narrow enough that several of its labels
+       ("GPU Quality Preset", "Render Resolution", "Opacity Threshold")
+       started getting clipped (reported after the step-5 docking fixes,
+       commit 5e47cd4). Bumped to 0.26 / (1 - 0.167) = 0.312 so Controls'
+       actual on-screen width is restored to the same ~26% of the window
+       it had before step 5 added Scene; Scene's own 0.167f is unchanged.
+       This is a stopgap - step 10 replaces Controls with the spec's
+       selection-driven Inspector, which gets its own sizing then. */
+    dock_left_id = ImGui::DockBuilderSplitNode(dock_main_id, ImGuiDir_Left, 0.312f, NULL, &dock_main_id);
     dock_right_id = ImGui::DockBuilderSplitNode(dock_main_id, ImGuiDir_Right, 0.30f, NULL, &dock_main_id);
 
     ImGui::DockBuilderDockWindow("Scene", dock_scene_id);
