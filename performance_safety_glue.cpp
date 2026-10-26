@@ -118,6 +118,11 @@ void refresh_adaptive_quality_for_frame(StandaloneApp *app)
              "%s",
              result.status);
 }
+/* The volume's GPU texture: 16-bit, 2 bytes per voxel (renderer/
+   volume_textures.cu). This used to assume a 4-byte float texture plus a
+   gradient texture three times that size, which the renderer no longer
+   has - it overstated a 512x512x373 scan by about 1.4 GB and put the
+   Safety badge on "Watch" for no reason. */
 static size_t estimate_current_volume_bytes(const StandaloneApp *app)
 {
     if (!app || app->renderer.W < 1 || app->renderer.H < 1 || app->renderer.D < 1) {
@@ -126,7 +131,7 @@ static size_t estimate_current_volume_bytes(const StandaloneApp *app)
     return (size_t)app->renderer.W *
            (size_t)app->renderer.H *
            (size_t)app->renderer.D *
-           sizeof(float);
+           sizeof(unsigned short);
 }
 
 static size_t estimate_current_label_mask_bytes(const StandaloneApp *app)
@@ -156,7 +161,8 @@ void refresh_performance_governor(StandaloneApp *app)
     inputs.render_width = app->render_w;
     inputs.render_height = app->render_h;
     inputs.estimated_volume_bytes = estimate_current_volume_bytes(app);
-    inputs.estimated_gradient_bytes = inputs.estimated_volume_bytes * 3u;
+    /* Gradients are computed in the kernel; nothing is stored. */
+    inputs.estimated_gradient_bytes = 0;
     inputs.estimated_label_mask_bytes = estimate_current_label_mask_bytes(app);
     inputs.estimated_render_target_bytes = voxelpilot_estimate_render_target_bytes(app->render_w, app->render_h);
     inputs.render_ms_last = app->last_render_ms;
@@ -171,8 +177,15 @@ void refresh_performance_governor(StandaloneApp *app)
 
     telemetry_status = cudaMemGetInfo(&free_bytes, &total_bytes);
     if (telemetry_status == cudaSuccess && free_bytes > 0 && total_bytes > 0) {
+        /* The loaded volume, label mask and render target are already
+           resident, so they are missing from free_bytes. Compare the
+           working set against what it could use - free plus its own
+           share - rather than counting it twice. */
+        size_t resident = inputs.estimated_volume_bytes +
+                          inputs.estimated_label_mask_bytes +
+                          inputs.estimated_render_target_bytes;
         inputs.has_gpu_memory_telemetry = 1;
-        inputs.gpu_memory_available = free_bytes;
+        inputs.gpu_memory_available = free_bytes + resident;
         inputs.gpu_memory_total = total_bytes;
     }
 
