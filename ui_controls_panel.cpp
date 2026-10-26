@@ -81,6 +81,13 @@ static int load_selected_volume(StandaloneApp *app)
     int loaded_w = 0, loaded_h = 0, loaded_d = 0;
 
     if (!app) return 0;
+    /* Background discovery reads the current voxels: loading would free
+       them under it. */
+    if (semantic_discovery_running(app)) {
+        set_ui_toast(app, "Region discovery is still running - load again when it finishes.",
+                     VOXELPILOT_LOG_WARNING);
+        return 0;
+    }
     spec.width = (uint32_t)clamp_import_dimension(app->upload_width);
     spec.height = (uint32_t)clamp_import_dimension(app->upload_height);
     spec.depth = (uint32_t)clamp_import_dimension(app->upload_depth);

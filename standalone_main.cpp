@@ -19,6 +19,8 @@
 #include <string.h>
 #include <time.h>
 
+#include "background_task.h"
+
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
 
@@ -665,10 +667,11 @@ int write_png_file(
 
 
 
+static void finish_semantic_discovery(StandaloneApp *app, int discovered);
+
 void run_adaptive_semantic_discovery(StandaloneApp *app)
 {
     int discovered = 0;
-    int applied_corrections = 0;
 
     if (!app || !app->renderer.volume_data ||
         app->renderer.W < 1 || app->renderer.H < 1 || app->renderer.D < 1) {
@@ -705,6 +708,16 @@ void run_adaptive_semantic_discovery(StandaloneApp *app)
         app->label_mask,
         app->semantic_regions,
         &app->semantic_region_count);
+
+    finish_semantic_discovery(app, discovered);
+}
+
+/* Everything after the region search itself: relationships, ASD memory
+   corrections, overlays and status. Runs on the main thread, whether
+   the search ran inline (above) or in the background (below). */
+static void finish_semantic_discovery(StandaloneApp *app, int discovered)
+{
+    int applied_corrections = 0;
 
     memset(app->annotations, 0, sizeof(app->annotations));
     app->annotation_count = 0;
@@ -756,6 +769,135 @@ void run_adaptive_semantic_discovery(StandaloneApp *app)
              app->semantic_region_count,
              app->semantic_relation_count,
              applied_corrections);
+}
+
+/* ---- Background discovery ----
+
+   On a 512x512x373 scan the region search takes several seconds; run on
+   the UI thread it froze the whole app. The worker below runs only the
+   pure search (voxelpilot_discover_semantic_regions_ex) into its own
+   label mask and region array - it never writes app state the renderer
+   or UI read - and poll_semantic_discovery hands the result over on the
+   main thread. Volume loads are refused while it runs, since the worker
+   reads the current voxels. */
+struct SemanticDiscoveryJob {
+    void                    *worker;   /* background_task.h handle */
+    const float             *volume;
+    int                      width, height, depth;
+    float                    spacing[3];
+    int                      max_regions;
+    float                    sensitivity;
+    size_t                   min_voxels;
+    unsigned char           *mask;
+    VoxelPilotSemanticRegion regions[VOXELPILOT_ASD_MAX_REGIONS];
+    int                      count;
+    int                      discovered;
+    double                   started;
+};
+
+/* Runs on the worker thread: only the pure search, into job-owned
+   buffers. */
+static void semantic_discovery_worker(void *arg)
+{
+    SemanticDiscoveryJob *job = (SemanticDiscoveryJob *)arg;
+    job->discovered = voxelpilot_discover_semantic_regions_ex(
+        job->volume, job->width, job->height, job->depth, job->spacing, 1,
+        job->max_regions, job->sensitivity, job->min_voxels,
+        job->mask, job->regions, &job->count);
+}
+
+int start_semantic_discovery_async(StandaloneApp *app)
+{
+    SemanticDiscoveryJob *job;
+    size_t voxels;
+
+    if (!app || app->semantic_job) return 0;
+    if (!app->renderer.volume_data || app->renderer.W < 1 || app->renderer.H < 1 || app->renderer.D < 1) {
+        snprintf(app->semantic_status, sizeof(app->semantic_status), "Load a volume before running ASD-Lite.");
+        return 0;
+    }
+    if (app->semantic_max_regions < 1) app->semantic_max_regions = 1;
+    if (app->semantic_max_regions > MAX_ANNOTATIONS) app->semantic_max_regions = MAX_ANNOTATIONS;
+    if (app->semantic_min_region_voxels < 1) app->semantic_min_region_voxels = 1;
+    app->semantic_sensitivity = voxelpilot_asd_clampf(app->semantic_sensitivity, 0.0f, 1.0f);
+
+    voxels = (size_t)app->renderer.W * (size_t)app->renderer.H * (size_t)app->renderer.D;
+    job = new SemanticDiscoveryJob();
+    job->worker = NULL;
+    job->volume = app->renderer.volume_data;
+    job->width = app->renderer.W;
+    job->height = app->renderer.H;
+    job->depth = app->renderer.D;
+    memcpy(job->spacing, app->voxel_spacing, sizeof(job->spacing));
+    job->max_regions = app->semantic_max_regions;
+    job->sensitivity = app->semantic_sensitivity;
+    job->min_voxels = (size_t)app->semantic_min_region_voxels;
+    job->mask = (unsigned char *)malloc(voxels);
+    job->count = 0;
+    job->discovered = 0;
+    job->started = glfwGetTime();
+    if (!job->mask) {
+        delete job;
+        snprintf(app->semantic_status, sizeof(app->semantic_status),
+                 "Not enough memory for region discovery on this volume.");
+        set_ui_toast(app, app->semantic_status, VOXELPILOT_LOG_ERROR);
+        return 0;
+    }
+
+    job->worker = voxelpilot_task_start(semantic_discovery_worker, job);
+    if (!job->worker) {
+        /* No thread available: run inline rather than not at all. */
+        semantic_discovery_worker(job);
+    }
+    app->semantic_job = job;
+    snprintf(app->ai_assist_status, sizeof(app->ai_assist_status), "Discovering regions...");
+    set_ui_toast(app, "Discovering regions - the app stays usable meanwhile.");
+    return 1;
+}
+
+int semantic_discovery_running(const StandaloneApp *app)
+{
+    return app && app->semantic_job != NULL;
+}
+
+float semantic_discovery_elapsed(const StandaloneApp *app)
+{
+    const SemanticDiscoveryJob *job = app ? (const SemanticDiscoveryJob *)app->semantic_job : NULL;
+    return job ? (float)(glfwGetTime() - job->started) : 0.0f;
+}
+
+void poll_semantic_discovery(StandaloneApp *app, int wait)
+{
+    SemanticDiscoveryJob *job = app ? (SemanticDiscoveryJob *)app->semantic_job : NULL;
+    size_t voxels;
+
+    if (!job) return;
+    if (!wait && job->worker && !voxelpilot_task_is_done(job->worker)) return;
+    voxelpilot_task_join(job->worker);
+    app->semantic_job = NULL;
+
+    voxels = (size_t)job->width * (size_t)job->height * (size_t)job->depth;
+    if (job->volume == app->renderer.volume_data &&
+        job->width == app->renderer.W && job->height == app->renderer.H && job->depth == app->renderer.D &&
+        ensure_label_mask(app)) {
+        int i;
+        memcpy(app->label_mask, job->mask, voxels);
+        for (i = 0; i < job->count && i < VOXELPILOT_ASD_MAX_REGIONS; ++i) {
+            app->semantic_regions[i] = job->regions[i];
+        }
+        app->semantic_region_count = job->count;
+        finish_semantic_discovery(app, job->discovered);
+        refresh_performance_governor(app);
+        snprintf(app->ai_assist_status, sizeof(app->ai_assist_status), "%s", app->semantic_status);
+        {
+            char msg[96];
+            snprintf(msg, sizeof(msg), "Found %d region(s) in %.1f s.",
+                     app->semantic_region_count, (float)(glfwGetTime() - job->started));
+            set_ui_toast(app, msg);
+        }
+    }
+    free(job->mask);
+    delete job;
 }
 
 /* draw_slice_card used to live here (static, called only from
@@ -1507,6 +1649,7 @@ int main(int argc, char **argv)
     int           cli_cinematic_contrast_set = 0;
     int           cli_demo_mode = 0;
     int           cli_semantic_demo = 0;
+    int           cli_discover = 0;
     int           cli_demo_auto = 0;
     double        cli_demo_duration_sec = 24.0;
     VoxelPilotCliExportPlan export_plan;
@@ -1577,6 +1720,8 @@ int main(int argc, char **argv)
             cli_cinematic_enabled = 1;
         } else if (strcmp(argv[i], "--demo") == 0) {
             cli_demo_mode = 1;
+        } else if (strcmp(argv[i], "--discover") == 0) {
+            cli_discover = 1;
         } else if (strcmp(argv[i], "--semantic-demo") == 0) {
             cli_semantic_demo = 1;
         } else if (strcmp(argv[i], "--demo-auto") == 0) {
@@ -1672,7 +1817,7 @@ int main(int argc, char **argv)
         } else {
             fprintf(stderr, "Unknown argument: %s\n", argv[i]);
             fprintf(stderr,
-                    "Usage: %s [--volume file.raw] [--dim N | --width W --height H --depth D] [--type uint8|uint16|float32] [--snapshot path.png] [--review-bundle folder] [--spacing SX SY SZ] [--gpu-budget-mb MB] [--tf-center C --tf-width W --tf-opacity O] [--cinematic-lite --cinematic-rim R --cinematic-glow G --cinematic-contrast C] [--demo] [--semantic-demo] [--demo-auto --demo-duration seconds]\n",
+                    "Usage: %s [--volume file.raw] [--dim N | --width W --height H --depth D] [--type uint8|uint16|float32] [--snapshot path.png] [--review-bundle folder] [--spacing SX SY SZ] [--gpu-budget-mb MB] [--tf-center C --tf-width W --tf-opacity O] [--cinematic-lite --cinematic-rim R --cinematic-glow G --cinematic-contrast C] [--demo] [--discover] [--semantic-demo] [--demo-auto --demo-duration seconds]\n",
                     argv[0]);
             return -1;
         }
@@ -1919,6 +2064,12 @@ int main(int argc, char **argv)
         }
     }
 
+    /* --discover: start region discovery in the background once the
+       window is up (the app stays usable while it runs). */
+    if (cli_discover && !cli_semantic_demo) {
+        start_semantic_discovery_async(&app);
+    }
+
     if (cli_semantic_demo) {
         run_semantic_demo_workflow(&app, "CLI semantic demo");
     }
@@ -2103,6 +2254,8 @@ int main(int argc, char **argv)
         update_startup_splash(&app);
         app.camera_motion_active = 0;
         update_auto_demo_sequence(&app, now);
+        /* Hand over background region discovery once it has finished. */
+        poll_semantic_discovery(&app, 0);
         if (!app.splash_visible) {
             handle_keyboard_shortcuts(&app);
         }
@@ -2141,6 +2294,7 @@ int main(int argc, char **argv)
     /* ====================================================
        Cleanup
        ==================================================== */
+    poll_semantic_discovery(&app, 1);   /* never free voxels under the worker */
     renderer_state_cleanup(&app.renderer);
     cudaDeviceReset();
 

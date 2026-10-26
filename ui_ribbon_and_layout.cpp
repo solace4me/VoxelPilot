@@ -539,12 +539,12 @@ void draw_top_ribbon(StandaloneApp *app)
         }
         ImGui::Separator();
         if (ImGui::MenuItem("Auto enhance", NULL, false, has_volume)) apply_auto_enhance_transfer(app, "AI menu");
-        if (ImGui::MenuItem("Discover regions", NULL, false,
-                            has_volume && app->performance_result.safe_to_run_asd)) {
+        if (ImGui::MenuItem(semantic_discovery_running(app) ? "Discovering regions..." : "Discover regions",
+                            NULL, false,
+                            has_volume && app->performance_result.safe_to_run_asd &&
+                            !semantic_discovery_running(app))) {
             if (performance_allows_optional_action(app, "Discover regions", 1, 0)) {
-                run_adaptive_semantic_discovery(app);
-                refresh_performance_governor(app);
-                snprintf(app->ai_assist_status, sizeof(app->ai_assist_status), "%s", app->semantic_status);
+                start_semantic_discovery_async(app);
             }
         }
         if (ImGui::MenuItem("Scout focus slice", NULL, false, has_volume)) menu_scout_focus_slice(app);

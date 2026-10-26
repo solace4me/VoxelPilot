@@ -223,15 +223,23 @@ void draw_ai_assist_panel(StandaloneApp *app)
         }
 
         voxelpilot_same_line_if_fits("Discover regions");
-        ImGui::BeginDisabled(blocked_asd);
-        if (ImGui::Button("Discover regions")) {
-            if (performance_allows_optional_action(app, "Discover regions", 1, 0)) {
-                run_adaptive_semantic_discovery(app);
-                refresh_performance_governor(app);
-                snprintf(app->ai_assist_status, sizeof(app->ai_assist_status), "%s", app->semantic_status);
+        /* Runs in the background (start_semantic_discovery_async); the
+           chip shows the elapsed time until the result is handed over. */
+        if (semantic_discovery_running(app)) {
+            char running[48];
+            snprintf(running, sizeof(running), "Discovering... %.0f s", semantic_discovery_elapsed(app));
+            ImGui::BeginDisabled(true);
+            ImGui::Button(running);
+            ImGui::EndDisabled();
+        } else {
+            ImGui::BeginDisabled(blocked_asd);
+            if (ImGui::Button("Discover regions")) {
+                if (performance_allows_optional_action(app, "Discover regions", 1, 0)) {
+                    start_semantic_discovery_async(app);
+                }
             }
+            ImGui::EndDisabled();
         }
-        ImGui::EndDisabled();
         if (blocked_asd && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
             ImGui::SetTooltip("%s", app->performance_result.recommendation);
         }
@@ -303,12 +311,13 @@ void draw_ai_assist_panel(StandaloneApp *app)
                         app->semantic_relation_count,
                         app->semantic_correction_count);
         }
+        ImGui::BeginDisabled(semantic_discovery_running(app) != 0);
         if (ImGui::Button("Discover Regions")) {
             if (performance_allows_optional_action(app, "ASD discovery", 1, 0)) {
-                run_adaptive_semantic_discovery(app);
-                refresh_performance_governor(app);
+                start_semantic_discovery_async(app);
             }
         }
+        ImGui::EndDisabled();
         voxelpilot_same_line_if_fits("Start Guided Review");
         if (ImGui::Button("Start Guided Review")) {
             start_guided_review(app);

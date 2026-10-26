@@ -366,6 +366,9 @@ typedef struct {
     int           show_shortcuts_popup;
     int           show_about_popup;
     float         top_bar_height;
+    /* Region discovery running in the background (standalone_main.cpp,
+       SemanticDiscoveryJob); NULL when idle. */
+    void         *semantic_job;
     int           camera_anim_active;
     double        camera_anim_start;
     float         camera_anim_from[9];
@@ -555,6 +558,13 @@ void apply_transfer_settings_with_undo(
 int undo_transfer_settings(StandaloneApp *app);
 void draw_help_marker(const char *description);
 void run_adaptive_semantic_discovery(StandaloneApp *app);
+/* Background version for the UI (the inline one above stays for the CLI
+   demo): start returns 0 if one is already running or nothing to do;
+   poll each frame (wait = 1 blocks, used at exit). */
+int start_semantic_discovery_async(StandaloneApp *app);
+void poll_semantic_discovery(StandaloneApp *app, int wait);
+int semantic_discovery_running(const StandaloneApp *app);
+float semantic_discovery_elapsed(const StandaloneApp *app);
 int apply_auto_enhance_transfer(StandaloneApp *app, const char *reason);
 void apply_ai_prompt_to_app(StandaloneApp *app);
 void start_guided_review(StandaloneApp *app);
