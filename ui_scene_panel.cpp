@@ -120,6 +120,23 @@ static const char *scene_basename(const char *path)
     return slash ? slash + 1 : path;
 }
 
+/* Whether an annotation gets its own row under "Annotations".
+   refresh_semantic_annotation_overlays rebuilds annotations[] as a
+   one-for-one copy of the discovered regions (that copy is what feeds
+   the render's label overlay), so listing them all showed every region
+   twice. The tree keeps the two sources apart instead: AI suggestions
+   under "Discovered regions", things the user placed under
+   "Annotations". Mirrored entries stay in annotations[] untouched. */
+static bool scene_annotation_listed(StandaloneApp *app, int index)
+{
+    const AnnotationRegion *ann = &app->annotations[index];
+
+    if (!ann->active) {
+        return false;
+    }
+    return ann->label_id == 0 || find_semantic_region_by_label(app, ann->label_id) == NULL;
+}
+
 /* Case-insensitive substring search. On a match, *match_offset (if not
    NULL) is set to the byte offset of the first match. */
 static bool scene_text_matches_query(
@@ -762,7 +779,7 @@ void draw_scene_panel(StandaloneApp *app)
             char group_label[48];
 
             for (i = 0; i < app->annotation_count; ++i) {
-                if (app->annotations[i].active) {
+                if (scene_annotation_listed(app, i)) {
                     count++;
                 }
             }
@@ -770,7 +787,7 @@ void draw_scene_panel(StandaloneApp *app)
             header_matches = !searching || scene_text_matches_query(group_label, query, NULL);
             if (searching && !header_matches) {
                 for (i = 0; i < app->annotation_count; ++i) {
-                    if (!app->annotations[i].active) {
+                    if (!scene_annotation_listed(app, i)) {
                         continue;
                     }
                     if (scene_text_matches_query(app->annotations[i].name, query, NULL)) {
@@ -782,7 +799,7 @@ void draw_scene_panel(StandaloneApp *app)
             if (count > 0 && (header_matches || any_child_matches)) {
                 if (ImGui::TreeNodeEx("##annotations_group", ImGuiTreeNodeFlags_DefaultOpen, "%s", group_label)) {
                     for (i = 0; i < app->annotation_count; ++i) {
-                        if (!app->annotations[i].active) {
+                        if (!scene_annotation_listed(app, i)) {
                             continue;
                         }
                         if (searching && !header_matches &&

@@ -1405,6 +1405,7 @@ int main(int argc, char **argv)
     int           cli_cinematic_rim_set = 0;
     int           cli_cinematic_glow_set = 0;
     int           cli_cinematic_contrast_set = 0;
+    int           cli_demo_mode = 0;
     int           cli_semantic_demo = 0;
     int           cli_demo_auto = 0;
     double        cli_demo_duration_sec = 24.0;
@@ -1458,6 +1459,8 @@ int main(int argc, char **argv)
             cli_tf_opacity_set = 1;
         } else if (strcmp(argv[i], "--cinematic-lite") == 0) {
             cli_cinematic_enabled = 1;
+        } else if (strcmp(argv[i], "--demo") == 0) {
+            cli_demo_mode = 1;
         } else if (strcmp(argv[i], "--semantic-demo") == 0) {
             cli_semantic_demo = 1;
         } else if (strcmp(argv[i], "--demo-auto") == 0) {
@@ -1553,7 +1556,7 @@ int main(int argc, char **argv)
         } else {
             fprintf(stderr, "Unknown argument: %s\n", argv[i]);
             fprintf(stderr,
-                    "Usage: %s [--volume file.raw] [--dim N | --width W --height H --depth D] [--type uint8|uint16|float32] [--snapshot path.png] [--review-bundle folder] [--tf-center C --tf-width W --tf-opacity O] [--cinematic-lite --cinematic-rim R --cinematic-glow G --cinematic-contrast C] [--semantic-demo] [--demo-auto --demo-duration seconds]\n",
+                    "Usage: %s [--volume file.raw] [--dim N | --width W --height H --depth D] [--type uint8|uint16|float32] [--snapshot path.png] [--review-bundle folder] [--tf-center C --tf-width W --tf-opacity O] [--cinematic-lite --cinematic-rim R --cinematic-glow G --cinematic-contrast C] [--demo] [--semantic-demo] [--demo-auto --demo-duration seconds]\n",
                     argv[0]);
             return -1;
         }
@@ -1617,7 +1620,10 @@ int main(int argc, char **argv)
     if (cli_tf_width_set) app.tf_width = cli_tf_width;
     if (cli_tf_opacity_set) app.tf_opacity_scale = cli_tf_opacity;
 
-    app.demo_mode_enabled = 1;
+    /* The presenter banner is for demos only; an everyday launch opens
+       straight into the workstation. release/.../Run_VoxelPilot.bat
+       passes --demo so the packaged presentation build is unchanged. */
+    app.demo_mode_enabled = cli_demo_mode || cli_semantic_demo || cli_demo_auto;
     app.demo_auto_enabled = cli_demo_auto;
     app.demo_auto_start_time = 0.0;
     app.demo_auto_duration_sec = cli_demo_duration_sec;

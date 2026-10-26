@@ -58,8 +58,39 @@ spec disagree, the spec wins; this doc should stay in sync with it.
   User confirmed the resulting layout (Scene / Controls / viewport /
   Insights+Bottom Panels tabbed / Status, all properly tiled, no
   overlap, no clipped labels) by screenshot after the last of these.
-- Steps 6-11 (renumbered from the original plan's 4-10) - not started,
-  scope revised against the spec; see below.
+- Step 6 (slice strip) - done (commit 9b772b5), then reworked below.
+- Spec layout fixes (2026-10-25) - build- and screenshot-verified
+  against the running app:
+  - The CUDA render filled the whole window behind every panel (off-
+    centre, mostly hidden, 1920x1009 = 48 ms/frame). It is now sized to
+    and drawn into the dockspace central node only
+    (`viewport_framebuffer_rect`); hover-pick and region callouts
+    project into that same rect, callouts clipped to it and drawn under
+    panels.
+  - Slice thumbnails rendered red (GL_R8 without a swizzle) - fixed.
+  - Dock layout now matches the spec: Scene left 240 px; Controls (the
+    Inspector stand-in) + Insights tabbed on the right; Slices strip and
+    Bottom Panels under the viewport only; status bar is a fixed 28 px
+    strip outside the dockspace. Single-window nodes have no tab bar.
+  - Segoe UI replaces ProggyClean as the UI font when present.
+  - Render is skipped when the render command is unchanged (idle UI went
+    from ~16 FPS to ~140 FPS); `last_render_valid` must be cleared by
+    anything that changes the voxels.
+  - AI Assist tab: prompt + chips + Last-action card first; the volume/
+    ASD stat lines moved into Discovery.
+  - Controls widgets use a fixed label column (no clipped labels);
+    ribbon starts collapsed.
+- Design decisions taken (owner asked for best-UX calls, 2026-10-25):
+  - Scene shows each discovered region once. annotations[] mirrors the
+    regions for the render overlay; the tree lists only annotations
+    that are not such mirrors. Rows carry R#/A# tags since ASD names
+    repeat.
+  - Slice strip 180 px (spec said 132; thumbnails were unreadable).
+  - Demo banner only with `--demo`, `--semantic-demo` or `--demo-auto`;
+    the release `Run_VoxelPilot.bat` passes `--demo`.
+- Steps 7-11 - not started. Next: step 10 (Inspector) ahead of step 7,
+  since it carries no mouse-input risk and step 7's tools will want an
+  Inspector to show their settings in.
 
 ## Corrections needed to steps 1-3's already-shipped work (new step 4)
 

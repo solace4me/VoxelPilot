@@ -189,10 +189,12 @@ void ensure_default_dock_layout(StandaloneApp *app, ImGuiID dockspace_id)
     dock_bottom_id = ImGui::DockBuilderSplitNode(
         dock_main_id, ImGuiDir_Down,
         fminf(bottom_h / dock_size.y, 0.45f), NULL, &dock_main_id);
-    /* Spec slice strip: 132 px between the viewport and the bottom dock. */
+    /* Slice strip between the viewport and the bottom dock. 180 px, not
+       the spec's original 132: at 132 the thumbnails were ~94 px, too
+       small to read. Users can still drag it to any height. */
     dock_slices_id = ImGui::DockBuilderSplitNode(
         dock_main_id, ImGuiDir_Down,
-        fminf(132.0f / fmaxf(dock_size.y - bottom_h, 1.0f), 0.4f), NULL, &dock_main_id);
+        fminf(180.0f / fmaxf(dock_size.y - bottom_h, 1.0f), 0.4f), NULL, &dock_main_id);
     dock_left_id = dock_right_id;
 
     ImGui::DockBuilderDockWindow("Scene", dock_scene_id);
