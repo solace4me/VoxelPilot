@@ -100,7 +100,20 @@ spec disagree, the spec wins; this doc should stay in sync with it.
   (load_semantic_memory_if_present), so discovery learns from the user.
   Clip ranges use DragFloatRange2 (min/max can no longer cross). The
   Insights panel is retired.
-- Steps 7, 8, 9, 11 - not started.
+- Step 7 (viewport toolbar) - built; verified by window capture with
+  keys posted to the app window (presets, tool switching, overlays).
+  Orbit / Pan / Measure / Clip / Annotate (O P M C A), one active;
+  right-drag pans and middle-drag orbits in every tool; a left press
+  that moves > 4 px is a drag (Pan pans, others orbit), otherwise a
+  click - Measure and Annotate place on the visible surface via the
+  shared pick_visible_under_cursor (same point the hover names).
+  Presets Front/Side/Top/Iso (1-4) at one framing distance with a
+  300 ms smoothstep transition (common/camera_motion.h, tested); Frame
+  (F). Measurement line + distance and the clip box wireframe are drawn
+  in 3D. Not done: dragging clip box faces directly in the viewport
+  (bounds are set in the Inspector). Mouse-click paths not exercised by
+  automation (they need the real cursor).
+- Steps 8, 9, 11 - not started.
 
 ## Corrections needed to steps 1-3's already-shipped work (new step 4)
 

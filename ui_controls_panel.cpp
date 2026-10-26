@@ -181,7 +181,28 @@ void handle_keyboard_shortcuts(StandaloneApp *app)
 
     if (!app) return;
     io = &ImGui::GetIO();
-    if (!io->KeyCtrl || io->WantTextInput) return;
+    if (io->WantTextInput) return;
+
+    /* Single keys (spec shortcut table) - only when no text field has
+       focus and no modifier is held: tools, camera presets, frame. */
+    if (!io->KeyCtrl && !io->KeyAlt && !io->KeyShift) {
+        static const ImGuiKey tool_keys[VOXELPILOT_TOOL_COUNT] = {
+            ImGuiKey_O, ImGuiKey_P, ImGuiKey_M, ImGuiKey_C, ImGuiKey_A
+        };
+        static const ImGuiKey view_keys[VOXELPILOT_CAMERA_PRESET_COUNT] = {
+            ImGuiKey_1, ImGuiKey_2, ImGuiKey_3, ImGuiKey_4
+        };
+        int i;
+        for (i = 0; i < VOXELPILOT_TOOL_COUNT; ++i) {
+            if (ImGui::IsKeyPressed(tool_keys[i], false)) set_active_tool(app, i);
+        }
+        for (i = 0; i < VOXELPILOT_CAMERA_PRESET_COUNT; ++i) {
+            if (ImGui::IsKeyPressed(view_keys[i], false)) start_camera_preset_transition(app, i);
+        }
+        if (ImGui::IsKeyPressed(ImGuiKey_F, false)) frame_volume(app);
+        return;
+    }
+    if (!io->KeyCtrl) return;
 
     if (ImGui::IsKeyPressed(ImGuiKey_O)) {
         browse_volume_file(app);
@@ -1118,10 +1139,8 @@ static void inspector_draw_camera(StandaloneApp *app)
 
     if (inspector_section("view", "View", "", true, false, NULL)) {
         clicked = inspector_segmented("views", view_labels, 4, -1);
-        if (clicked == 0) set_camera_preset(app, 0.5f, 0.5f, -1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f);
-        if (clicked == 1) set_camera_preset(app, -1.0f, 0.5f, 0.5f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f);
-        if (clicked == 2) set_camera_preset(app, 0.5f, 1.7f, 0.5f, 0.0f, -1.0f, 0.0f, 0.0f, 0.0f, 1.0f);
-        if (clicked == 3) set_camera_preset(app, -0.9f, 1.2f, -0.9f, 0.7f, -0.35f, 0.7f, 0.0f, 1.0f, 0.0f);
+        /* Same presets and eased transition as the toolbar and keys 1-4. */
+        if (clicked >= 0) start_camera_preset_transition(app, clicked);
         inspector_label("Field of view");
         ImGui::SliderFloat("##fov", &app->fov_y_deg, 10.0f, 120.0f, "%.0f°");
         ImGui::TextDisabled("Drag in the viewport to orbit, scroll to zoom.");

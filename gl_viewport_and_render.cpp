@@ -170,38 +170,218 @@ static void upload_gray_texture(
     glBindTexture(GL_TEXTURE_2D, 0);
 }
 
+/* ---- Viewport tools and camera (step 7) ---- */
+
+void set_active_tool(StandaloneApp *app, int tool)
+{
+    if (!app || tool < 0 || tool >= VOXELPILOT_TOOL_COUNT) return;
+    app->active_tool = tool;
+    /* Each tool brings up what it works on: the Inspector shows the
+       measurement or the clip bounds, and Measure shows its line. */
+    if (tool == VOXELPILOT_TOOL_MEASURE) {
+        app->measurement_visible = 1;
+        app->scene_selection_kind = VOXELPILOT_SCENE_SELECTION_MEASUREMENT;
+        app->scene_selection_index = -1;
+    } else if (tool == VOXELPILOT_TOOL_CLIP) {
+        app->scene_selection_kind = VOXELPILOT_SCENE_SELECTION_CLIP_BOX;
+        app->scene_selection_index = -1;
+    }
+}
+
+void start_camera_preset_transition(StandaloneApp *app, int preset)
+{
+    float pos[3], dir[3], up[3];
+    int axis;
+
+    if (!app || !voxelpilot_camera_preset(preset, pos, dir, up)) return;
+    for (axis = 0; axis < 3; ++axis) {
+        app->camera_anim_from[axis] = app->cam_pos[axis];
+        app->camera_anim_from[3 + axis] = app->cam_dir[axis];
+        app->camera_anim_from[6 + axis] = app->cam_up[axis];
+        app->camera_anim_to[axis] = pos[axis];
+        app->camera_anim_to[3 + axis] = dir[axis];
+        app->camera_anim_to[6 + axis] = up[axis];
+        app->orbit_target[axis] = 0.5f;
+    }
+    app->camera_anim_start = glfwGetTime();
+    app->camera_anim_active = 1;
+}
+
+static void update_camera_transition(StandaloneApp *app)
+{
+    float t;
+
+    if (!app->camera_anim_active) return;
+    t = (float)((glfwGetTime() - app->camera_anim_start) / VOXELPILOT_CAMERA_TRANSITION_SECONDS);
+    voxelpilot_camera_blend(&app->camera_anim_from[0], &app->camera_anim_from[3], &app->camera_anim_from[6],
+                            &app->camera_anim_to[0], &app->camera_anim_to[3], &app->camera_anim_to[6],
+                            voxelpilot_camera_ease(t),
+                            app->cam_pos, app->cam_dir, app->cam_up);
+    app->camera_motion_active = 1;
+    if (t >= 1.0f) {
+        app->camera_anim_active = 0;
+        sync_orbit_from_camera(app);
+    }
+}
+
+/* F: re-centre on the volume at the preset distance, keeping the angle. */
+void frame_volume(StandaloneApp *app)
+{
+    if (!app) return;
+    app->camera_anim_active = 0;
+    app->orbit_target[0] = 0.5f;
+    app->orbit_target[1] = 0.5f;
+    app->orbit_target[2] = 0.5f;
+    sync_orbit_from_camera(app);
+    app->orbit_radius = VOXELPILOT_CAMERA_PRESET_DISTANCE;
+    apply_orbit_camera(app);
+}
+
+static void orbit_by(StandaloneApp *app, float dx, float dy)
+{
+    if (!app->orbit_drag_active) {
+        sync_orbit_from_camera(app);
+        app->orbit_drag_active = 1;
+    }
+    app->orbit_yaw += dx * 0.01f;
+    app->orbit_pitch += dy * 0.01f;
+    if (app->orbit_pitch > 1.45f) app->orbit_pitch = 1.45f;
+    if (app->orbit_pitch < -1.45f) app->orbit_pitch = -1.45f;
+    apply_orbit_camera(app);
+}
+
+/* Slide the view: move the orbit target in the camera's own plane, by an
+   amount that scales with distance so the volume follows the cursor. */
+static void pan_by(StandaloneApp *app, float dx, float dy)
+{
+    float3 dir = f3_normalize(f3_make(app->cam_dir[0], app->cam_dir[1], app->cam_dir[2]));
+    float3 up = f3_normalize(f3_make(app->cam_up[0], app->cam_up[1], app->cam_up[2]));
+    float3 right = f3_normalize(f3_cross(dir, up));
+    float3 view_up = f3_cross(right, dir);
+    float k;
+    int axis;
+    const float r[3] = { right.x, right.y, right.z };
+    const float u[3] = { view_up.x, view_up.y, view_up.z };
+
+    if (!app->orbit_drag_active) {
+        sync_orbit_from_camera(app);
+        app->orbit_drag_active = 1;
+    }
+    k = app->orbit_radius * 0.0015f;
+    for (axis = 0; axis < 3; ++axis) {
+        app->orbit_target[axis] += (-dx * r[axis] + dy * u[axis]) * k;
+    }
+    apply_orbit_camera(app);
+}
+
+/* A click (no drag) with Measure or Annotate: place on the visible
+   surface under the cursor - the same point the hover tooltip names. */
+static void apply_tool_click(StandaloneApp *app)
+{
+    VoxelPilotRayPickResult hit;
+
+    if (app->active_tool != VOXELPILOT_TOOL_MEASURE &&
+        app->active_tool != VOXELPILOT_TOOL_ANNOTATE) {
+        return;
+    }
+    if (!pick_visible_under_cursor(app, &hit)) {
+        set_ui_toast(app, "Nothing visible there - click on the volume.");
+        return;
+    }
+    if (app->active_tool == VOXELPILOT_TOOL_MEASURE) {
+        float *target = (app->measurement_target == 0) ? app->measure_a : app->measure_b;
+        target[0] = hit.point[0];
+        target[1] = hit.point[1];
+        target[2] = hit.point[2];
+        app->measurement_visible = 1;
+        if (app->measurement_target == 0) {
+            set_ui_toast(app, "Point A placed - click the second point.");
+        } else {
+            char msg[96];
+            snprintf(msg, sizeof(msg), "Distance %.2f vox (%.2f units).",
+                     measurement_distance(app), measurement_distance_world(app));
+            set_ui_toast(app, msg);
+        }
+        app->measurement_target = 1 - app->measurement_target;
+    } else {
+        create_annotation_region_at_point(app, hit.point);
+        set_ui_toast(app, "Annotation placed - rename it in the Inspector.");
+    }
+}
+
 void process_mouse_camera_controls(StandaloneApp *app)
 {
     ImGuiIO *io;
     double mouse_x, mouse_y;
-    int left_down;
+    int left_down, right_down, middle_down;
+    int in_viewport;
     int motion_active = 0;
+    float dx, dy;
 
     io = &ImGui::GetIO();
     glfwGetCursorPos(app->window, &mouse_x, &mouse_y);
-    left_down = glfwGetMouseButton(app->window, GLFW_MOUSE_BUTTON_LEFT);
+    left_down = glfwGetMouseButton(app->window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+    right_down = glfwGetMouseButton(app->window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+    middle_down = glfwGetMouseButton(app->window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS;
+    in_viewport = !io->WantCaptureMouse;
+    dx = (float)(mouse_x - app->last_mouse_x);
+    dy = (float)(mouse_y - app->last_mouse_y);
 
-    if (!io->WantCaptureMouse && left_down == GLFW_PRESS) {
-        if (!app->orbit_drag_active) {
-            sync_orbit_from_camera(app);
-            app->orbit_drag_active = 1;
-        }
-        float dx = (float)(mouse_x - app->last_mouse_x);
-        float dy = (float)(mouse_y - app->last_mouse_y);
+    update_camera_transition(app);
 
-        app->orbit_yaw += dx * 0.01f;
-        app->orbit_pitch += dy * 0.01f;
-        if (fabsf(dx) > 0.001f || fabsf(dy) > 0.001f) {
-            motion_active = 1;
+    /* Left button: the active tool. A press that starts in the viewport
+       is tracked until release; moving more than 4 px makes it a drag
+       (Pan pans, every other tool orbits), otherwise the release is a
+       click (Measure / Annotate place a point). */
+    if (left_down) {
+        if (!app->tool_press_active && in_viewport) {
+            app->tool_press_active = 1;
+            app->tool_press_dragged = 0;
+            app->tool_press_x = mouse_x;
+            app->tool_press_y = mouse_y;
         }
-        if (app->orbit_pitch > 1.45f) app->orbit_pitch = 1.45f;
-        if (app->orbit_pitch < -1.45f) app->orbit_pitch = -1.45f;
-        apply_orbit_camera(app);
+        if (app->tool_press_active) {
+            double mx = mouse_x - app->tool_press_x;
+            double my = mouse_y - app->tool_press_y;
+            int orbit_now = app->active_tool == VOXELPILOT_TOOL_ORBIT ||
+                            app->active_tool == VOXELPILOT_TOOL_CLIP;
+            if (mx * mx + my * my > 16.0) {
+                app->tool_press_dragged = 1;
+            }
+            if ((app->tool_press_dragged || orbit_now) && (dx != 0.0f || dy != 0.0f)) {
+                app->camera_anim_active = 0;
+                if (app->active_tool == VOXELPILOT_TOOL_PAN) {
+                    pan_by(app, dx, dy);
+                } else {
+                    orbit_by(app, dx, dy);
+                }
+                motion_active = 1;
+            }
+        }
     } else {
+        if (app->tool_press_active && !app->tool_press_dragged && in_viewport) {
+            apply_tool_click(app);
+        }
+        app->tool_press_active = 0;
+    }
+
+    /* Right-drag pans and middle-drag orbits whatever the tool. */
+    if (!left_down && in_viewport && (right_down || middle_down) && (dx != 0.0f || dy != 0.0f)) {
+        app->camera_anim_active = 0;
+        if (right_down) {
+            pan_by(app, dx, dy);
+        } else {
+            orbit_by(app, dx, dy);
+        }
+        motion_active = 1;
+    }
+
+    if (!left_down && !right_down && !middle_down) {
         app->orbit_drag_active = 0;
     }
 
     if (!io->WantCaptureMouse && app->pending_scroll != 0.0f) {
+        app->camera_anim_active = 0;
         app->orbit_radius *= (1.0f - app->pending_scroll * 0.10f);
         if (app->orbit_radius < 0.25f) app->orbit_radius = 0.25f;
         if (app->orbit_radius > 6.0f) app->orbit_radius = 6.0f;
@@ -577,18 +757,25 @@ void draw_fullscreen_quad(StandaloneApp *app)
     glUseProgram(0);
 }
 
-void update_main_render_hover_pick(StandaloneApp *app)
+/* The point of the volume the user sees under the mouse cursor, or 0.
+   Shared by the hover tooltip and the Measure / Annotate tools, so a
+   click lands exactly where the tooltip says it will.
+
+   The ray is built from the cursor's position inside the 3D viewport
+   (dockspace central node; cursor and viewport_rect are both in window
+   coordinates), then mapped into normalized volume coordinates: origin
+   through the inverse box placement, direction scaled per axis, so the
+   ray parameter stays a world distance (common/volume_geometry.h). The
+   pick accumulates opacity like the kernel and stops half way into the
+   visible surface (voxelpilot_pick_visible_along_ray). */
+int pick_visible_under_cursor(StandaloneApp *app, VoxelPilotRayPickResult *out)
 {
-    ImGuiIO *io = &ImGui::GetIO();
-    int fb_w = 0;
-    int fb_h = 0;
     double mouse_x = 0.0;
     double mouse_y = 0.0;
     float ndc_x;
     float ndc_y;
     float aspect;
     float tan_fov;
-    float pick_threshold;
     float ray_origin[3];
     float ray_direction[3];
     float3 view_dir;
@@ -596,32 +783,19 @@ void update_main_render_hover_pick(StandaloneApp *app)
     float3 right;
     float3 view_up;
     float3 ray;
-    unsigned char label_id = 0;
-    AnnotationRegion *region = NULL;
-    VoxelPilotSemanticRegion *semantic = NULL;
 
-    app->main_hover_active = 0;
-    app->main_hover_label_id = 0;
-
-    if (!app->renderer.volume_data ||
-        app->renderer.W < 1 ||
-        app->renderer.H < 1 ||
-        app->renderer.D < 1 ||
-        ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow) ||
-        ImGui::IsAnyItemActive() ||
-        glfwGetMouseButton(app->window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS) {
-        return;
+    if (!app || !out || !app->renderer.volume_data ||
+        app->renderer.W < 1 || app->renderer.H < 1 || app->renderer.D < 1) {
+        return 0;
     }
 
-    /* The render now fills only the viewport (dockspace central node), so
-       the pick ray is built from the cursor's position inside that rect.
-       Both the cursor and viewport_rect are in window coordinates. */
     {
+        int win_w = 0, win_h = 0;
         float vx = 0.0f, vy = 0.0f, vw, vh;
 
-        glfwGetWindowSize(app->window, &fb_w, &fb_h);
-        vw = (float)fb_w;
-        vh = (float)fb_h;
+        glfwGetWindowSize(app->window, &win_w, &win_h);
+        vw = (float)win_w;
+        vh = (float)win_h;
         if (app->viewport_rect_valid) {
             vx = app->viewport_rect[0];
             vy = app->viewport_rect[1];
@@ -634,37 +808,23 @@ void update_main_render_hover_pick(StandaloneApp *app)
         if (vw <= 0.0f || vh <= 0.0f ||
             mouse_x < 0.0 || mouse_y < 0.0 ||
             mouse_x >= (double)vw || mouse_y >= (double)vh) {
-            return;
+            return 0;
         }
-
         ndc_x = ((float)mouse_x / vw) * 2.0f - 1.0f;
         ndc_y = 1.0f - ((float)mouse_y / vh) * 2.0f;
         aspect = vw / vh;
     }
     tan_fov = tanf(0.5f * app->fov_y_deg * 3.14159265f / 180.0f);
 
-    view_dir = f3_normalize(f3_make(
-        app->cam_dir[0],
-        app->cam_dir[1],
-        app->cam_dir[2]));
-    up = f3_normalize(f3_make(
-        app->cam_up[0],
-        app->cam_up[1],
-        app->cam_up[2]));
+    view_dir = f3_normalize(f3_make(app->cam_dir[0], app->cam_dir[1], app->cam_dir[2]));
+    up = f3_normalize(f3_make(app->cam_up[0], app->cam_up[1], app->cam_up[2]));
     right = f3_normalize(f3_cross(view_dir, up));
     view_up = f3_cross(right, view_dir);
     ray = f3_normalize(
-        f3_add(
-            view_dir,
-            f3_add(
-                f3_scale(right, ndc_x * aspect * tan_fov),
-                f3_scale(view_up, ndc_y * tan_fov))));
+        f3_add(view_dir,
+               f3_add(f3_scale(right, ndc_x * aspect * tan_fov),
+                      f3_scale(view_up, ndc_y * tan_fov))));
 
-    /* The ray is built in world space; voxelpilot_pick_volume_along_ray
-       walks normalized volume coordinates (its box is [0, 1]^3). Map the
-       ray across: the origin through the inverse box placement, the
-       direction scaled per axis. The parameter t then means the same
-       point in both spaces, so the hit is exact for any volume shape. */
     {
         float extent[3];
         voxelpilot_volume_box_extent(app->renderer.W, app->renderer.H, app->renderer.D,
@@ -674,12 +834,7 @@ void update_main_render_hover_pick(StandaloneApp *app)
         ray_direction[1] = ray.y / extent[1];
         ray_direction[2] = ray.z / extent[2];
     }
-    /* Pick what the render shows: accumulate opacity with the same
-       transfer function and step correction as the kernel, stop half way
-       into the visible surface. The old fixed threshold (the transfer
-       window's lower edge) stopped at nearly transparent haze in front of
-       it, so the hover could name a region the user was not looking at. */
-    (void)pick_threshold;
+
     {
         VolumeParams tf;
         memset(&tf, 0, sizeof(tf));
@@ -689,25 +844,43 @@ void update_main_render_hover_pick(StandaloneApp *app)
         tf.tf_palette = app->tf_palette;
         tf.tf_invert = app->tf_invert;
 
-        if (!voxelpilot_pick_visible_along_ray(
-                app->renderer.volume_data,
-                app->renderer.W,
-                app->renderer.H,
-                app->renderer.D,
-                ray_origin,
-                ray_direction,
-                fmaxf(app->step_size, 0.0015f),
-                tf,
-                VOXELPILOT_OPACITY_REFERENCE_STEP,
-                0.5f,
-                app->clip_min,
-                app->clip_max,
-                &app->main_hover_pick)) {
+        return voxelpilot_pick_visible_along_ray(
+            app->renderer.volume_data,
+            app->renderer.W,
+            app->renderer.H,
+            app->renderer.D,
+            ray_origin,
+            ray_direction,
+            fmaxf(app->step_size, 0.0015f),
+            tf,
+            VOXELPILOT_OPACITY_REFERENCE_STEP,
+            0.5f,
+            app->clip_min,
+            app->clip_max,
+            out);
+    }
+}
+
+void update_main_render_hover_pick(StandaloneApp *app)
+{
+    unsigned char label_id = 0;
+    AnnotationRegion *region = NULL;
+    VoxelPilotSemanticRegion *semantic = NULL;
+
+    app->main_hover_active = 0;
+    app->main_hover_label_id = 0;
+
+    if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow) ||
+        ImGui::IsAnyItemActive() ||
+        glfwGetMouseButton(app->window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS) {
+        return;
+    }
+
+    if (!pick_visible_under_cursor(app, &app->main_hover_pick)) {
         snprintf(app->main_hover_description,
                  sizeof(app->main_hover_description),
                  "3D hover: no visible material under cursor.");
         return;
-    }
     }
 
     if (app->label_mask &&

@@ -17,6 +17,7 @@
 #include "../common/ai_review_bundle.h"
 #include "../common/insight_report.h"
 #include "../common/volume_geometry.h"
+#include "../common/camera_motion.h"
 
 static int expect_true(int condition, const char *message)
 {
@@ -3196,6 +3197,52 @@ static int test_pick_visible_misses_fully_transparent_volume(void)
             "nothing visible should mean no pick");
 }
 
+/* ---- Camera presets and transitions (viewport toolbar) ---- */
+
+static int test_camera_presets_aim_at_volume_centre(void)
+{
+    int preset;
+    for (preset = 0; preset < VOXELPILOT_CAMERA_PRESET_COUNT; ++preset) {
+        float pos[3], dir[3], up[3], len, to_centre[3], dist;
+        int axis;
+        if (!expect_true(voxelpilot_camera_preset(preset, pos, dir, up) == 1, "preset should exist")) return 0;
+        len = sqrtf(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
+        if (!expect_float_close(len, 1.0f, "preset direction should be unit length")) return 0;
+        for (axis = 0; axis < 3; ++axis) to_centre[axis] = 0.5f - pos[axis];
+        dist = sqrtf(to_centre[0] * to_centre[0] + to_centre[1] * to_centre[1] + to_centre[2] * to_centre[2]);
+        if (!expect_float_close(dist, VOXELPILOT_CAMERA_PRESET_DISTANCE, "presets share one framing distance")) return 0;
+        for (axis = 0; axis < 3; ++axis) {
+            if (!expect_float_close(dir[axis], to_centre[axis] / dist, "preset should look at the centre")) return 0;
+        }
+    }
+    return expect_true(voxelpilot_camera_preset(VOXELPILOT_CAMERA_PRESET_COUNT, NULL, NULL, NULL) == 0,
+                       "unknown preset should be rejected");
+}
+
+static int test_camera_blend_endpoints_and_unit_direction(void)
+{
+    const float from_pos[3] = { 0.5f, 0.5f, -1.1f }, from_dir[3] = { 0.0f, 0.0f, 1.0f }, from_up[3] = { 0, 1, 0 };
+    const float to_pos[3] = { -1.1f, 0.5f, 0.5f }, to_dir[3] = { 1.0f, 0.0f, 0.0f }, to_up[3] = { 0, 1, 0 };
+    float pos[3], dir[3], up[3], len;
+
+    voxelpilot_camera_blend(from_pos, from_dir, from_up, to_pos, to_dir, to_up, 0.0f, pos, dir, up);
+    if (!expect_float_close(pos[2], -1.1f, "t = 0 starts at the old camera")) return 0;
+    voxelpilot_camera_blend(from_pos, from_dir, from_up, to_pos, to_dir, to_up, 1.0f, pos, dir, up);
+    if (!expect_float_close(pos[0], -1.1f, "t = 1 ends at the preset")) return 0;
+    if (!expect_float_close(dir[0], 1.0f, "t = 1 ends looking along the preset")) return 0;
+    voxelpilot_camera_blend(from_pos, from_dir, from_up, to_pos, to_dir, to_up, 0.5f, pos, dir, up);
+    len = sqrtf(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
+    return expect_float_close(len, 1.0f, "mid-transition direction stays unit length");
+}
+
+static int test_camera_ease_is_smooth_and_clamped(void)
+{
+    if (!expect_float_close(voxelpilot_camera_ease(-1.0f), 0.0f, "ease clamps below 0")) return 0;
+    if (!expect_float_close(voxelpilot_camera_ease(0.5f), 0.5f, "ease is symmetric")) return 0;
+    if (!expect_true(voxelpilot_camera_ease(0.1f) < 0.1f, "ease starts slowly")) return 0;
+    return expect_float_close(voxelpilot_camera_ease(2.0f), 1.0f, "ease clamps above 1");
+}
+
 int main(void)
 {
     int passed = 1;
@@ -3299,6 +3346,9 @@ int main(void)
     passed &= test_asd_finds_enclosed_cavity();
     passed &= test_pick_visible_passes_faint_haze_to_visible_surface();
     passed &= test_pick_visible_misses_fully_transparent_volume();
+    passed &= test_camera_presets_aim_at_volume_centre();
+    passed &= test_camera_blend_endpoints_and_unit_direction();
+    passed &= test_camera_ease_is_smooth_and_clamped();
 
     if (!passed) {
         return 1;

@@ -474,3 +474,186 @@ void draw_viewport_slice_strip(StandaloneApp *app)
         draw_enlarged_slice(app, central_pos, central_size, app->slice_strip_enlarged_plane);
     }
 }
+
+/* ============================================================
+   Viewport toolbar and tool overlays (step 7)
+
+   The toolbar floats in the viewport's top-left corner: the five tools
+   (exactly one active; keys O P M C A), the camera presets with an
+   eased 300 ms transition (keys 1-4), Frame (F), and one line of help
+   for the active tool. Mouse behaviour lives in
+   process_mouse_camera_controls (gl_viewport_and_render.cpp).
+
+   The overlays are drawn on the background draw list, clipped to the
+   viewport, so panels always stay on top: the measurement line with its
+   distance, and the clip box as a wireframe while the Clip tool is
+   active or a clip is set.
+   ============================================================ */
+
+static const char *k_tool_labels[VOXELPILOT_TOOL_COUNT] = { "Orbit", "Pan", "Measure", "Clip", "Annotate" };
+static const char *k_tool_keys[VOXELPILOT_TOOL_COUNT] = { "O", "P", "M", "C", "A" };
+static const char *k_tool_hints[VOXELPILOT_TOOL_COUNT] = {
+    "Drag to orbit - right-drag pans - scroll zooms",
+    "Drag to pan - middle-drag orbits - scroll zooms",
+    "Click the volume to place point A, then B - drag still orbits",
+    "Set the bounds in the Inspector - drag orbits",
+    "Click the volume to place a note - drag still orbits"
+};
+static const char *k_view_labels[VOXELPILOT_CAMERA_PRESET_COUNT] = { "Front", "Side", "Top", "Iso" };
+
+static int viewport_origin(const StandaloneApp *app, ImVec2 *pos, ImVec2 *size)
+{
+    const ImGuiViewport *vp = ImGui::GetMainViewport();
+    if (!app->viewport_rect_valid) return 0;
+    *pos = ImVec2(vp->Pos.x + app->viewport_rect[0], vp->Pos.y + app->viewport_rect[1]);
+    *size = ImVec2(app->viewport_rect[2], app->viewport_rect[3]);
+    return size->x > 1.0f && size->y > 1.0f;
+}
+
+static int toolbar_button(const char *label, bool active, const char *tooltip)
+{
+    int clicked;
+    if (active) {
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.090f, 0.212f, 0.204f, 1.0f));   /* accent/subtle */
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.498f, 0.902f, 0.839f, 1.0f));     /* accent/hover */
+    }
+    clicked = ImGui::Button(label) ? 1 : 0;
+    if (active) {
+        ImGui::PopStyleColor(2);
+    }
+    if (tooltip && ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("%s", tooltip);
+    }
+    return clicked;
+}
+
+void draw_viewport_toolbar(StandaloneApp *app)
+{
+    ImVec2 pos, size;
+    int tool, preset;
+    char tip[64];
+
+    if (!app || app->splash_visible || !viewport_origin(app, &pos, &size)) return;
+    if (app->slice_strip_enlarged_plane >= 0) return;
+
+    ImGui::SetNextWindowPos(ImVec2(pos.x + 12.0f, pos.y + 12.0f), ImGuiCond_Always);
+    ImGui::SetNextWindowBgAlpha(0.86f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6.0f, 6.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4.0f, 4.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 10.0f);
+    ImGui::Begin("##viewport_toolbar", NULL, slice_overlay_base_flags() | ImGuiWindowFlags_AlwaysAutoResize);
+    ImGui::PopStyleVar(3);
+
+    for (tool = 0; tool < VOXELPILOT_TOOL_COUNT; ++tool) {
+        if (tool > 0) ImGui::SameLine();
+        snprintf(tip, sizeof(tip), "%s (%s)", k_tool_labels[tool], k_tool_keys[tool]);
+        if (toolbar_button(k_tool_labels[tool], app->active_tool == tool, tip)) {
+            set_active_tool(app, tool);
+        }
+    }
+
+    ImGui::SameLine(0.0f, 16.0f);
+    for (preset = 0; preset < VOXELPILOT_CAMERA_PRESET_COUNT; ++preset) {
+        if (preset > 0) ImGui::SameLine();
+        snprintf(tip, sizeof(tip), "%s view (%d)", k_view_labels[preset], preset + 1);
+        if (toolbar_button(k_view_labels[preset], false, tip)) {
+            start_camera_preset_transition(app, preset);
+        }
+    }
+    ImGui::SameLine();
+    if (toolbar_button("Frame", false, "Centre the volume at a comfortable distance (F)")) {
+        frame_volume(app);
+    }
+
+    ImGui::TextDisabled("%s", k_tool_hints[app->active_tool >= 0 && app->active_tool < VOXELPILOT_TOOL_COUNT
+                                            ? app->active_tool : 0]);
+    ImGui::End();
+}
+
+/* Normalized volume point -> screen position in the viewport. */
+static int project_volume_point(const StandaloneApp *app, const float extent[3],
+                                const float point[3], ImVec2 origin, ImVec2 size, ImVec2 *out)
+{
+    float world[3], sx = 0.0f, sy = 0.0f, depth = 0.0f;
+    voxelpilot_volume_point_to_world(extent, point, world);
+    if (!voxelpilot_project_point_to_screen(world, app->cam_pos, app->cam_dir, app->cam_up,
+                                            app->fov_y_deg, size.x, size.y, &sx, &sy, &depth)) {
+        return 0;
+    }
+    *out = ImVec2(origin.x + sx, origin.y + sy);
+    return 1;
+}
+
+void draw_viewport_tool_overlays(StandaloneApp *app)
+{
+    ImVec2 origin, size;
+    ImDrawList *dl;
+    float extent[3];
+    const ImU32 accent = IM_COL32(127, 230, 214, 255);
+
+    if (!app || app->splash_visible || !viewport_origin(app, &origin, &size)) return;
+    if (app->renderer.W < 1 || app->renderer.H < 1 || app->renderer.D < 1) return;
+
+    voxelpilot_volume_box_extent(app->renderer.W, app->renderer.H, app->renderer.D,
+                                 app->voxel_spacing, extent);
+    dl = ImGui::GetBackgroundDrawList();
+    dl->PushClipRect(origin, ImVec2(origin.x + size.x, origin.y + size.y), true);
+
+    /* Clip box wireframe. */
+    if (app->active_tool == VOXELPILOT_TOOL_CLIP || clipping_is_active(app)) {
+        ImVec2 corner[8];
+        int ok = 1, i;
+        static const int edges[12][2] = {
+            { 0, 1 }, { 1, 3 }, { 3, 2 }, { 2, 0 }, { 4, 5 }, { 5, 7 },
+            { 7, 6 }, { 6, 4 }, { 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 }
+        };
+        for (i = 0; i < 8; ++i) {
+            float p[3];
+            p[0] = (i & 1) ? app->clip_max[0] : app->clip_min[0];
+            p[1] = (i & 2) ? app->clip_max[1] : app->clip_min[1];
+            p[2] = (i & 4) ? app->clip_max[2] : app->clip_min[2];
+            ok &= project_volume_point(app, extent, p, origin, size, &corner[i]);
+        }
+        if (ok) {
+            for (i = 0; i < 12; ++i) {
+                dl->AddLine(corner[edges[i][0]], corner[edges[i][1]], IM_COL32(127, 230, 214, 150), 1.5f);
+            }
+        }
+    }
+
+    /* Measurement A -> B with its distance. */
+    if (app->measurement_visible) {
+        ImVec2 a, b;
+        int has_a = project_volume_point(app, extent, app->measure_a, origin, size, &a);
+        int has_b = project_volume_point(app, extent, app->measure_b, origin, size, &b);
+        if (has_a && has_b) {
+            char label[64];
+            ImVec2 mid = ImVec2((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f);
+            ImVec2 text;
+            dl->AddLine(a, b, accent, 2.0f);
+            snprintf(label, sizeof(label), "%.1f vox  |  %.2f units",
+                     measurement_distance(app), measurement_distance_world(app));
+            text = ImGui::CalcTextSize(label);
+            /* Centred above the midpoint, clear of the A/B markers even
+               when the two points project close together. */
+            {
+                ImVec2 box_min = ImVec2(mid.x - text.x * 0.5f - 6.0f, mid.y - text.y - 22.0f);
+                ImVec2 box_max = ImVec2(mid.x + text.x * 0.5f + 6.0f, mid.y - 14.0f);
+                dl->AddRectFilled(box_min, box_max, IM_COL32(10, 13, 16, 220), 6.0f);
+                dl->AddText(ImVec2(box_min.x + 6.0f, box_min.y + 4.0f), accent, label);
+            }
+        }
+        if (has_a) {
+            dl->AddCircleFilled(a, 5.0f, IM_COL32(14, 18, 22, 255));
+            dl->AddCircle(a, 5.0f, accent, 0, 2.0f);
+            dl->AddText(ImVec2(a.x + 8.0f, a.y - 18.0f), accent, "A");
+        }
+        if (has_b) {
+            dl->AddCircleFilled(b, 5.0f, IM_COL32(14, 18, 22, 255));
+            dl->AddCircle(b, 5.0f, accent, 0, 2.0f);
+            dl->AddText(ImVec2(b.x + 8.0f, b.y - 18.0f), accent, "B");
+        }
+    }
+
+    dl->PopClipRect();
+}

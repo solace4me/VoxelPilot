@@ -20,6 +20,7 @@
 #include "common/histogram_profile.h"
 #include "common/render_command_builder.h"
 #include "common/volume_geometry.h"
+#include "common/camera_motion.h"
 #include "common/ai_review_bundle.h"
 #include "common/insight_report.h"
 #include "common/ui_state_helpers.h"
@@ -43,6 +44,16 @@
 #define HISTOGRAM_BINS   128
 /* Spec "Layout" table: a fixed 28 px status bar, outside the dockspace. */
 #define STATUS_BAR_HEIGHT 28.0f
+
+/* Viewport tools (spec "Viewport toolbar"); keys O, P, M, C, A. */
+enum {
+    VOXELPILOT_TOOL_ORBIT = 0,
+    VOXELPILOT_TOOL_PAN,
+    VOXELPILOT_TOOL_MEASURE,
+    VOXELPILOT_TOOL_CLIP,
+    VOXELPILOT_TOOL_ANNOTATE,
+    VOXELPILOT_TOOL_COUNT
+};
 #define MAX_ANNOTATIONS  VOXELPILOT_DEFAULT_MAX_ANNOTATIONS
 #define ANNOTATION_NAME_MAX 64
 #define LOG_HISTORY_MAX  64
@@ -330,6 +341,19 @@ typedef struct {
        = full resolution). voxel_spacing includes it, so the next load
        divides it back out first (fit_volume_to_gpu_budget). */
     int           volume_downsample_factor;
+    /* Viewport toolbar (step 7): the active tool, a left press that
+       started in the viewport (a click places a point only if the mouse
+       did not move more than a few pixels; a drag orbits), and the
+       camera transition in progress (pos, dir, up). */
+    int           active_tool;            /* VOXELPILOT_TOOL_* */
+    int           tool_press_active;
+    int           tool_press_dragged;
+    double        tool_press_x;
+    double        tool_press_y;
+    int           camera_anim_active;
+    double        camera_anim_start;
+    float         camera_anim_from[9];
+    float         camera_anim_to[9];
     /* --gpu-budget-mb: cap on the GPU memory VoxelPilot treats as free
        (0 = no cap). For sharing the GPU with other apps, and for testing
        the downsampled fallback on a machine with plenty of memory. */
@@ -605,6 +629,15 @@ void viewport_framebuffer_rect(
     int                  framebuffer_height,
     int                  out_rect[4]);
 void update_slice_previews(StandaloneApp *app);
+/* What the user sees under the cursor (shared by hover and tools). */
+int pick_visible_under_cursor(StandaloneApp *app, VoxelPilotRayPickResult *out);
+/* Viewport tools and camera (gl_viewport_and_render.cpp). */
+void set_active_tool(StandaloneApp *app, int tool);
+void start_camera_preset_transition(StandaloneApp *app, int preset);
+void frame_volume(StandaloneApp *app);
+/* Toolbar and in-viewport tool overlays (ui_viewport_overlay.cpp). */
+void draw_viewport_toolbar(StandaloneApp *app);
+void draw_viewport_tool_overlays(StandaloneApp *app);
 void render_frame_gpu_snapshot(StandaloneApp *app);
 void render_frame_standalone(StandaloneApp *app);
 void draw_fullscreen_quad(StandaloneApp *app);

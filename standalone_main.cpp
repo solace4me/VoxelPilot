@@ -1450,6 +1450,9 @@ static void draw_gui(StandaloneApp *app)
        run after draw_dockspace has built the layout this frame. Step 6,
        ui_viewport_overlay.cpp. */
     draw_viewport_slice_strip(app);
+    /* Step 7: tool overlays (behind panels) and the toolbar. */
+    draw_viewport_tool_overlays(app);
+    draw_viewport_toolbar(app);
     draw_demo_banner(app);
     draw_scene_panel(app);
     draw_controls_panel(app);
