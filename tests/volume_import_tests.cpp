@@ -2956,6 +2956,89 @@ static int test_downsample_keeps_odd_edges(void)
     return 1;
 }
 
+/* ---- Measurement ---- */
+
+static int test_measure_counts_voxel_centres(void)
+{
+    /* Volume points 0 and 1 are the first and last voxel centres: across
+       11 voxels that is 10 voxel steps, 20 units at spacing 2. */
+    const float a[3] = { 0.0f, 0.5f, 0.5f };
+    const float b[3] = { 1.0f, 0.5f, 0.5f };
+    const int   dims[3] = { 11, 11, 11 };
+    const float unit[3] = { 1.0f, 1.0f, 1.0f };
+    const float spacing[3] = { 2.0f, 1.0f, 1.0f };
+    float delta[3];
+
+    voxelpilot_measure_delta_voxels(a, b, dims, delta);
+    if (!expect_float_close(delta[0], 10.0f, "x delta should count voxel steps")) return 0;
+    if (!expect_float_close(voxelpilot_measure_length(a, b, dims, unit), 10.0f, "length in voxels")) return 0;
+    return expect_float_close(voxelpilot_measure_length(a, b, dims, spacing), 20.0f,
+                              "length should scale by spacing");
+}
+
+/* ---- Full detail for a region (ROI) ---- */
+
+static int test_clip_to_voxel_range_covers_box(void)
+{
+    const float lo_n[3] = { 0.25f, 0.0f, 0.5f };
+    const float hi_n[3] = { 0.75f, 1.0f, 0.5f };
+    const int   dims[3] = { 101, 512, 9 };
+    int lo[3], size[3];
+
+    voxelpilot_clip_to_voxel_range(lo_n, hi_n, dims, lo, size);
+    /* Voxel centres sit at u * (dim - 1): 0.25..0.75 of 101 is 25..75. */
+    if (!expect_true(lo[0] == 25 && size[0] == 51, "quarter-to-three-quarter box should be voxels 25..75")) return 0;
+    if (!expect_true(lo[1] == 0 && size[1] == 512, "full axis should keep every voxel")) return 0;
+    /* A flat clip still needs two voxels to interpolate between. */
+    if (!expect_true(size[2] == 2 && lo[2] + size[2] <= 9, "flat clip should widen to two voxels inside the volume")) return 0;
+    return 1;
+}
+
+static int test_clip_to_voxel_range_clamps_and_orders(void)
+{
+    const float lo_n[3] = { 0.9f, -0.5f, 0.0f };
+    const float hi_n[3] = { 0.1f, 1.5f, 1.0f };
+    const int   dims[3] = { 11, 11, 1 };
+    int lo[3], size[3];
+
+    voxelpilot_clip_to_voxel_range(lo_n, hi_n, dims, lo, size);
+    if (!expect_true(lo[0] == 1 && size[0] == 9, "swapped bounds should be ordered")) return 0;
+    if (!expect_true(lo[1] == 0 && size[1] == 11, "out-of-range bounds should clamp")) return 0;
+    if (!expect_true(lo[2] == 0 && size[2] == 1, "a one-voxel axis stays one voxel")) return 0;
+    return 1;
+}
+
+static int test_crop_copies_sub_block(void)
+{
+    /* 4x3x2 volume whose value encodes its own position. */
+    float src[24];
+    float *dst = NULL;
+    const int origin[3] = { 1, 1, 1 };
+    const int size[3] = { 2, 2, 1 };
+    int i;
+
+    for (i = 0; i < 24; ++i) src[i] = (float)i;
+    if (!expect_true(volume_import_crop(src, 4, 3, 2, origin, size, &dst) == 0, "crop should succeed")) return 0;
+    /* z=1, y=1..2, x=1..2 -> indices 12+4+1, 12+4+2, 12+8+1, 12+8+2. */
+    if (!expect_float_close(dst[0], 17.0f, "first cropped voxel")) return 0;
+    if (!expect_float_close(dst[1], 18.0f, "second cropped voxel")) return 0;
+    if (!expect_float_close(dst[2], 21.0f, "next row")) return 0;
+    if (!expect_float_close(dst[3], 22.0f, "last cropped voxel")) return 0;
+    volume_import_free(dst);
+    return 1;
+}
+
+static int test_crop_rejects_out_of_bounds(void)
+{
+    float src[8] = { 0 };
+    float *dst = NULL;
+    const int origin[3] = { 1, 0, 0 };
+    const int size[3] = { 2, 2, 2 };
+
+    return expect_true(volume_import_crop(src, 2, 2, 2, origin, size, &dst) != 0 && dst == NULL,
+                       "a crop past the volume edge should be refused");
+}
+
 /* ---- ASD v2 ---- */
 
 static void asd_fill_block(float *v, int w, int h, int x0, int y0, int z0, int sx, int sy, int sz, float value)
@@ -3338,6 +3421,11 @@ int main(void)
     passed &= test_gpu_budget_reports_when_nothing_fits();
     passed &= test_downsample_averages_blocks();
     passed &= test_downsample_keeps_odd_edges();
+    passed &= test_measure_counts_voxel_centres();
+    passed &= test_clip_to_voxel_range_covers_box();
+    passed &= test_clip_to_voxel_range_clamps_and_orders();
+    passed &= test_crop_copies_sub_block();
+    passed &= test_crop_rejects_out_of_bounds();
     passed &= test_asd_keeps_most_important_not_first_found();
     passed &= test_asd_adaptive_finds_two_material_classes();
     passed &= test_asd_names_are_distinct();

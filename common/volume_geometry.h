@@ -1,6 +1,7 @@
 #ifndef VOXELPILOT_VOLUME_GEOMETRY_H
 #define VOXELPILOT_VOLUME_GEOMETRY_H
 
+#include <math.h>
 #include <stddef.h>
 
 /* Where the volume sits in world space.
@@ -103,6 +104,71 @@ static inline int voxelpilot_choose_downsample_factor(
         }
     }
     return 0;
+}
+
+/* A measurement between two volume points, per axis in voxel steps
+   (voxel centres sit at i / (dim - 1)), and its length scaled by
+   spacing - pass unit spacing for a length in voxels. */
+static inline void voxelpilot_measure_delta_voxels(
+    const float a[3],
+    const float b[3],
+    const int   dims[3],
+    float       delta[3])
+{
+    int axis;
+    for (axis = 0; axis < 3; ++axis) {
+        delta[axis] = (b[axis] - a[axis]) * (float)(dims[axis] > 1 ? dims[axis] - 1 : 0);
+    }
+}
+
+static inline float voxelpilot_measure_length(
+    const float a[3],
+    const float b[3],
+    const int   dims[3],
+    const float spacing[3])
+{
+    float delta[3];
+    voxelpilot_measure_delta_voxels(a, b, dims, delta);
+    delta[0] *= spacing[0];
+    delta[1] *= spacing[1];
+    delta[2] *= spacing[2];
+    return sqrtf(delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2]);
+}
+
+/* The voxels a clip box covers: the inclusive voxel range from the
+   first to the last voxel centre inside [clip_min, clip_max] (volume
+   points, so voxel i sits at i / (dim - 1)). Bounds are ordered and
+   clamped; each axis keeps at least two voxels when the volume has them,
+   since the renderer interpolates between neighbours. Used to load a
+   clipped region at full resolution. */
+static inline void voxelpilot_clip_to_voxel_range(
+    const float clip_min[3],
+    const float clip_max[3],
+    const int   dims[3],
+    int         origin[3],
+    int         size[3])
+{
+    int axis;
+
+    for (axis = 0; axis < 3; ++axis) {
+        int   last = dims[axis] > 1 ? dims[axis] - 1 : 0;
+        float a = clip_min[axis] < clip_max[axis] ? clip_min[axis] : clip_max[axis];
+        float b = clip_min[axis] < clip_max[axis] ? clip_max[axis] : clip_min[axis];
+        int   lo, hi;
+
+        a = a < 0.0f ? 0.0f : (a > 1.0f ? 1.0f : a);
+        b = b < 0.0f ? 0.0f : (b > 1.0f ? 1.0f : b);
+        lo = (int)floorf(a * (float)last + 1e-4f);
+        hi = (int)ceilf(b * (float)last - 1e-4f);
+        if (lo < 0) lo = 0;
+        if (hi > last) hi = last;
+        if (hi < lo) hi = lo;
+        if (hi == lo && last > 0) {
+            if (hi < last) ++hi; else --lo;
+        }
+        origin[axis] = lo;
+        size[axis] = hi - lo + 1;
+    }
 }
 
 #endif /* VOXELPILOT_VOLUME_GEOMETRY_H */

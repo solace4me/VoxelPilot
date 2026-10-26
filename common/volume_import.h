@@ -59,6 +59,19 @@ int volume_import_downsample(
     int         *out_height,
     int         *out_depth);
 
+/* Copy the sub-block [origin, origin + size) out of a volume (x fastest).
+   Used to load a clipped region at full resolution. Free the result with
+   volume_import_free. Returns 0 on success, -1 if the block does not lie
+   inside the volume or memory runs out (out_data left NULL). */
+int volume_import_crop(
+    const float *src,
+    int          width,
+    int          height,
+    int          depth,
+    const int    origin[3],
+    const int    size[3],
+    float      **out_data);
+
 const char *volume_import_data_type_label(VolumeDataType data_type);
 
 #ifdef __cplusplus

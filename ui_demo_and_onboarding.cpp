@@ -448,6 +448,15 @@ void draw_status_bar(StandaloneApp *app)
     ImGui::Begin("Status", NULL, flags);
     ImGui::Text("%dx%dx%d", app->renderer.W, app->renderer.H, app->renderer.D);
     ImGui::SameLine();
+    /* Resolution is never silently reduced: say what the user is seeing. */
+    if (app->detail_active) {
+        ImGui::TextColored(ImVec4(0.30f, 0.82f, 0.70f, 1.0f), "Full-detail region");
+        ImGui::SameLine();
+    } else if (app->volume_downsample_factor > 1) {
+        ImGui::TextColored(ImVec4(0.95f, 0.72f, 0.30f, 1.0f), "1/%d resolution",
+                           app->volume_downsample_factor);
+        ImGui::SameLine();
+    }
     ImGui::Text("GPU %.1f ms", app->last_render_ms);
     ImGui::SameLine();
     ImGui::Text("%.0f FPS", app->gui_fps);

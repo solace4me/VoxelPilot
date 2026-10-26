@@ -520,6 +520,13 @@ void draw_top_ribbon(StandaloneApp *app)
                 app->clip_max[i] = 1.0f;
             }
         }
+        if (app->detail_active) {
+            if (ImGui::MenuItem("Back to whole scan")) return_to_whole_scan(app);
+        } else if (detail_region_available(app)) {
+            if (ImGui::MenuItem("Load clip box in full detail", NULL, false, clipping_is_active(app) != 0)) {
+                load_full_detail_region(app);
+            }
+        }
         if (ImGui::MenuItem("Reset transfer function", NULL, false, has_volume)) menu_reset_transfer(app);
         ImGui::Separator();
         if (ImGui::MenuItem("Dataset health check", NULL, false, has_volume)) {

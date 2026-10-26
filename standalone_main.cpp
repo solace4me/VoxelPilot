@@ -264,18 +264,15 @@ void update_dataset_health(StandaloneApp *app)
 
 float measurement_distance(const StandaloneApp *app)
 {
-    float dx = (app->measure_b[0] - app->measure_a[0]) * (float)app->renderer.W;
-    float dy = (app->measure_b[1] - app->measure_a[1]) * (float)app->renderer.H;
-    float dz = (app->measure_b[2] - app->measure_a[2]) * (float)app->renderer.D;
-    return sqrtf(dx * dx + dy * dy + dz * dz);
+    const int   dims[3] = { app->renderer.W, app->renderer.H, app->renderer.D };
+    const float unit[3] = { 1.0f, 1.0f, 1.0f };
+    return voxelpilot_measure_length(app->measure_a, app->measure_b, dims, unit);
 }
 
 float measurement_distance_world(const StandaloneApp *app)
 {
-    float dx = (app->measure_b[0] - app->measure_a[0]) * (float)app->renderer.W * app->voxel_spacing[0];
-    float dy = (app->measure_b[1] - app->measure_a[1]) * (float)app->renderer.H * app->voxel_spacing[1];
-    float dz = (app->measure_b[2] - app->measure_a[2]) * (float)app->renderer.D * app->voxel_spacing[2];
-    return sqrtf(dx * dx + dy * dy + dz * dz);
+    const int dims[3] = { app->renderer.W, app->renderer.H, app->renderer.D };
+    return voxelpilot_measure_length(app->measure_a, app->measure_b, dims, app->voxel_spacing);
 }
 
 int clipping_is_active(const StandaloneApp *app)
@@ -474,6 +471,7 @@ static void apply_default_workspace_state(StandaloneApp *app, int include_window
     memcpy(app->measure_b, defaults.measure_b, sizeof(app->measure_b));
     app->measurement_visible = defaults.measurement_visible;
     app->measurement_target = defaults.measurement_target;
+    app->measurement_points = 0;
     app->annotation_mode = defaults.annotation_mode;
     snprintf(app->annotation_name, sizeof(app->annotation_name), "Region");
     app->annotation_tolerance = defaults.annotation_tolerance;
@@ -1176,6 +1174,25 @@ static void set_volume_downsample_factor(StandaloneApp *app, int factor)
     app->volume_downsample_factor = factor;
 }
 
+/* GPU memory a volume load may use: free memory plus what the loaded
+   volume occupies (a reload replaces it), capped by --gpu-budget-mb.
+   0 if the driver cannot report free memory. */
+size_t volume_gpu_budget_bytes(const StandaloneApp *app)
+{
+    size_t free_bytes = 0;
+    size_t total_bytes = 0;
+
+    if (!app || !renderer_query_gpu_memory(&free_bytes, &total_bytes)) return 0;
+    if (app->renderer.volume_data) {
+        free_bytes += voxelpilot_estimate_volume_gpu_bytes(
+            app->renderer.W, app->renderer.H, app->renderer.D);
+    }
+    if (app->gpu_budget_cap_bytes > 0 && free_bytes > app->gpu_budget_cap_bytes) {
+        free_bytes = app->gpu_budget_cap_bytes;
+    }
+    return free_bytes;
+}
+
 /* Before a volume goes to the GPU: make sure it fits.
 
    Compares the scan's GPU cost (common/volume_geometry.h) with the free
@@ -1197,8 +1214,7 @@ int fit_volume_to_gpu_budget(
     char          *message,
     size_t         message_size)
 {
-    size_t free_bytes = 0;
-    size_t total_bytes = 0;
+    size_t free_bytes;
     size_t need;
     int    factor;
     float *smaller = NULL;
@@ -1207,16 +1223,10 @@ int fit_volume_to_gpu_budget(
     if (message && message_size) message[0] = '\0';
     if (!app || !data || !*data || !width || !height || !depth) return 0;
 
-    if (!renderer_query_gpu_memory(&free_bytes, &total_bytes)) {
+    free_bytes = volume_gpu_budget_bytes(app);
+    if (free_bytes == 0) {
         set_volume_downsample_factor(app, 1);
         return 1;
-    }
-    if (app->renderer.volume_data) {
-        free_bytes += voxelpilot_estimate_volume_gpu_bytes(
-            app->renderer.W, app->renderer.H, app->renderer.D);
-    }
-    if (app->gpu_budget_cap_bytes > 0 && free_bytes > app->gpu_budget_cap_bytes) {
-        free_bytes = app->gpu_budget_cap_bytes;
     }
 
     need = voxelpilot_estimate_volume_gpu_bytes(*width, *height, *depth);
@@ -1650,6 +1660,8 @@ int main(int argc, char **argv)
     int           cli_demo_mode = 0;
     int           cli_semantic_demo = 0;
     int           cli_discover = 0;
+    float         cli_detail_box[6] = { 0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f };
+    int           cli_detail_box_set = 0;
     int           cli_demo_auto = 0;
     double        cli_demo_duration_sec = 24.0;
     VoxelPilotCliExportPlan export_plan;
@@ -1722,6 +1734,16 @@ int main(int argc, char **argv)
             cli_demo_mode = 1;
         } else if (strcmp(argv[i], "--discover") == 0) {
             cli_discover = 1;
+        } else if (strcmp(argv[i], "--detail-box") == 0 &&
+                   i+6 < argc) {
+            int k;
+            for (k = 0; k < 6; ++k) {
+                if (parse_cli_float(argv[++i], 0.0f, 1.0f, &cli_detail_box[k]) != 0) {
+                    fprintf(stderr, "Invalid value for --detail-box: %s\n", argv[i]);
+                    return -1;
+                }
+            }
+            cli_detail_box_set = 1;
         } else if (strcmp(argv[i], "--semantic-demo") == 0) {
             cli_semantic_demo = 1;
         } else if (strcmp(argv[i], "--demo-auto") == 0) {
@@ -2064,6 +2086,20 @@ int main(int argc, char **argv)
         }
     }
 
+    /* --detail-box x0 y0 z0 x1 y1 z1: clip to that box (volume points)
+       and, if the scan had to be downsampled, reload it at full detail. */
+    if (cli_detail_box_set) {
+        int k;
+        for (k = 0; k < 3; ++k) {
+            app.clip_min[k] = cli_detail_box[k];
+            app.clip_max[k] = cli_detail_box[k + 3];
+        }
+        if (detail_region_available(&app)) {
+            load_full_detail_region(&app);
+        }
+        printf("%s\n", app.upload_status);
+    }
+
     /* --discover: start region discovery in the background once the
        window is up (the app stays usable while it runs). */
     if (cli_discover && !cli_semantic_demo) {
@@ -2103,8 +2139,10 @@ int main(int argc, char **argv)
             -0.35f, 0.95f, -0.35f,
             0.7f, -0.35f, 0.7f,
             0.0f, 1.0f, 0.0f);
-        /* Same rule as at startup: an explicit --tf-* choice wins. */
-        if (!cli_tf_center_set && !cli_tf_width_set && !cli_tf_opacity_set) {
+        /* Same rule as at startup: an explicit --tf-* choice wins; a
+           full-detail region keeps the whole scan's transfer function. */
+        if (!cli_tf_center_set && !cli_tf_width_set && !cli_tf_opacity_set &&
+            !app.detail_active) {
             apply_auto_enhance_on_load_if_safe(&app, "Snapshot");
         }
         render_frame_gpu_snapshot(&app);

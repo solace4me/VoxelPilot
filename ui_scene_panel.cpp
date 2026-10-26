@@ -404,12 +404,13 @@ static void scene_add_clip_box(StandaloneApp *app)
 
 static void scene_add_measurement(StandaloneApp *app)
 {
-    if (app->measurement_visible) {
-        set_ui_toast(app, "Measurement already active - VoxelPilot supports one at a time.");
+    if (app->measurement_points > 1) {
+        set_ui_toast(app, "Measurement already placed - VoxelPilot supports one at a time.");
         return;
     }
-    app->measurement_visible = 1;
     app->measurement_target = 0;
+    app->measurement_points = 0;
+    set_active_tool(app, VOXELPILOT_TOOL_MEASURE);
     set_ui_toast(app, "Measurement tool on - click two points in the viewport.");
 }
 
@@ -832,7 +833,7 @@ void draw_scene_panel(StandaloneApp *app)
 
         /* Measurement (singleton - see header comment on the data
            model limit) */
-        {
+        if (app->measurement_points > 0) {
             const char *label = "Measurement";
             if (!searching || scene_text_matches_query(label, query, NULL)) {
                 char meta[48];

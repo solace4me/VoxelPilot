@@ -69,6 +69,39 @@ int browse_volume_file(StandaloneApp *app)
     return 1;
 }
 
+static int inspector_clip_active(const StandaloneApp *app);
+
+/* After new voxels reach the GPU: everything derived from the old ones
+   (histogram, slices, labels, annotations, summaries) is stale. A new
+   scan gets an auto-enhanced transfer function (reason != NULL); a region
+   of the same scan keeps the user's (reason == NULL). */
+static void reset_after_volume_change(StandaloneApp *app, const char *reason)
+{
+    /* New voxels, possibly with an identical render command: force the
+       next frame to raymarch (see render_frame_standalone). */
+    app->last_render_valid = 0;
+    update_histogram(app);
+    update_dataset_health(app);
+    if (reason) apply_auto_enhance_on_load_if_safe(app, reason);
+    app->slice_preview_dirty = 1;
+    free(app->label_mask);
+    app->label_mask = NULL;
+    app->label_mask_W = 0;
+    app->label_mask_H = 0;
+    app->label_mask_D = 0;
+    reset_annotations(app);
+    app->measurement_points = 0;
+    app->measurement_target = 0;
+    app->object_summary_ready = 0;
+    snprintf(app->object_summary_status,
+             sizeof(app->object_summary_status),
+             "Click Analyze Loaded Volume to generate a local object summary.");
+    app->quant_metrics_ready = 0;
+    snprintf(app->quant_metrics_status,
+             sizeof(app->quant_metrics_status),
+             "Click Refresh Quant Metrics to summarize the active volume.");
+}
+
 static int load_selected_volume(StandaloneApp *app)
 {
     VolumeImportSpec spec;
@@ -143,27 +176,8 @@ static int load_selected_volume(StandaloneApp *app)
         loaded_w,
         loaded_h,
         loaded_d);
-    /* New voxels, possibly with an identical render command: force the
-       next frame to raymarch (see render_frame_standalone). */
-    app->last_render_valid = 0;
-    update_histogram(app);
-    update_dataset_health(app);
-    apply_auto_enhance_on_load_if_safe(app, "Loaded volume");
-    app->slice_preview_dirty = 1;
-    free(app->label_mask);
-    app->label_mask = NULL;
-    app->label_mask_W = 0;
-    app->label_mask_H = 0;
-    app->label_mask_D = 0;
-    reset_annotations(app);
-    app->object_summary_ready = 0;
-    snprintf(app->object_summary_status,
-             sizeof(app->object_summary_status),
-             "Click Analyze Loaded Volume to generate a local object summary.");
-    app->quant_metrics_ready = 0;
-    snprintf(app->quant_metrics_status,
-             sizeof(app->quant_metrics_status),
-             "Click Refresh Quant Metrics to summarize the active volume.");
+    reset_after_volume_change(app, "Loaded volume");
+    app->detail_active = 0;
     snprintf(app->upload_status,
              sizeof(app->upload_status),
              "Loaded: %ux%ux%u %s (%zu voxels, %.1f MB)",
@@ -180,6 +194,134 @@ static int load_selected_volume(StandaloneApp *app)
     set_ui_toast(app, fit_factor > 1 ? "Volume loaded at reduced resolution to fit this GPU."
                                      : "Volume loaded.");
     return 1;
+}
+
+/* Full detail where it matters.
+
+   A scan too large for the GPU is shown at 1/2 or 1/4 resolution. The
+   user clips to what they care about and this reloads just that box from
+   the same file at full resolution (or at least finer than the overview),
+   so a laptop shows native detail where it matters instead of a blurred
+   whole. The file is read with the same import as the overview, so
+   values - and the transfer function - mean the same thing. Peak memory
+   is that of the original load. */
+int detail_region_available(const StandaloneApp *app)
+{
+    return app && !app->detail_active && app->volume_downsample_factor > 1 &&
+           app->upload_path[0] != '\0';
+}
+
+int load_full_detail_region(StandaloneApp *app)
+{
+    VolumeImportSpec spec;
+    int    dims[3];
+    int    origin[3], size[3];
+    int    overview_factor;
+    int    crop_factor;
+    size_t budget;
+    float *full = NULL;
+    float *crop = NULL;
+    size_t voxel_count = 0;
+    char   error[256];
+    char   fit_message[320];
+    int    w, h, d, i;
+
+    if (!detail_region_available(app)) return 0;
+    if (semantic_discovery_running(app)) {
+        set_ui_toast(app, "Region discovery is still running - try again when it finishes.",
+                     VOXELPILOT_LOG_WARNING);
+        return 0;
+    }
+    if (!inspector_clip_active(app)) {
+        set_ui_toast(app, "Clip to the part you want first (Clip tool or Inspector > Clipping).",
+                     VOXELPILOT_LOG_WARNING);
+        return 0;
+    }
+
+    spec.width = (uint32_t)clamp_import_dimension(app->upload_width);
+    spec.height = (uint32_t)clamp_import_dimension(app->upload_height);
+    spec.depth = (uint32_t)clamp_import_dimension(app->upload_depth);
+    spec.data_type = (VolumeDataType)app->upload_data_type;
+    dims[0] = (int)spec.width;
+    dims[1] = (int)spec.height;
+    dims[2] = (int)spec.depth;
+    voxelpilot_clip_to_voxel_range(app->clip_min, app->clip_max, dims, origin, size);
+
+    /* Check before reading anything: is this box any sharper than the
+       overview on this GPU? */
+    overview_factor = app->volume_downsample_factor;
+    budget = volume_gpu_budget_bytes(app);
+    crop_factor = budget ? voxelpilot_choose_downsample_factor(size[0], size[1], size[2], budget) : 1;
+    if (crop_factor == 0 || crop_factor >= overview_factor) {
+        snprintf(app->upload_status, sizeof(app->upload_status),
+                 "This box (%dx%dx%d voxels) needs %.0f MB at full detail and %.0f MB of GPU "
+                 "memory is free - it would be no sharper than the overview. Make the box smaller.",
+                 size[0], size[1], size[2],
+                 (double)voxelpilot_estimate_volume_gpu_bytes(size[0], size[1], size[2]) / (1024.0 * 1024.0),
+                 (double)budget / (1024.0 * 1024.0));
+        set_ui_toast(app, "Box too large for more detail - make it smaller.", VOXELPILOT_LOG_WARNING);
+        return 0;
+    }
+
+    if (volume_import_load(app->upload_path, &spec, &full, &voxel_count, error, sizeof(error)) != 0) {
+        snprintf(app->upload_status, sizeof(app->upload_status), "%s", error);
+        set_ui_toast(app, "Could not re-read the scan for full detail.", VOXELPILOT_LOG_ERROR);
+        return 0;
+    }
+    if (volume_import_crop(full, dims[0], dims[1], dims[2], origin, size, &crop) != 0) {
+        volume_import_free(full);
+        set_ui_toast(app, "Not enough memory to cut out the region.", VOXELPILOT_LOG_ERROR);
+        return 0;
+    }
+    volume_import_free(full);
+
+    w = size[0];
+    h = size[1];
+    d = size[2];
+    crop_factor = fit_volume_to_gpu_budget(app, &crop, &w, &h, &d, fit_message, sizeof(fit_message));
+    if (crop_factor == 0) {
+        /* Free memory changed since the check; the overview stays loaded. */
+        volume_import_free(crop);
+        snprintf(app->upload_status, sizeof(app->upload_status), "%s", fit_message);
+        set_ui_toast(app, "Region does not fit the GPU right now.", VOXELPILOT_LOG_ERROR);
+        return 0;
+    }
+
+    reload_volume(&app->renderer, crop, w, h, d);
+    volume_import_free(crop);
+    /* Same file, same value scale: the transfer function still means the
+       same materials, so keep it rather than re-enhancing on the crop. */
+    reset_after_volume_change(app, NULL);
+    for (i = 0; i < 3; ++i) {
+        app->detail_origin[i] = origin[i];
+        app->detail_size[i] = size[i];
+        app->detail_full_dims[i] = dims[i];
+        app->clip_min[i] = 0.0f;
+        app->clip_max[i] = 1.0f;
+    }
+    app->clip_hidden = 0;
+    app->detail_active = 1;
+    app->detail_overview_factor = overview_factor;
+    frame_volume(app);
+
+    if (crop_factor == 1) {
+        snprintf(app->upload_status, sizeof(app->upload_status),
+                 "Full detail: %dx%dx%d voxels at native resolution (whole scan is shown at 1/%d).",
+                 size[0], size[1], size[2], overview_factor);
+        set_ui_toast(app, "Showing the region at full resolution.");
+    } else {
+        snprintf(app->upload_status, sizeof(app->upload_status),
+                 "More detail: %dx%dx%d voxels at 1/%d resolution (whole scan is shown at 1/%d).",
+                 size[0], size[1], size[2], crop_factor, overview_factor);
+        set_ui_toast(app, "Showing the region at higher resolution.");
+    }
+    return 1;
+}
+
+int return_to_whole_scan(StandaloneApp *app)
+{
+    if (!app || !app->detail_active) return 0;
+    return load_selected_volume(app);
 }
 
 void handle_keyboard_shortcuts(StandaloneApp *app)
@@ -802,14 +944,49 @@ static void inspector_clip_controls(StandaloneApp *app)
     }
 }
 
+/* Full detail where it matters (load_full_detail_region): offered only
+   when the scan had to be downsampled, so the choice is visible exactly
+   when it helps. */
+static void inspector_detail_region(StandaloneApp *app)
+{
+    if (app->detail_active) {
+        ImGui::Spacing();
+        ImGui::TextColored(ImVec4(0.30f, 0.82f, 0.70f, 1.0f), "Showing a region in full detail");
+        ImGui::TextWrapped("Voxels %d-%d, %d-%d, %d-%d of %dx%dx%d. The whole scan is shown at 1/%d.",
+                           app->detail_origin[0], app->detail_origin[0] + app->detail_size[0] - 1,
+                           app->detail_origin[1], app->detail_origin[1] + app->detail_size[1] - 1,
+                           app->detail_origin[2], app->detail_origin[2] + app->detail_size[2] - 1,
+                           app->detail_full_dims[0], app->detail_full_dims[1], app->detail_full_dims[2],
+                           app->detail_overview_factor);
+        if (ImGui::Button("Back to whole scan")) {
+            return_to_whole_scan(app);
+        }
+        return;
+    }
+    if (!detail_region_available(app)) return;
+
+    ImGui::Spacing();
+    ImGui::TextWrapped("This scan is shown at 1/%d resolution to fit the GPU. Clip to the part "
+                       "you care about, then load it at full detail.",
+                       app->volume_downsample_factor);
+    ImGui::BeginDisabled(!inspector_clip_active(app));
+    if (ImGui::Button("Load full detail")) {
+        load_full_detail_region(app);
+    }
+    ImGui::EndDisabled();
+}
+
 static void inspector_volume_clipping(StandaloneApp *app)
 {
     bool reset = false;
     int  active = inspector_clip_active(app);
     int  i;
 
-    if (inspector_section("clip", "Clipping", active ? "Active" : "Full volume", false, active != 0, &reset)) {
+    if (inspector_section("clip", "Clipping",
+                          app->detail_active ? "Full detail" : (active ? "Active" : "Full volume"),
+                          false, active != 0, &reset)) {
         inspector_clip_controls(app);
+        inspector_detail_region(app);
         ImGui::Spacing();
     }
     if (reset) {
@@ -1153,14 +1330,21 @@ static void inspector_draw_measurement(StandaloneApp *app)
     if (!inspector_section("measure", "Distance", "", true, false, NULL)) {
         return;
     }
-    ImGui::PushFont(NULL, 26.0f);
-    ImGui::Text("%.2f vox", measurement_distance(app));
-    ImGui::PopFont();
-    ImGui::TextColored(kInspectorSecondary, "%.3f world units  ·  delta %.1f, %.1f, %.1f vox",
-                       measurement_distance_world(app),
-                       (app->measure_b[0] - app->measure_a[0]) * (float)app->renderer.W,
-                       (app->measure_b[1] - app->measure_a[1]) * (float)app->renderer.H,
-                       (app->measure_b[2] - app->measure_a[2]) * (float)app->renderer.D);
+    if (app->measurement_points < 2) {
+        ImGui::TextWrapped("Click two points on the volume with the Measure tool (M), "
+                           "or set them below.");
+    } else {
+        ImGui::PushFont(NULL, 26.0f);
+        ImGui::Text("%.2f vox", measurement_distance(app));
+        ImGui::PopFont();
+    }
+    if (app->measurement_points >= 2) {
+        const int dims[3] = { app->renderer.W, app->renderer.H, app->renderer.D };
+        float     delta[3];
+        voxelpilot_measure_delta_voxels(app->measure_a, app->measure_b, dims, delta);
+        ImGui::TextColored(kInspectorSecondary, "%.3f world units  ·  delta %.1f, %.1f, %.1f vox",
+                           measurement_distance_world(app), delta[0], delta[1], delta[2]);
+    }
     {
         bool show = app->measurement_visible != 0;
         if (ImGui::Checkbox("Show in viewport and slices", &show)) {
@@ -1170,16 +1354,18 @@ static void inspector_draw_measurement(StandaloneApp *app)
 
     ImGui::Spacing();
     inspector_label("Point A");
-    ImGui::DragFloat3("##meas_a", app->measure_a, 0.002f, 0.0f, 1.0f, "%.3f");
+    if (ImGui::DragFloat3("##meas_a", app->measure_a, 0.002f, 0.0f, 1.0f, "%.3f")) app->measurement_points = 2;
     inspector_label("Point B");
-    ImGui::DragFloat3("##meas_b", app->measure_b, 0.002f, 0.0f, 1.0f, "%.3f");
+    if (ImGui::DragFloat3("##meas_b", app->measure_b, 0.002f, 0.0f, 1.0f, "%.3f")) app->measurement_points = 2;
     if (ImGui::Button("A from slices")) {
+        app->measurement_points = 2;
         app->measure_a[0] = app->slice_x;
         app->measure_a[1] = app->slice_y;
         app->measure_a[2] = app->slice_z;
     }
     ImGui::SameLine();
     if (ImGui::Button("B from slices")) {
+        app->measurement_points = 2;
         app->measure_b[0] = app->slice_x;
         app->measure_b[1] = app->slice_y;
         app->measure_b[2] = app->slice_z;

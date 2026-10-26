@@ -343,6 +343,7 @@ static void apply_tool_click(StandaloneApp *app)
         target[1] = hit.point[1];
         target[2] = hit.point[2];
         app->measurement_visible = 1;
+        if (app->measurement_points < 2) ++app->measurement_points;
         if (app->measurement_target == 0) {
             set_ui_toast(app, "Point A placed - click the second point.");
         } else {

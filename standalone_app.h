@@ -298,6 +298,11 @@ typedef struct {
     float         measure_b[3];
     int           measurement_visible;
     int           measurement_target;
+    /* Points the user has placed (0, 1, 2). Nothing is drawn or listed
+       until they place one - no placeholder ruler on a fresh scan - and
+       new voxels clear it, since a volume point then marks a different
+       spot. */
+    int           measurement_points;
     float         voxel_spacing[3];
     char          preset_status[256];
     char          preset_path[MAX_PATH_BUF];
@@ -341,6 +346,15 @@ typedef struct {
        = full resolution). voxel_spacing includes it, so the next load
        divides it back out first (fit_volume_to_gpu_budget). */
     int           volume_downsample_factor;
+    /* Full detail where it matters: a clipped region of a downsampled
+       scan reloaded at (up to) full resolution from the same file.
+       detail_origin/size are in voxels of the full-resolution file;
+       detail_overview_factor is what the whole scan needed. */
+    int           detail_active;
+    int           detail_origin[3];
+    int           detail_size[3];
+    int           detail_full_dims[3];
+    int           detail_overview_factor;
     /* Viewport toolbar (step 7): the active tool, a left press that
        started in the viewport (a click places a point only if the mouse
        did not move more than a few pixels; a drag orbits), and the
@@ -496,7 +510,13 @@ int fit_volume_to_gpu_budget(
     int           *depth,
     char          *message,
     size_t         message_size);
+size_t volume_gpu_budget_bytes(const StandaloneApp *app);
 void load_semantic_memory_if_present(StandaloneApp *app);
+/* ui_controls_panel.cpp: reload the clipped region of a downsampled scan
+   at full resolution, and go back to the whole scan. */
+int detail_region_available(const StandaloneApp *app);
+int load_full_detail_region(StandaloneApp *app);
+int return_to_whole_scan(StandaloneApp *app);
 void create_annotation_region_at_point(
     StandaloneApp *app,
     const float    point[3]);

@@ -280,6 +280,7 @@ static int draw_interactive_slice_thumbnail(
                 target[0] = point[0];
                 target[1] = point[1];
                 target[2] = point[2];
+                if (app->measurement_points < 2) ++app->measurement_points;
                 app->measurement_target = 1 - app->measurement_target;
             }
         }
@@ -622,10 +623,11 @@ void draw_viewport_tool_overlays(StandaloneApp *app)
     }
 
     /* Measurement A -> B with its distance. */
-    if (app->measurement_visible) {
+    if (app->measurement_visible && app->measurement_points > 0) {
         ImVec2 a, b;
         int has_a = project_volume_point(app, extent, app->measure_a, origin, size, &a);
-        int has_b = project_volume_point(app, extent, app->measure_b, origin, size, &b);
+        int has_b = app->measurement_points > 1 &&
+                    project_volume_point(app, extent, app->measure_b, origin, size, &b);
         if (has_a && has_b) {
             char label[64];
             ImVec2 mid = ImVec2((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f);

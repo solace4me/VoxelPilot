@@ -428,6 +428,43 @@ void volume_import_free(float *data)
     free(data);
 }
 
+int volume_import_crop(
+    const float *src,
+    int          width,
+    int          height,
+    int          depth,
+    const int    origin[3],
+    const int    size[3],
+    float      **out_data)
+{
+    const int dims[3] = { width, height, depth };
+    float    *dst;
+    int       axis, y, z;
+
+    if (out_data) *out_data = NULL;
+    if (!src || !origin || !size || !out_data) return -1;
+    for (axis = 0; axis < 3; ++axis) {
+        if (size[axis] < 1 || origin[axis] < 0 || origin[axis] + size[axis] > dims[axis]) {
+            return -1;
+        }
+    }
+
+    dst = (float *)malloc((size_t)size[0] * (size_t)size[1] * (size_t)size[2] * sizeof(float));
+    if (!dst) return -1;
+
+    for (z = 0; z < size[2]; ++z) {
+        for (y = 0; y < size[1]; ++y) {
+            const float *row = src + ((size_t)(origin[2] + z) * (size_t)height +
+                                      (size_t)(origin[1] + y)) * (size_t)width + (size_t)origin[0];
+            memcpy(dst + ((size_t)z * (size_t)size[1] + (size_t)y) * (size_t)size[0],
+                   row, (size_t)size[0] * sizeof(float));
+        }
+    }
+
+    *out_data = dst;
+    return 0;
+}
+
 const char *volume_import_data_type_label(VolumeDataType data_type)
 {
     switch (data_type) {
