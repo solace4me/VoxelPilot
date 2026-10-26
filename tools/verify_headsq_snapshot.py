@@ -47,7 +47,9 @@ def validate_headsq(metrics: dict[str, object]) -> list[str]:
         failures.append(f"visible CT structure count is too low: {visible_pixels}")
     if visible_ratio < 0.10:
         failures.append(f"visible CT structure ratio is too low: {visible_ratio:.3f}")
-    if bbox_ratio < 0.40:
+    # The head is drawn at its physical size (201 x 201 x 138 mm), not
+    # stretched to a cube, so it fills ~1/3 of the frame when framed whole.
+    if bbox_ratio < 0.28:
         failures.append(f"visible CT bounding-box coverage is too low: {bbox_ratio:.3f}")
     if render_ms is not None and float(render_ms) > 750.0:
         failures.append(f"snapshot render is too slow: {float(render_ms):.2f} ms")
@@ -67,6 +69,11 @@ def run_snapshot(exe: pathlib.Path, volume: pathlib.Path, snapshot: pathlib.Path
         "93",
         "--type",
         "uint8",
+        # Header spacing (mm); the renderer draws physical proportions.
+        "--spacing",
+        "3.2",
+        "3.2",
+        "1.5",
         "--snapshot",
         str(snapshot),
     ]
