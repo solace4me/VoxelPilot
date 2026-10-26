@@ -388,6 +388,55 @@ static int load_semantic_memory(StandaloneApp *app, const char *path)
     return 1;
 }
 
+/* The Inspector's "Is this right?" answer for one discovered region.
+   Records a confirm/reject correction in ASD memory and saves it to
+   semantic_memory_path at once, so the next discovery - this session or
+   a later one - recognises similar regions the way the user said
+   (voxelpilot_asd_apply_corrections, run inside discovery). A reject
+   also hides the region now; the caller owns selection/undo state. */
+int teach_semantic_region(StandaloneApp *app, int index, int confirmed)
+{
+    VoxelPilotSemanticRegion *region;
+
+    if (!app || index < 0 || index >= app->semantic_region_count) return 0;
+    region = &app->semantic_regions[index];
+
+    snprintf(app->semantic_edit_name, sizeof(app->semantic_edit_name), "%s", region->name);
+    if (!upsert_semantic_correction(app, region, confirmed ? 1 : 0, confirmed ? 0 : 1)) {
+        return 0;
+    }
+
+    if (confirmed) {
+        region->user_confirmed = 1;
+        region->rejected = 0;
+        region->source = VOXELPILOT_SEMANTIC_SOURCE_USER_CONFIRMED;
+        if (region->confidence < 0.95f) region->confidence = 0.95f;
+    } else {
+        region->rejected = 1;
+        region->user_confirmed = 0;
+        refresh_semantic_annotation_overlays(app);
+    }
+    save_semantic_memory(app, app->semantic_memory_path);
+    return 1;
+}
+
+/* Startup: pick up what earlier sessions taught. A missing file is the
+   normal first-run case, not an error. */
+void load_semantic_memory_if_present(StandaloneApp *app)
+{
+    FILE *probe;
+
+    if (!app || !app->semantic_memory_path[0]) return;
+    probe = fopen(app->semantic_memory_path, "r");
+    if (!probe) {
+        snprintf(app->semantic_memory_status, sizeof(app->semantic_memory_status),
+                 "No ASD memory yet - confirm or reject regions in the Inspector to teach VoxelPilot.");
+        return;
+    }
+    fclose(probe);
+    load_semantic_memory(app, app->semantic_memory_path);
+}
+
 
 void create_annotation_region_at_point(
     StandaloneApp *app,

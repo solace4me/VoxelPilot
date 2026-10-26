@@ -26,3 +26,10 @@ Thumbs.db
 
 # Local Superpowers brainstorming artifacts
 .superpowers/
+
+# Large downloaded sample volumes: fetch them with the link in their
+# folder's README instead of committing them.
+sample-data/carp/*.raw
+
+# Local ASD correction memory written by the Inspector ("Is this right?")
+voxelpilot_asd_memory.json

@@ -933,40 +933,10 @@ void draw_help_marker(const char *description)
     }
 }
 
-static void draw_insights_panel(StandaloneApp *app)
-{
-    if (!app->insights_visible) {
-        return;
-    }
-
-    set_default_window_layout(app, "Insights");
-    bool insights_open = app->insights_visible != 0;
-    if (ImGui::Begin("Insights", &insights_open)) {
-
-    /* Orthogonal Slice Review (sliders + the three slice thumbnails)
-       moved to an interactive overlay anchored to the viewport itself -
-       step 6 of docs/superpowers/plans/2026-10-24-unity-style-redesign.md,
-       draw_viewport_slice_strip in the new ui_viewport_overlay.cpp. Drag
-       a thumbnail there to move the crosshair (same app->slice_x/y/z this
-       panel used to expose via sliders), scroll to step through depth,
-       double-click to enlarge. */
-    ImGui::TextDisabled("Slice review moved to the viewport (drag to pan, scroll to step, double-click to enlarge).");
-
-    if (app->measurement_visible) {
-        ImGui::Separator();
-        ImGui::Text("Measurement Summary");
-        ImGui::Text("A: (%.3f, %.3f, %.3f)",
-                    app->measure_a[0], app->measure_a[1], app->measure_a[2]);
-        ImGui::Text("B: (%.3f, %.3f, %.3f)",
-                    app->measure_b[0], app->measure_b[1], app->measure_b[2]);
-        ImGui::Text("Distance: %.3f voxels", measurement_distance(app));
-        ImGui::Text("World distance: %.3f units", measurement_distance_world(app));
-    }
-
-    }
-    app->insights_visible = insights_open ? 1 : 0;
-    ImGui::End();
-}
+/* draw_insights_panel is retired (step 10): its slice row moved to the
+   docked Slices strip (ui_viewport_overlay.cpp) and its measurement
+   summary to the Measurement inspector (ui_controls_panel.cpp).
+   app->insights_visible stays only so older .vpilot files still load. */
 
 static void apply_auto_enhance_import_view(StandaloneApp *app)
 {
@@ -1370,7 +1340,6 @@ static void draw_gui(StandaloneApp *app)
     draw_demo_banner(app);
     draw_scene_panel(app);
     draw_controls_panel(app);
-    draw_insights_panel(app);
     draw_bottom_panels(app);
     draw_walkthrough_overlay(app);
     draw_guided_review_overlay(app);
@@ -1683,6 +1652,9 @@ int main(int argc, char **argv)
     strcpy(app.semantic_edit_name, "");
     strcpy(app.semantic_memory_path, "voxelpilot_asd_memory.json");
     strcpy(app.semantic_memory_status, "No ASD correction memory loaded yet.");
+    /* Before any discovery runs, so what the user taught in earlier
+       sessions (Inspector "Is this right?") is applied from the start. */
+    load_semantic_memory_if_present(&app);
     app.slice_preview_dirty = 1;
     app.slice_prev_x = -1.0f;
     app.slice_prev_y = -1.0f;
@@ -1731,7 +1703,12 @@ int main(int argc, char **argv)
             (int)startup_spec.depth);
         update_histogram(&app);
         update_dataset_health(&app);
-        apply_auto_enhance_on_load_if_safe(&app, "Startup volume");
+        /* Auto-enhance only when the user did not choose a transfer on the
+           command line - it used to run regardless and silently replace
+           --tf-center/--tf-width/--tf-opacity. */
+        if (!cli_tf_center_set && !cli_tf_width_set && !cli_tf_opacity_set) {
+            apply_auto_enhance_on_load_if_safe(&app, "Startup volume");
+        }
         app.slice_preview_dirty = 1;
         free(app.label_mask);
         app.label_mask = NULL;
@@ -1793,7 +1770,10 @@ int main(int argc, char **argv)
             -0.35f, 0.95f, -0.35f,
             0.7f, -0.35f, 0.7f,
             0.0f, 1.0f, 0.0f);
-        apply_auto_enhance_on_load_if_safe(&app, "Snapshot");
+        /* Same rule as at startup: an explicit --tf-* choice wins. */
+        if (!cli_tf_center_set && !cli_tf_width_set && !cli_tf_opacity_set) {
+            apply_auto_enhance_on_load_if_safe(&app, "Snapshot");
+        }
         render_frame_gpu_snapshot(&app);
 
         if (!app.renderer.h_out) {

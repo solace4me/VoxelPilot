@@ -171,10 +171,10 @@ void ensure_default_dock_layout(StandaloneApp *app, ImGuiID dockspace_id)
        bar is no longer docked - draw_status_bar pins it below the
        dockspace at STATUS_BAR_HEIGHT.
 
-       Controls is the Inspector stand-in until step 10 turns it into the
-       selection-driven Inspector; it is 340 px rather than the spec's 320
-       because its current ImGui labels sit to the right of each widget
-       and clip any narrower. Insights rides as a second tab behind it. */
+       The Inspector (draw_controls_panel, step 10) is 340 px rather than
+       the spec's 320 to leave its transfer-function editor a usable
+       width. The old Insights panel is retired: its measurement summary
+       lives in the Measurement inspector now. */
     scene_w = 240.0f;
     inspector_w = (app->dock_layout_variant == 1) ? 360.0f : 340.0f;
     bottom_h = (app->dock_layout_variant == 1) ? 320.0f : 240.0f;
@@ -198,8 +198,7 @@ void ensure_default_dock_layout(StandaloneApp *app, ImGuiID dockspace_id)
     dock_left_id = dock_right_id;
 
     ImGui::DockBuilderDockWindow("Scene", dock_scene_id);
-    ImGui::DockBuilderDockWindow("Controls", dock_left_id);
-    ImGui::DockBuilderDockWindow("Insights", dock_right_id);
+    ImGui::DockBuilderDockWindow("Inspector", dock_left_id);
     ImGui::DockBuilderDockWindow("Slices", dock_slices_id);
     ImGui::DockBuilderDockWindow("Bottom Panels", dock_bottom_id);
 
@@ -397,12 +396,14 @@ void draw_top_ribbon(StandaloneApp *app)
             ImGui::SameLine();
             ImGui::Text("GPU %.2f ms | FPS %.1f", app->last_render_ms, app->gui_fps);
             ImGui::SameLine();
-            ImGui::Text("Right rail:");
+            ImGui::Text("Panels:");
             {
-                bool insights_visible = app->insights_visible != 0;
+                /* The only way back to a closed Inspector until the View
+                   menu exists (step 11). */
+                bool inspector_visible = app->controls_visible != 0;
                 ImGui::SameLine();
-                if (ImGui::Checkbox("Insights##panel_insights", &insights_visible)) {
-                    app->insights_visible = insights_visible ? 1 : 0;
+                if (ImGui::Checkbox("Inspector##panel_inspector", &inspector_visible)) {
+                    app->controls_visible = inspector_visible ? 1 : 0;
                 }
             }
             {

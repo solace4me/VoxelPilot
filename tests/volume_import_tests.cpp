@@ -218,6 +218,40 @@ static int test_load_uint16_normalizes_values(void)
     return 1;
 }
 
+/* Real CT/MRI uint16 data rarely uses the full 0..65535 range (the carp
+   sample tops out at 2871). Dividing by 65535 squeezed such a scan into
+   the bottom few percent of [0, 1], where no transfer window could tell
+   tissues apart; uint16 is scaled by the data's own min..max instead. */
+static int test_load_uint16_scales_to_data_range(void)
+{
+    const uint16_t bytes[] = { 100, 1100, 2100, 600 };
+    const VolumeImportSpec spec = { 2, 2, 1, VOLUME_DATA_UINT16 };
+    char path[260];
+    char error[256];
+    float *data = NULL;
+    size_t voxel_count = 0;
+
+    if (!write_temp_file("volume_import_uint16_range.raw", bytes, sizeof(bytes),
+                         path, sizeof(path))) {
+        return 0;
+    }
+
+    if (!expect_true(
+            volume_import_load(path, &spec, &data, &voxel_count,
+                               error, sizeof(error)) == 0,
+            "uint16 partial-range load should succeed")) {
+        return 0;
+    }
+
+    if (!expect_float_close(data[0], 0.0f, "uint16 data minimum should map to 0.0")) return 0;
+    if (!expect_float_close(data[1], 0.5f, "uint16 mid-range value should map to 0.5")) return 0;
+    if (!expect_float_close(data[2], 1.0f, "uint16 data maximum should map to 1.0")) return 0;
+    if (!expect_float_close(data[3], 0.25f, "uint16 quarter-range value should map to 0.25")) return 0;
+
+    volume_import_free(data);
+    return 1;
+}
+
 static int test_rejects_mismatched_file_size(void)
 {
     const unsigned char bytes[] = { 1, 2, 3 };
@@ -2776,6 +2810,7 @@ int main(void)
     passed &= test_parse_data_type_aliases();
     passed &= test_load_uint8_normalizes_values();
     passed &= test_load_uint16_normalizes_values();
+    passed &= test_load_uint16_scales_to_data_range();
     passed &= test_rejects_mismatched_file_size();
     passed &= test_default_clip_bounds_start_unclipped();
     passed &= test_dock_layout_rebuild_detection();

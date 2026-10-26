@@ -431,6 +431,10 @@ const char *semantic_relationship_note(
     unsigned char  label_id);
 size_t semantic_total_voxels(StandaloneApp *app);
 void refresh_semantic_annotation_overlays(StandaloneApp *app);
+/* confirmed = 1 keeps and remembers the region, 0 hides and remembers
+   the rejection; both are saved to semantic_memory_path. */
+int teach_semantic_region(StandaloneApp *app, int index, int confirmed);
+void load_semantic_memory_if_present(StandaloneApp *app);
 void create_annotation_region_at_point(
     StandaloneApp *app,
     const float    point[3]);

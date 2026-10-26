@@ -102,9 +102,9 @@ class RenderRegressionTests(unittest.TestCase):
         self.assertIn('ImGui::Button("Auto enhance")', ai_assist_panel)
 
     def test_workspace_uses_spec_layout_scene_left_inspector_right_dock_below(self):
-        # UI/UX spec "Layout": Scene on the left, the Inspector (Controls,
-        # with Insights as a tab) on the right, and the slice strip and
-        # bottom dock under the viewport only.
+        # UI/UX spec "Layout": Scene on the left, the Inspector on the
+        # right, and the slice strip and bottom dock under the viewport
+        # only. The old Insights panel is retired (step 10).
         source = STANDALONE_MAIN.read_text(encoding="utf-8")
         ribbon_source = RIBBON_AND_LAYOUT.read_text(encoding="utf-8")
         gui = extract_static_function(source, "draw_gui")
@@ -116,20 +116,23 @@ class RenderRegressionTests(unittest.TestCase):
         self.assertIn("ImGuiDir_Right", dock_layout)
         self.assertIn("ImGuiDir_Down", dock_layout)
         self.assertIn('DockBuilderDockWindow("Scene", dock_scene_id)', dock_layout)
-        self.assertIn('DockBuilderDockWindow("Controls", dock_left_id)', dock_layout)
-        self.assertIn('DockBuilderDockWindow("Insights", dock_right_id)', dock_layout)
+        self.assertIn('DockBuilderDockWindow("Inspector", dock_left_id)', dock_layout)
+        self.assertNotIn('DockBuilderDockWindow("Insights"', dock_layout)
+        self.assertNotIn("draw_insights_panel(app);", gui)
         self.assertIn('DockBuilderDockWindow("Slices", dock_slices_id)', dock_layout)
         self.assertIn('DockBuilderDockWindow("Bottom Panels", dock_bottom_id)', dock_layout)
         self.assertNotIn('DockBuilderDockWindow("Status"', dock_layout)
 
-    def test_left_controls_panel_retains_import_and_export_actions(self):
+    def test_inspector_retains_import_and_export_actions(self):
+        # The Inspector (step 10) splits these across per-section helper
+        # functions in the same file, so check the file, not one function.
         controls_source = CONTROLS_PANEL.read_text(encoding="utf-8")
-        controls_panel = extract_nonstatic_function(controls_source, "draw_controls_panel")
 
-        self.assertIn('ImGui::Text("Volume Import")', controls_panel)
-        self.assertIn('ImGui::Button("Browse...")', controls_panel)
-        self.assertIn('ImGui::Button("Load Volume")', controls_panel)
-        self.assertIn('ImGui::Button("Save Snapshot")', controls_panel)
+        self.assertIn('ImGui::Begin("Inspector"', controls_source)
+        self.assertIn('ImGui::Text("Volume Import")', controls_source)
+        self.assertIn('ImGui::Button("Browse...")', controls_source)
+        self.assertIn('ImGui::Button("Load Volume"', controls_source)
+        self.assertIn('ImGui::Button("Save Snapshot")', controls_source)
 
     def test_workspace_defaults_are_shared_between_startup_and_reset(self):
         source = STANDALONE_MAIN.read_text(encoding="utf-8")
@@ -190,9 +193,12 @@ class RenderRegressionTests(unittest.TestCase):
         # AI Assist and Metadata lost their own visibility flags in the
         # Unity redesign (step 3): they are now always-present tabs in
         # ui_bottom_panels.cpp's "Bottom Panels" window, not independently
-        # dockable/toggleable windows, so only Insights still has a
-        # checkbox and a saved preset flag.
-        self.assertIn('ImGui::Checkbox("Insights##panel_insights"', ribbon)
+        # dockable/toggleable windows. Insights itself was retired in step
+        # 10: the ribbon now toggles the Inspector instead, while the
+        # insights_visible preset key is still written and read so older
+        # .vpilot files keep loading.
+        self.assertIn('ImGui::Checkbox("Inspector##panel_inspector"', ribbon)
+        self.assertNotIn('ImGui::Checkbox("Insights##panel_insights"', ribbon)
         self.assertNotIn('ImGui::Checkbox("AI Assist##panel_ai"', ribbon)
         self.assertNotIn('ImGui::Checkbox("Metadata##panel_metadata"', ribbon)
         self.assertIn('fprintf(fp, "insights_visible %d\\n"', save_fn)

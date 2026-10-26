@@ -88,9 +88,19 @@ spec disagree, the spec wins; this doc should stay in sync with it.
   - Slice strip 180 px (spec said 132; thumbnails were unreadable).
   - Demo banner only with `--demo`, `--semantic-demo` or `--demo-auto`;
     the release `Run_VoxelPilot.bat` passes `--demo`.
-- Steps 7-11 - not started. Next: step 10 (Inspector) ahead of step 7,
-  since it carries no mouse-input risk and step 7's tools will want an
-  Inspector to show their settings in.
+- Step 10 (Inspector) - built and build/test-verified, awaiting a
+  screenshot of the running app. draw_controls_panel now draws a window
+  titled "Inspector" whose sections follow the Scene selection; nothing
+  selected shows the Volume (never an empty panel). Beyond the spec:
+  section headers summarise their values and offer Reset when modified;
+  the transfer function is edited by dragging directly on the
+  histogram, with every transfer edit undoable from the AI Assist card;
+  regions get an "Is this right?" Yes/No that writes ASD memory
+  (teach_semantic_region) and is reloaded at startup
+  (load_semantic_memory_if_present), so discovery learns from the user.
+  Clip ranges use DragFloatRange2 (min/max can no longer cross). The
+  Insights panel is retired.
+- Steps 7, 8, 9, 11 - not started.
 
 ## Corrections needed to steps 1-3's already-shipped work (new step 4)
 

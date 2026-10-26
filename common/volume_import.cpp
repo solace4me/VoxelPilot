@@ -315,9 +315,24 @@ int volume_import_load(
 
     case VOLUME_DATA_UINT16:
     {
+        /* Scale by the data's own range, not the type's. Real CT/MRI
+           uint16 rarely spans 0..65535 (the carp sample peaks at 2871), and
+           dividing by 65535 left the whole scan in the bottom few percent
+           of [0, 1] - no transfer window could separate its tissues. A
+           volume that does span the full type range maps exactly as
+           before. */
         const uint16_t *src = (const uint16_t *)raw_data;
+        uint16_t lo = 65535;
+        uint16_t hi = 0;
+        float    scale;
+
         for (i = 0; i < voxel_count; ++i) {
-            float_data[i] = (float)src[i] / 65535.0f;
+            if (src[i] < lo) lo = src[i];
+            if (src[i] > hi) hi = src[i];
+        }
+        scale = (hi > lo) ? 1.0f / (float)(hi - lo) : 0.0f;
+        for (i = 0; i < voxel_count; ++i) {
+            float_data[i] = (float)(src[i] - lo) * scale;
         }
         break;
     }
