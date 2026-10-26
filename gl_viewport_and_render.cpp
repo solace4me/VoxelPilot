@@ -307,6 +307,28 @@ static void apply_tool_click(StandaloneApp *app)
 {
     VoxelPilotRayPickResult hit;
 
+    /* Orbit / Pan: a click (no drag) on a discovered region selects it
+       in the Scene panel and Inspector (step 9) - the region the hover
+       tooltip names. */
+    if (app->active_tool == VOXELPILOT_TOOL_ORBIT || app->active_tool == VOXELPILOT_TOOL_PAN) {
+        int i;
+        if (!app->label_mask || !pick_visible_under_cursor(app, &hit) ||
+            app->label_mask_W != app->renderer.W || app->label_mask_H != app->renderer.H ||
+            app->label_mask_D != app->renderer.D) {
+            return;
+        }
+        for (i = 0; i < app->semantic_region_count; ++i) {
+            if (!app->semantic_regions[i].rejected &&
+                app->semantic_regions[i].label_id == app->label_mask[hit.index]) {
+                app->scene_selection_kind = VOXELPILOT_SCENE_SELECTION_REGION;
+                app->scene_selection_index = i;
+                app->semantic_selected_region = i;
+                app->controls_visible = 1;
+                break;
+            }
+        }
+        return;
+    }
     if (app->active_tool != VOXELPILOT_TOOL_MEASURE &&
         app->active_tool != VOXELPILOT_TOOL_ANNOTATE) {
         return;

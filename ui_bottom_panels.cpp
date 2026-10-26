@@ -160,27 +160,35 @@ static void draw_log_tab(StandaloneApp *app)
 
 void draw_bottom_panels(StandaloneApp *app)
 {
-    if (!app) return;
+    ImGuiTabItemFlags select[4] = { 0, 0, 0, 0 };
+
+    if (!app || !app->dock_visible) return;
+
+    /* A menu command (e.g. AI > Ask VoxelPilot) can ask for a tab once. */
+    if (app->bottom_tab_request >= 1 && app->bottom_tab_request <= 4) {
+        select[app->bottom_tab_request - 1] = ImGuiTabItemFlags_SetSelected;
+    }
+    app->bottom_tab_request = 0;
 
     if (ImGui::Begin("Bottom Panels")) {
         if (ImGui::BeginTabBar("##bottom_panels_tabs")) {
 
-            if (ImGui::BeginTabItem("AI Assist")) {
+            if (ImGui::BeginTabItem("AI Assist", NULL, select[0])) {
                 draw_ai_assist_panel(app);
                 ImGui::EndTabItem();
             }
 
-            if (ImGui::BeginTabItem("Histogram")) {
+            if (ImGui::BeginTabItem("Histogram", NULL, select[1])) {
                 draw_histogram_tab(app);
                 ImGui::EndTabItem();
             }
 
-            if (ImGui::BeginTabItem("Metadata")) {
+            if (ImGui::BeginTabItem("Metadata", NULL, select[2])) {
                 draw_metadata_panel(app);
                 ImGui::EndTabItem();
             }
 
-            if (ImGui::BeginTabItem("Log")) {
+            if (ImGui::BeginTabItem("Log", NULL, select[3])) {
                 draw_log_tab(app);
                 ImGui::EndTabItem();
             }

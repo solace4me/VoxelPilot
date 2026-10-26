@@ -200,20 +200,41 @@ void handle_keyboard_shortcuts(StandaloneApp *app)
             if (ImGui::IsKeyPressed(view_keys[i], false)) start_camera_preset_transition(app, i);
         }
         if (ImGui::IsKeyPressed(ImGuiKey_F, false)) frame_volume(app);
+        if (ImGui::IsKeyPressed(ImGuiKey_F11, false)) toggle_focus_viewport(app);
+        if (ImGui::IsKeyPressed(ImGuiKey_RightBracket, false)) select_guided_review_region(app, 1);
+        if (ImGui::IsKeyPressed(ImGuiKey_LeftBracket, false)) select_guided_review_region(app, -1);
+        return;
+    }
+    /* "?" (Shift + /): keyboard shortcut sheet. */
+    if (io->KeyShift && !io->KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Slash, false)) {
+        app->show_shortcuts_popup = 1;
         return;
     }
     if (!io->KeyCtrl) return;
 
-    if (ImGui::IsKeyPressed(ImGuiKey_O)) {
-        browse_volume_file(app);
+    if (ImGui::IsKeyPressed(ImGuiKey_O, false)) {
+        menu_open_volume(app);
     }
-    if (ImGui::IsKeyPressed(ImGuiKey_L)) {
+    if (ImGui::IsKeyPressed(ImGuiKey_L, false)) {
         load_selected_volume(app);
     }
-    if (ImGui::IsKeyPressed(ImGuiKey_S)) {
-        save_screenshot(app);
-        set_ui_toast(app, "Snapshot saved.");
+    if (ImGui::IsKeyPressed(ImGuiKey_S, false)) {
+        if (io->KeyShift) {
+            workspace_save_dialog(app, 0);   /* Ctrl+Shift+S: save workspace */
+        } else {
+            save_screenshot(app);
+        }
     }
+    if (ImGui::IsKeyPressed(ImGuiKey_K, false)) {   /* Ask VoxelPilot */
+        app->dock_visible = 1;
+        app->bottom_tab_request = 1;
+        app->focus_ai_prompt = 1;
+    }
+    /* Ctrl+1..4: Scene, Slices, Dock, Inspector. */
+    if (ImGui::IsKeyPressed(ImGuiKey_1, false)) app->scene_visible = !app->scene_visible;
+    if (ImGui::IsKeyPressed(ImGuiKey_2, false)) app->slices_visible = !app->slices_visible;
+    if (ImGui::IsKeyPressed(ImGuiKey_3, false)) app->dock_visible = !app->dock_visible;
+    if (ImGui::IsKeyPressed(ImGuiKey_4, false)) app->controls_visible = !app->controls_visible;
     if (ImGui::IsKeyPressed(ImGuiKey_T)) {
         app->cinematic_enabled = app->cinematic_enabled ? 0 : 1;
         clamp_cinematic_settings(app);
@@ -804,6 +825,10 @@ static void inspector_volume_file(StandaloneApp *app)
     }
     /* Open by default only while there is nothing loaded - then it is
        the one thing the user needs. */
+    if (app->inspector_open_file_section) {   /* File > Open volume */
+        ImGui::SetNextItemOpen(true);
+        app->inspector_open_file_section = 0;
+    }
     if (!inspector_section("file", "Volume file", summary, !has_volume, false, NULL)) {
         return;
     }
@@ -873,6 +898,67 @@ static void inspector_volume_file(StandaloneApp *app)
     ImGui::Spacing();
 }
 
+/* Save the workspace (.vpilot). save_as = 0 writes to the current file
+   when there is one (File > Save workspace, Ctrl+Shift+S); otherwise, or
+   with save_as = 1, it asks where. Shared by the menu and Inspector. */
+void workspace_save_dialog(StandaloneApp *app, int save_as)
+{
+    if (!app) return;
+    /* preset_path starts as the placeholder "workspace.vpilot" (no
+       folder): never saved, so ask rather than write into the working
+       directory. */
+    if (save_as || !app->preset_path[0] || strcmp(app->preset_path, "workspace.vpilot") == 0) {
+        const char *patterns[] = { "*.vpilot" };
+        const char *selected = tinyfd_saveFileDialog(
+            "Save VoxelPilot Workspace",
+            app->preset_path[0] ? app->preset_path : "workspace.vpilot",
+            1, patterns, "VoxelPilot Workspace (*.vpilot)");
+        if (!selected) return;
+        strncpy(app->preset_path, selected, sizeof(app->preset_path) - 1);
+        app->preset_path[sizeof(app->preset_path) - 1] = '\0';
+    }
+    if (save_workspace_preset(app, app->preset_path) == 0) {
+        snprintf(app->preset_status, sizeof(app->preset_status), "Saved · %s", inspector_basename(app->preset_path));
+        set_ui_toast(app, "Workspace saved.");
+    } else {
+        snprintf(app->preset_status, sizeof(app->preset_status), "Failed to save preset: %s", app->preset_path);
+        set_ui_toast(app, "Workspace save failed.", VOXELPILOT_LOG_ERROR);
+    }
+}
+
+void workspace_open_dialog(StandaloneApp *app)
+{
+    const char *patterns[] = { "*.vpilot", "*" };
+    const char *selected;
+
+    if (!app) return;
+    selected = tinyfd_openFileDialog(
+        "Load VoxelPilot Workspace", "", 2, patterns, "VoxelPilot Workspace (*.vpilot)", 0);
+    if (!selected) return;
+    strncpy(app->preset_path, selected, sizeof(app->preset_path) - 1);
+    app->preset_path[sizeof(app->preset_path) - 1] = '\0';
+    if (load_workspace_preset(app, app->preset_path) == 0) {
+        apply_orbit_camera(app);
+        snprintf(app->preset_status, sizeof(app->preset_status), "Loaded · %s", inspector_basename(app->preset_path));
+        set_ui_toast(app, "Workspace loaded.");
+    } else {
+        snprintf(app->preset_status, sizeof(app->preset_status), "Failed to load preset: %s", app->preset_path);
+        set_ui_toast(app, "Workspace load failed.", VOXELPILOT_LOG_ERROR);
+    }
+}
+
+/* File > Open volume / Ctrl+O: pick the file, then show the Inspector's
+   Volume file section open so the dimensions can be checked and loaded. */
+void menu_open_volume(StandaloneApp *app)
+{
+    if (!app) return;
+    browse_volume_file(app);
+    app->scene_selection_kind = VOXELPILOT_SCENE_SELECTION_VOLUME;
+    app->scene_selection_index = -1;
+    app->controls_visible = 1;
+    app->inspector_open_file_section = 1;
+}
+
 static void inspector_workspace(StandaloneApp *app)
 {
     if (!inspector_section("workspace", "Workspace", "", false, false, NULL)) {
@@ -880,45 +966,15 @@ static void inspector_workspace(StandaloneApp *app)
     }
 
     if (ImGui::Button("Save Preset")) {
-        const char *patterns[] = { "*.vpilot" };
-        const char *selected = tinyfd_saveFileDialog(
-            "Save VoxelPilot Workspace",
-            app->preset_path[0] ? app->preset_path : "workspace.vpilot",
-            1, patterns, "VoxelPilot Workspace (*.vpilot)");
-        if (selected) {
-            strncpy(app->preset_path, selected, sizeof(app->preset_path) - 1);
-            app->preset_path[sizeof(app->preset_path) - 1] = '\0';
-            if (save_workspace_preset(app, app->preset_path) == 0) {
-                snprintf(app->preset_status, sizeof(app->preset_status), "Saved · %s", inspector_basename(app->preset_path));
-                set_ui_toast(app, "Workspace saved.");
-            } else {
-                snprintf(app->preset_status, sizeof(app->preset_status), "Failed to save preset: %s", app->preset_path);
-                set_ui_toast(app, "Workspace save failed.", VOXELPILOT_LOG_ERROR);
-            }
-        }
+        workspace_save_dialog(app, 1);
     }
     ImGui::SameLine();
     if (ImGui::Button("Load Preset")) {
-        const char *patterns[] = { "*.vpilot", "*" };
-        const char *selected = tinyfd_openFileDialog(
-            "Load VoxelPilot Workspace", "", 2, patterns, "VoxelPilot Workspace (*.vpilot)", 0);
-        if (selected) {
-            strncpy(app->preset_path, selected, sizeof(app->preset_path) - 1);
-            app->preset_path[sizeof(app->preset_path) - 1] = '\0';
-            if (load_workspace_preset(app, app->preset_path) == 0) {
-                apply_orbit_camera(app);
-                snprintf(app->preset_status, sizeof(app->preset_status), "Loaded · %s", inspector_basename(app->preset_path));
-                set_ui_toast(app, "Workspace loaded.");
-            } else {
-                snprintf(app->preset_status, sizeof(app->preset_status), "Failed to load preset: %s", app->preset_path);
-                set_ui_toast(app, "Workspace load failed.", VOXELPILOT_LOG_ERROR);
-            }
-        }
+        workspace_open_dialog(app);
     }
     ImGui::SameLine();
     if (ImGui::Button("Save Snapshot")) {
         save_screenshot(app);
-        set_ui_toast(app, "Snapshot saved.");
     }
 
     if (ImGui::Button("Reset Workspace")) {

@@ -438,7 +438,7 @@ void draw_viewport_slice_strip(StandaloneApp *app)
     ImVec2 central_pos;
     ImVec2 central_size;
 
-    if (!app || app->splash_visible) {
+    if (!app || app->splash_visible || !app->slices_visible) {
         return;
     }
     if (app->renderer.W < 1 || app->renderer.H < 1 || app->renderer.D < 1) {

@@ -441,6 +441,9 @@ static void apply_default_workspace_state(StandaloneApp *app, int include_window
     app->controls_visible = 1;
     app->insights_visible = 1;
     app->scene_visible = 1;
+    app->slices_visible = 1;
+    app->dock_visible = 1;
+    app->focus_mode = 0;
     /* -1 = showing the normal 3-up strip, not a single enlarged plane
        (step 6, ui_viewport_overlay.cpp). 0 is a valid plane index
        (Axial), so this can't just rely on zero-init. */
@@ -865,6 +868,9 @@ void save_screenshot(StandaloneApp *app)
         sizeof(app->screenshot_status),
         "Saved snapshot: %s",
         app->screenshot_path);
+    /* Only a file actually written says "saved" (callers used to toast
+       it even after Cancel). */
+    set_ui_toast(app, "Snapshot saved.");
 }
 
 

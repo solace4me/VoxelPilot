@@ -203,6 +203,10 @@ void draw_ai_assist_panel(StandaloneApp *app)
             -(ImGui::CalcTextSize("Apply").x +
               ImGui::GetStyle().FramePadding.x * 2.0f +
               ImGui::GetStyle().ItemSpacing.x));
+        if (app->focus_ai_prompt) {   /* AI > Ask VoxelPilot, Ctrl+K */
+            ImGui::SetKeyboardFocusHere();
+            app->focus_ai_prompt = 0;
+        }
         prompt_submitted = ImGui::InputTextWithHint(
             "##ai_prompt",
             "Ask VoxelPilot",

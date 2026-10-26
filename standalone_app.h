@@ -350,6 +350,22 @@ typedef struct {
     int           tool_press_dragged;
     double        tool_press_x;
     double        tool_press_y;
+    /* Menu bar (step 11). slices_visible / dock_visible join
+       scene_visible / controls_visible as the View menu's panel toggles;
+       focus_mode (F11) hides all four and remembers them in
+       focus_saved. bottom_tab_request = 1 + tab index to select once
+       (0 = none); focus_ai_prompt and inspector_open_file_section are
+       one-frame requests; the popups are opened from the menus. */
+    int           slices_visible;
+    int           dock_visible;
+    int           focus_mode;
+    int           focus_saved[4];
+    int           bottom_tab_request;
+    int           focus_ai_prompt;
+    int           inspector_open_file_section;
+    int           show_shortcuts_popup;
+    int           show_about_popup;
+    float         top_bar_height;
     int           camera_anim_active;
     double        camera_anim_start;
     float         camera_anim_from[9];
@@ -637,6 +653,12 @@ void start_camera_preset_transition(StandaloneApp *app, int preset);
 void start_camera_transition_to(StandaloneApp *app, const float pos[3], const float dir[3], const float up[3]);
 void start_camera_axis_transition(StandaloneApp *app, int axis_index, int sign);
 void draw_viewport_axis_gizmo(StandaloneApp *app);
+/* Menu bar actions shared with the Inspector and keyboard
+   (ui_controls_panel.cpp / ui_ribbon_and_layout.cpp). */
+void workspace_save_dialog(StandaloneApp *app, int save_as);
+void workspace_open_dialog(StandaloneApp *app);
+void menu_open_volume(StandaloneApp *app);
+void toggle_focus_viewport(StandaloneApp *app);
 void frame_volume(StandaloneApp *app);
 /* Toolbar and in-viewport tool overlays (ui_viewport_overlay.cpp). */
 void draw_viewport_toolbar(StandaloneApp *app);

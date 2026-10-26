@@ -39,14 +39,12 @@
 #include "imgui_internal.h"
 
 
-static const char *k_ribbon_tab_labels[] = {
-    "Home",
-    "View"
-};
-
+/* Height of the top bar (the menu bar, step 11) as measured last frame;
+   40 px (the spec's top bar) before the first frame. The name is kept
+   from the ribbon it replaced. */
 static float voxelpilot_ribbon_height(const StandaloneApp *app)
 {
-    return (app && app->ribbon_expanded) ? 122.0f : 38.0f;
+    return (app && app->top_bar_height > 1.0f) ? app->top_bar_height : 40.0f;
 }
 
 void draw_dockspace(StandaloneApp *app)
@@ -286,160 +284,375 @@ void set_default_window_layout(
     (void)name;
 #endif
 }
-static void draw_ribbon_tab(StandaloneApp *app, int tab_index)
-{
-    int active = app && app->ribbon_active_tab == tab_index;
-    if (active) {
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.32f, 0.35f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.22f, 0.38f, 0.42f, 1.0f));
-    }
-    if (ImGui::Button(k_ribbon_tab_labels[tab_index], ImVec2(92.0f, 0.0f)) && app) {
-        app->ribbon_active_tab = tab_index;
-    }
-    if (active) {
-        ImGui::PopStyleColor(2);
-    }
-}
-
 static void reset_default_layout(StandaloneApp *app)
 {
     if (!app) return;
     app->controls_visible = 1;
     app->insights_visible = 1;
     app->scene_visible = 1;
+    app->slices_visible = 1;
+    app->dock_visible = 1;
+    app->focus_mode = 0;
     app->dock_layout_ready = 0;
     app->layout_refit_next_frame = 1;
     snprintf(app->preset_status, sizeof(app->preset_status), "Layout reset to default.");
     set_ui_toast(app, "Layout reset.");
 }
 
+/* View > Focus viewport / F11: hide every panel around the viewport, and
+   bring back exactly what was showing on the second press. */
+void toggle_focus_viewport(StandaloneApp *app)
+{
+    if (!app) return;
+    if (!app->focus_mode) {
+        app->focus_saved[0] = app->scene_visible;
+        app->focus_saved[1] = app->slices_visible;
+        app->focus_saved[2] = app->dock_visible;
+        app->focus_saved[3] = app->controls_visible;
+        app->scene_visible = 0;
+        app->slices_visible = 0;
+        app->dock_visible = 0;
+        app->controls_visible = 0;
+        app->focus_mode = 1;
+        set_ui_toast(app, "Focus viewport - F11 brings the panels back.");
+    } else {
+        app->scene_visible = app->focus_saved[0];
+        app->slices_visible = app->focus_saved[1];
+        app->dock_visible = app->focus_saved[2];
+        app->controls_visible = app->focus_saved[3];
+        app->focus_mode = 0;
+    }
+}
+
+static void menu_scout_focus_slice(StandaloneApp *app)
+{
+    float focus_slice = 0.0f;
+    float focus_score = 0.0f;
+
+    if (voxelpilot_find_high_variance_axial_slice(
+            app->renderer.volume_data, app->renderer.W, app->renderer.H, app->renderer.D,
+            &focus_slice, &focus_score)) {
+        app->slice_z = focus_slice;
+        app->ai_focus_slice = focus_slice;
+        app->ai_focus_score = focus_score;
+        app->slices_visible = 1;
+        snprintf(app->ai_assist_status, sizeof(app->ai_assist_status),
+                 "Scout moved Axial Z to %.3f.", app->ai_focus_slice);
+        set_ui_toast(app, "Focus slice updated.");
+    } else {
+        set_ui_toast(app, "Focus scout needs a loaded 3D volume.", VOXELPILOT_LOG_WARNING);
+    }
+}
+
+static void menu_reset_transfer(StandaloneApp *app)
+{
+    VoxelPilotDefaultState d;
+    voxelpilot_default_state_init(&d);
+    apply_transfer_settings_with_undo(app, d.tf_center, d.tf_width, d.tf_opacity_scale,
+                                      "Transfer reset to defaults");
+    app->tf_palette = d.tf_palette;
+    app->tf_invert = d.tf_invert;
+}
+
+static void menu_select_volume_section(StandaloneApp *app)
+{
+    app->scene_selection_kind = VOXELPILOT_SCENE_SELECTION_VOLUME;
+    app->scene_selection_index = -1;
+    app->controls_visible = 1;
+    app->inspector_open_file_section = 1;
+}
+
+static void draw_shortcuts_popup(StandaloneApp *app)
+{
+    static const char *rows[][2] = {
+        { "Ctrl+O", "Open volume" },          { "Ctrl+S", "Save snapshot" },
+        { "Ctrl+Shift+S", "Save workspace" }, { "Ctrl+K", "Ask VoxelPilot (AI prompt)" },
+        { "Ctrl+T", "Cinematic look on/off" }, { "Ctrl+1 ... Ctrl+4", "Scene / Slices / Dock / Inspector" },
+        { "O  P  M  C  A", "Orbit, Pan, Measure, Clip, Annotate" },
+        { "1  2  3  4", "Front, Side, Top, Iso view" },
+        { "F", "Frame the volume" },          { "F11", "Focus viewport" },
+        { "[  ]", "Previous / next region in review" },
+        { "Right-drag / middle-drag", "Pan / orbit, any tool" },
+        { "?", "This sheet" }
+    };
+    int i;
+
+    if (app->show_shortcuts_popup) {
+        ImGui::OpenPopup("Keyboard shortcuts");
+        app->show_shortcuts_popup = 0;
+    }
+    if (ImGui::BeginPopupModal("Keyboard shortcuts", NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
+        if (ImGui::BeginTable("##shortcuts", 2, ImGuiTableFlags_SizingFixedFit)) {
+            for (i = 0; i < (int)(sizeof(rows) / sizeof(rows[0])); ++i) {
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0);
+                ImGui::TextColored(ImVec4(0.498f, 0.902f, 0.839f, 1.0f), "%s", rows[i][0]);
+                ImGui::TableSetColumnIndex(1);
+                ImGui::TextUnformatted(rows[i][1]);
+            }
+            ImGui::EndTable();
+        }
+        ImGui::TextDisabled("Single-letter keys work when no text field is focused.");
+        if (ImGui::Button("Close") || ImGui::IsKeyPressed(ImGuiKey_Escape)) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+
+    if (app->show_about_popup) {
+        ImGui::OpenPopup("About VoxelPilot");
+        app->show_about_popup = 0;
+    }
+    if (ImGui::BeginPopupModal("About VoxelPilot", NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextColored(ImVec4(0.40f, 0.88f, 0.78f, 1.0f), "%s", BRAND_TITLE);
+        ImGui::TextUnformatted("Laptop-first volume exploration workbench.");
+        ImGui::TextUnformatted("For research and teaching. Not a medical device;");
+        ImGui::TextUnformatted("not for diagnosis or treatment decisions.");
+        if (ImGui::Button("Close") || ImGui::IsKeyPressed(ImGuiKey_Escape)) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+}
+
+/* ============================================================
+   Top bar (step 11; spec "Region by region > Top bar")
+
+   A classic menu bar replaces the Home/View ribbon: File, View, Volume,
+   AI, Review, Help, each item with its shortcut (toggles show a check),
+   and on the right Open volume, Snapshot and the Safety badge (hover:
+   the reason; click: score, reason and recommendation, with a one-click
+   switch to the Fast preset when the GPU is under pressure). The bar's
+   real height is stored in top_bar_height for the dockspace below it.
+   The function keeps its draw_top_ribbon name for its callers.
+   ============================================================ */
+
 void draw_top_ribbon(StandaloneApp *app)
 {
-    const ImGuiViewport *viewport = ImGui::GetMainViewport();
-    float height = voxelpilot_ribbon_height(app);
-    ImGuiWindowFlags flags =
-        ImGuiWindowFlags_NoTitleBar |
-        ImGuiWindowFlags_NoCollapse |
-        ImGuiWindowFlags_NoResize |
-        ImGuiWindowFlags_NoMove |
-        ImGuiWindowFlags_NoSavedSettings;
-#ifdef IMGUI_HAS_DOCK
-    flags |= ImGuiWindowFlags_NoDocking;
-#endif
-    int tab;
+    bool scene_on, slices_on, dock_on, inspector_on, focus_on, cinematic_on;
+    int has_volume;
 
-    if (app) {
-        /* Keep the always-visible Safety badge accurate every frame,
-           regardless of whether AI Assist is open or a gated action ran. */
-        refresh_performance_governor(app);
+    if (!app) return;
+
+    /* Keep the always-visible Safety badge accurate every frame,
+       regardless of whether AI Assist is open or a gated action ran. */
+    refresh_performance_governor(app);
+    has_volume = app->renderer.volume_data && app->renderer.W > 0;
+
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10.0f, 11.0f));
+    ImGui::PushStyleColor(ImGuiCol_MenuBarBg, ImVec4(0.039f, 0.051f, 0.063f, 1.0f));
+    if (!ImGui::BeginMainMenuBar()) {
+        ImGui::PopStyleColor();
+        ImGui::PopStyleVar();
+        return;
+    }
+    app->top_bar_height = ImGui::GetWindowHeight();
+    ImGui::PopStyleVar();
+
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0f, 6.0f));
+    ImGui::TextColored(ImVec4(0.40f, 0.88f, 0.78f, 1.0f), "VoxelPilot");
+    ImGui::SameLine(0.0f, 16.0f);
+
+    if (ImGui::BeginMenu("File")) {
+        if (ImGui::MenuItem("Open volume...", "Ctrl+O")) menu_open_volume(app);
+        ImGui::Separator();
+        if (ImGui::MenuItem("Open workspace...")) workspace_open_dialog(app);
+        if (ImGui::MenuItem("Save workspace", "Ctrl+Shift+S")) workspace_save_dialog(app, 0);
+        if (ImGui::MenuItem("Save workspace as...")) workspace_save_dialog(app, 1);
+        ImGui::Separator();
+        if (ImGui::MenuItem("Save snapshot", "Ctrl+S", false, has_volume)) save_screenshot(app);
+        if (ImGui::MenuItem("Export review bundle...", NULL, false, has_volume)) export_ai_review_bundle(app);
+        if (ImGui::MenuItem("Export insight report...", NULL, false, has_volume)) export_insight_report(app);
+        ImGui::Separator();
+        if (ImGui::MenuItem("Quit")) glfwSetWindowShouldClose(app->window, 1);
+        ImGui::EndMenu();
     }
 
-    ImGui::SetNextWindowPos(viewport->Pos, ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2(viewport->Size.x, height), ImGuiCond_Always);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12.0f, 8.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 6.0f));
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.055f, 0.070f, 0.085f, 0.98f));
-    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.20f, 0.28f, 0.33f, 0.70f));
-    ImGui::Begin("VoxelPilot Ribbon", NULL, flags);
-    ImGui::PopStyleVar(4);
-    ImGui::PopStyleColor(2);
+    if (ImGui::BeginMenu("View")) {
+        scene_on = app->scene_visible != 0;
+        slices_on = app->slices_visible != 0;
+        dock_on = app->dock_visible != 0;
+        inspector_on = app->controls_visible != 0;
+        focus_on = app->focus_mode != 0;
+        if (ImGui::MenuItem("Scene", "Ctrl+1", &scene_on)) app->scene_visible = scene_on;
+        if (ImGui::MenuItem("Slices", "Ctrl+2", &slices_on)) app->slices_visible = slices_on;
+        if (ImGui::MenuItem("Dock", "Ctrl+3", &dock_on)) app->dock_visible = dock_on;
+        if (ImGui::MenuItem("Inspector", "Ctrl+4", &inspector_on)) app->controls_visible = inspector_on;
+        if (ImGui::MenuItem("Focus viewport", "F11", &focus_on)) toggle_focus_viewport(app);
+        ImGui::Separator();
+        if (ImGui::BeginMenu("Layout")) {
+            if (ImGui::MenuItem("Explore", NULL, app->dock_layout_variant == 0)) {
+                app->dock_layout_variant = 0;
+                app->dock_layout_ready = 0;
+            }
+            if (ImGui::MenuItem("Deep review", NULL, app->dock_layout_variant == 1)) {
+                app->dock_layout_variant = 1;
+                app->dock_layout_ready = 0;
+            }
+            ImGui::Separator();
+            if (ImGui::MenuItem("Reset layout")) reset_default_layout(app);
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("Camera")) {
+            if (ImGui::MenuItem("Front", "1")) start_camera_preset_transition(app, VOXELPILOT_CAMERA_PRESET_FRONT);
+            if (ImGui::MenuItem("Side", "2")) start_camera_preset_transition(app, VOXELPILOT_CAMERA_PRESET_SIDE);
+            if (ImGui::MenuItem("Top", "3")) start_camera_preset_transition(app, VOXELPILOT_CAMERA_PRESET_TOP);
+            if (ImGui::MenuItem("Iso", "4")) start_camera_preset_transition(app, VOXELPILOT_CAMERA_PRESET_ISO);
+            ImGui::Separator();
+            if (ImGui::MenuItem("Frame volume", "F")) frame_volume(app);
+            ImGui::EndMenu();
+        }
+        cinematic_on = app->cinematic_enabled != 0;
+        if (ImGui::MenuItem("Cinematic look", "Ctrl+T", &cinematic_on)) {
+            app->cinematic_enabled = cinematic_on;
+            clamp_cinematic_settings(app);
+        }
+        ImGui::EndMenu();
+    }
 
-    if (ImGui::BeginTable("RibbonLayout", 2, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_NoPadOuterX)) {
-        ImGui::TableSetupColumn("Brand", ImGuiTableColumnFlags_WidthStretch);
-        ImGui::TableSetupColumn("Actions", ImGuiTableColumnFlags_WidthFixed, 460.0f);
-
-        ImGui::TableNextRow(ImGuiTableRowFlags_None, 28.0f);
-        ImGui::TableSetColumnIndex(0);
-        ImGui::TextColored(ImVec4(0.40f, 0.88f, 0.78f, 1.0f), "%s", BRAND_TITLE);
-        ImGui::SameLine();
-        ImGui::TextColored(ImVec4(0.72f, 0.78f, 0.86f, 1.0f), "%s", BRAND_SUBTITLE);
-        if (app) {
-            ImGui::SameLine();
-            ImGui::TextColored(
-                voxelpilot_pressure_color(app->performance_result.status),
-                "| Safety: %s (%d/100)",
-                app->performance_result.status_label,
-                app->performance_result.pressure_score);
-            if (ImGui::IsItemHovered() && app->performance_result.primary_reason[0]) {
-                ImGui::SetTooltip("%s", app->performance_result.primary_reason);
+    if (ImGui::BeginMenu("Volume")) {
+        if (ImGui::MenuItem("Import settings...")) menu_select_volume_section(app);
+        if (ImGui::MenuItem("Voxel spacing...")) menu_select_volume_section(app);
+        ImGui::Separator();
+        if (ImGui::MenuItem("Clip tool", "C", app->active_tool == VOXELPILOT_TOOL_CLIP)) {
+            set_active_tool(app, VOXELPILOT_TOOL_CLIP);
+        }
+        if (ImGui::MenuItem("Show full volume", NULL, false, clipping_is_active(app) != 0)) {
+            int i;
+            for (i = 0; i < 3; ++i) {
+                app->clip_min[i] = 0.0f;
+                app->clip_max[i] = 1.0f;
             }
         }
-
-        ImGui::TableSetColumnIndex(1);
-        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 1.0f);
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.12f, 0.20f, 0.24f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.18f, 0.30f, 0.34f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.22f, 0.38f, 0.40f, 1.0f));
-        if (ImGui::Button(app && app->ribbon_expanded ? "Collapse" : "Expand", ImVec2(90.0f, 0.0f)) && app) {
-            app->ribbon_expanded = app->ribbon_expanded ? 0 : 1;
-            app->dock_layout_ready = 0;
+        if (ImGui::MenuItem("Reset transfer function", NULL, false, has_volume)) menu_reset_transfer(app);
+        ImGui::Separator();
+        if (ImGui::MenuItem("Dataset health check", NULL, false, has_volume)) {
+            update_dataset_health(app);
+            snprintf(app->ai_assist_status, sizeof(app->ai_assist_status), "%s", app->dataset_health_status);
+            app->dock_visible = 1;
+            app->bottom_tab_request = 3;   /* Metadata shows the health score */
         }
+        ImGui::EndMenu();
+    }
+
+    if (ImGui::BeginMenu("AI")) {
+        if (ImGui::MenuItem("Ask VoxelPilot", "Ctrl+K")) {
+            app->dock_visible = 1;
+            app->bottom_tab_request = 1;
+            app->focus_ai_prompt = 1;
+        }
+        ImGui::Separator();
+        if (ImGui::MenuItem("Auto enhance", NULL, false, has_volume)) apply_auto_enhance_transfer(app, "AI menu");
+        if (ImGui::MenuItem("Discover regions", NULL, false,
+                            has_volume && app->performance_result.safe_to_run_asd)) {
+            if (performance_allows_optional_action(app, "Discover regions", 1, 0)) {
+                run_adaptive_semantic_discovery(app);
+                refresh_performance_governor(app);
+                snprintf(app->ai_assist_status, sizeof(app->ai_assist_status), "%s", app->semantic_status);
+            }
+        }
+        if (ImGui::MenuItem("Scout focus slice", NULL, false, has_volume)) menu_scout_focus_slice(app);
+        if (ImGui::MenuItem("Transfer advisor")) {
+            app->dock_visible = 1;
+            app->bottom_tab_request = 1;   /* lives under AI Assist > More AI Tools */
+        }
+        ImGui::EndMenu();
+    }
+
+    if (ImGui::BeginMenu("Review")) {
+        int i;
+        if (ImGui::MenuItem("Start guided review", NULL, false, app->semantic_region_count > 0)) {
+            start_guided_review(app);
+        }
+        if (ImGui::MenuItem("Next region", "]", false, app->semantic_region_count > 0)) {
+            select_guided_review_region(app, 1);
+        }
+        if (ImGui::MenuItem("Previous region", "[", false, app->semantic_region_count > 0)) {
+            select_guided_review_region(app, -1);
+        }
+        ImGui::Separator();
+        if (ImGui::BeginMenu("Regions", app->semantic_region_count > 0)) {
+            for (i = 0; i < app->semantic_region_count; ++i) {
+                if (app->semantic_regions[i].rejected) continue;
+                ImGui::PushID(i);
+                if (ImGui::MenuItem(app->semantic_regions[i].name[0] ? app->semantic_regions[i].name : "ASD region")) {
+                    app->scene_selection_kind = VOXELPILOT_SCENE_SELECTION_REGION;
+                    app->scene_selection_index = i;
+                    app->semantic_selected_region = i;
+                    app->controls_visible = 1;
+                }
+                ImGui::PopID();
+            }
+            ImGui::EndMenu();
+        }
+        if (ImGui::MenuItem("Measurement")) {
+            app->scene_selection_kind = VOXELPILOT_SCENE_SELECTION_MEASUREMENT;
+            app->scene_selection_index = -1;
+            app->controls_visible = 1;
+        }
+        ImGui::EndMenu();
+    }
+
+    if (ImGui::BeginMenu("Help")) {
+        if (ImGui::MenuItem("Guided walkthrough")) {
+            app->walkthrough_visible = 1;
+            app->walkthrough_step = 0;
+        }
+        if (ImGui::MenuItem("Keyboard shortcuts", "?")) app->show_shortcuts_popup = 1;
+        if (ImGui::MenuItem("About")) app->show_about_popup = 1;
+        ImGui::EndMenu();
+    }
+
+    /* Right side: primary actions and the Safety badge. */
+    {
+        char badge[64];
+        float badge_w, buttons_w, x;
+        ImGuiStyle *style = &ImGui::GetStyle();
+
+        snprintf(badge, sizeof(badge), "Safety: %s %d/100",
+                 app->performance_result.status_label, app->performance_result.pressure_score);
+        badge_w = ImGui::CalcTextSize(badge).x + style->FramePadding.x * 2.0f;
+        buttons_w = ImGui::CalcTextSize("Open volume").x + ImGui::CalcTextSize("Snapshot").x +
+                    style->FramePadding.x * 4.0f + style->ItemSpacing.x * 3.0f;
+        x = ImGui::GetWindowWidth() - badge_w - buttons_w - 16.0f;
+        if (x > ImGui::GetCursorPosX()) ImGui::SetCursorPosX(x);
+
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.310f, 0.820f, 0.749f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.498f, 0.902f, 0.839f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.024f, 0.125f, 0.114f, 1.0f));
+        if (ImGui::Button("Open volume")) menu_open_volume(app);
         ImGui::PopStyleColor(3);
         ImGui::SameLine();
-        ImGui::BeginGroup();
-        for (tab = 0; tab < VOXELPILOT_RIBBON_COUNT; ++tab) {
-            if (tab != 0) {
-                ImGui::SameLine();
-            }
-            draw_ribbon_tab(app, tab);
+        ImGui::BeginDisabled(!has_volume);
+        if (ImGui::Button("Snapshot")) save_screenshot(app);
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.067f, 0.149f, 0.141f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, voxelpilot_pressure_color(app->performance_result.status));
+        if (ImGui::Button(badge)) ImGui::OpenPopup("##safety_popover");
+        ImGui::PopStyleColor(2);
+        if (ImGui::IsItemHovered() && app->performance_result.primary_reason[0]) {
+            ImGui::SetTooltip("%s", app->performance_result.primary_reason);
         }
-        ImGui::EndGroup();
-
-        ImGui::EndTable();
-    }
-
-    if (app && app->ribbon_expanded) {
-        ImGui::Separator();
-        if (app->ribbon_active_tab == VOXELPILOT_RIBBON_HOME) {
-            /* Reset Workspace and Guided Walkthrough live in Controls -
-               kept here once as an exact duplicate; removed. */
-            if (ImGui::Button("Reset Layout")) reset_default_layout(app);
-            ImGui::SameLine();
-            ImGui::Text("GPU %.2f ms | FPS %.1f", app->last_render_ms, app->gui_fps);
-            ImGui::SameLine();
-            ImGui::Text("Panels:");
-            {
-                /* The only way back to a closed Inspector until the View
-                   menu exists (step 11). */
-                bool inspector_visible = app->controls_visible != 0;
-                ImGui::SameLine();
-                if (ImGui::Checkbox("Inspector##panel_inspector", &inspector_visible)) {
-                    app->controls_visible = inspector_visible ? 1 : 0;
-                }
+        if (ImGui::BeginPopup("##safety_popover")) {
+            ImGui::TextColored(voxelpilot_pressure_color(app->performance_result.status),
+                               "Safety: %s (%d/100)", app->performance_result.status_label,
+                               app->performance_result.pressure_score);
+            if (app->performance_result.primary_reason[0]) {
+                ImGui::TextWrapped("%s", app->performance_result.primary_reason);
             }
-            {
-                /* Scene panel visibility (step 5). The spec eventually
-                   wants this on Ctrl+1 in a real View menu (step 11); this
-                   checkbox is the only way to bring Scene back once hidden
-                   until that exists. */
-                bool scene_visible = app->scene_visible != 0;
-                ImGui::SameLine();
-                if (ImGui::Checkbox("Scene##panel_scene", &scene_visible)) {
-                    app->scene_visible = scene_visible ? 1 : 0;
-                }
+            if (app->performance_result.recommendation[0]) {
+                ImGui::TextDisabled("%s", app->performance_result.recommendation);
             }
-        } else if (app->ribbon_active_tab == VOXELPILOT_RIBBON_VIEW) {
-            bool cinematic_enabled = app->cinematic_enabled != 0;
-            if (ImGui::Checkbox("Cinematic", &cinematic_enabled)) {
-                app->cinematic_enabled = cinematic_enabled ? 1 : 0;
-                clamp_cinematic_settings(app);
+            if (app->performance_result.status != VOXELPILOT_GOVERNOR_HEALTHY &&
+                ImGui::Button("Switch to Fast quality")) {
+                apply_render_quality_preset(app, 0);
+                ImGui::CloseCurrentPopup();
             }
-            ImGui::SameLine();
-            ImGui::Text("Quality: %s", k_render_quality_labels[app->render_quality_mode]);
-            ImGui::SameLine();
-            ImGui::Text("Render: %d x %d", app->render_w, app->render_h);
-            if (app->cinematic_enabled) {
-                ImGui::SliderFloat("Rim##ribbon_cinematic_rim", &app->cinematic_rim_strength, 0.0f, 1.0f);
-                ImGui::SameLine();
-                ImGui::SliderFloat("Glow##ribbon_cinematic_glow", &app->cinematic_glow_strength, 0.0f, 1.0f);
-                ImGui::SameLine();
-                ImGui::SliderFloat("Contrast##ribbon_cinematic_contrast", &app->cinematic_contrast, 0.8f, 1.6f);
-                clamp_cinematic_settings(app);
-            }
+            ImGui::EndPopup();
         }
     }
 
-    ImGui::End();
+    ImGui::PopStyleVar();
+    ImGui::EndMainMenuBar();
+    ImGui::PopStyleColor();
+
+    draw_shortcuts_popup(app);
 }

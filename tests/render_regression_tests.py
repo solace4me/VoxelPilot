@@ -156,7 +156,8 @@ class RenderRegressionTests(unittest.TestCase):
         dock_layout = extract_nonstatic_function(ribbon_source, "ensure_default_dock_layout")
         gui = extract_static_function(source, "draw_gui")
 
-        self.assertIn('ImGui::Checkbox("Cinematic"', ribbon)
+        # Step 11: the ribbon became a menu bar; Cinematic is a View item.
+        self.assertIn('ImGui::MenuItem("Cinematic look", "Ctrl+T"', ribbon)
         self.assertNotIn('ImGui::Checkbox("Cinematic Mode"', controls_panel)
         self.assertNotIn('DockBuilderDockWindow("About"', dock_layout)
         self.assertNotIn("draw_about_panel(app);", gui)
@@ -197,7 +198,8 @@ class RenderRegressionTests(unittest.TestCase):
         # 10: the ribbon now toggles the Inspector instead, while the
         # insights_visible preset key is still written and read so older
         # .vpilot files keep loading.
-        self.assertIn('ImGui::Checkbox("Inspector##panel_inspector"', ribbon)
+        self.assertIn('ImGui::MenuItem("Inspector", "Ctrl+4"', ribbon)
+        self.assertIn('ImGui::MenuItem("Scene", "Ctrl+1"', ribbon)
         self.assertNotIn('ImGui::Checkbox("Insights##panel_insights"', ribbon)
         self.assertNotIn('ImGui::Checkbox("AI Assist##panel_ai"', ribbon)
         self.assertNotIn('ImGui::Checkbox("Metadata##panel_metadata"', ribbon)
@@ -221,6 +223,8 @@ class RenderRegressionTests(unittest.TestCase):
         self.assertIn("ImGuiKey_O", controls_source)
         self.assertIn("ImGuiKey_S", controls_source)
         self.assertIn("ImGuiKey_T", controls_source)
-        self.assertIn('ImGui::Button("Reset Layout")', ribbon)
+        self.assertIn('ImGui::MenuItem("Reset layout")', ribbon)
+        self.assertIn('ImGui::MenuItem("Keyboard shortcuts", "?")', ribbon)
+        self.assertIn("ImGuiKey_F11", controls_source)
 if __name__ == "__main__":
     unittest.main()

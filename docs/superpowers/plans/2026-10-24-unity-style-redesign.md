@@ -113,7 +113,21 @@ spec disagree, the spec wins; this doc should stay in sync with it.
   in 3D. Not done: dragging clip box faces directly in the viewport
   (bounds are set in the Inspector). Mouse-click paths not exercised by
   automation (they need the real cursor).
-- Steps 8, 9, 11 - not started.
+- Step 8 (axis gizmo) - done; verified by capture in Front and Iso.
+- Step 9 (hover / click-to-select) - done: the hover tooltip names the
+  visible region (pick fixed to the visible surface); a click without
+  drag in Orbit/Pan selects that region in Scene + Inspector. The
+  cinematic demo callouts are unchanged.
+- Step 11 (menu bar) - done; verified by capture and F11 posted to the
+  app window. File / View / Volume / AI / Review / Help with shortcuts
+  and check marks, Open volume / Snapshot / Safety badge (click:
+  reason, recommendation, switch to Fast). New: Slices and Dock
+  toggles (Ctrl+2/3), Focus viewport (F11), Ctrl+K, Ctrl+Shift+S,
+  [ ] review navigation, "?" shortcut sheet, About (states non-clinical
+  use). Menus and click paths need the real mouse; not automated.
+- All plan steps are now built. Remaining from the spec, deliberately
+  not done: dragging clip box faces in the viewport; Recent volumes list;
+  a separate import dialog (import stays in the Inspector).
 
 ## Corrections needed to steps 1-3's already-shipped work (new step 4)
 
