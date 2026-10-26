@@ -626,6 +626,19 @@ void draw_cinematic_semantic_callouts(StandaloneApp *app)
         point[0] = semantic->centroid[0] / fmaxf((float)(app->renderer.W - 1), 1.0f);
         point[1] = semantic->centroid[1] / fmaxf((float)(app->renderer.H - 1), 1.0f);
         point[2] = semantic->centroid[2] / fmaxf((float)(app->renderer.D - 1), 1.0f);
+        {
+            /* Centroid is in normalized volume coordinates; the camera
+               lives in world space, where the volume box keeps its true
+               proportions (common/volume_geometry.h). */
+            float extent[3];
+            float world[3];
+            voxelpilot_volume_box_extent(app->renderer.W, app->renderer.H, app->renderer.D,
+                                         app->voxel_spacing, extent);
+            voxelpilot_volume_point_to_world(extent, point, world);
+            point[0] = world[0];
+            point[1] = world[1];
+            point[2] = world[2];
+        }
         if (!voxelpilot_project_point_to_screen(
                 point,
                 app->cam_pos,

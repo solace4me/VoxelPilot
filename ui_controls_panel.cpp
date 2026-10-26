@@ -324,9 +324,12 @@ static const char *inspector_basename(const char *path)
 
 static void inspector_focus_camera_on(StandaloneApp *app, const float point_norm[3])
 {
-    app->orbit_target[0] = point_norm[0];
-    app->orbit_target[1] = point_norm[1];
-    app->orbit_target[2] = point_norm[2];
+    /* orbit_target is world space; point_norm is normalized volume
+       coordinates (see common/volume_geometry.h). */
+    float extent[3];
+    voxelpilot_volume_box_extent(app->renderer.W, app->renderer.H, app->renderer.D,
+                                 app->voxel_spacing, extent);
+    voxelpilot_volume_point_to_world(extent, point_norm, app->orbit_target);
     apply_orbit_camera(app);
 }
 

@@ -485,6 +485,9 @@ static int build_current_renderer_input(
     config.cinematic_contrast = app->cinematic_contrast;
     config.render_width = app->render_w;
     config.render_height = app->render_h;
+    voxelpilot_volume_box_extent(
+        app->renderer.W, app->renderer.H, app->renderer.D,
+        app->voxel_spacing, config.box_extent);
 
     if (!voxelpilot_build_renderer_input(&config, cmd)) {
         return 0;
@@ -657,12 +660,20 @@ void update_main_render_hover_pick(StandaloneApp *app)
                 f3_scale(right, ndc_x * aspect * tan_fov),
                 f3_scale(view_up, ndc_y * tan_fov))));
 
-    ray_origin[0] = app->cam_pos[0];
-    ray_origin[1] = app->cam_pos[1];
-    ray_origin[2] = app->cam_pos[2];
-    ray_direction[0] = ray.x;
-    ray_direction[1] = ray.y;
-    ray_direction[2] = ray.z;
+    /* The ray is built in world space; voxelpilot_pick_volume_along_ray
+       walks normalized volume coordinates (its box is [0, 1]^3). Map the
+       ray across: the origin through the inverse box placement, the
+       direction scaled per axis. The parameter t then means the same
+       point in both spaces, so the hit is exact for any volume shape. */
+    {
+        float extent[3];
+        voxelpilot_volume_box_extent(app->renderer.W, app->renderer.H, app->renderer.D,
+                                     app->voxel_spacing, extent);
+        voxelpilot_world_to_volume_point(extent, app->cam_pos, ray_origin);
+        ray_direction[0] = ray.x / extent[0];
+        ray_direction[1] = ray.y / extent[1];
+        ray_direction[2] = ray.z / extent[2];
+    }
     pick_threshold = fmaxf(0.03f, app->tf_center - app->tf_width * 0.5f);
 
     if (!voxelpilot_pick_volume_along_ray(

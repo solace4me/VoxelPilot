@@ -40,6 +40,9 @@ typedef struct {
     float    cinematic_contrast;
     float    clip_min[3];
     float    clip_max[3];
+    /* World-space size of the volume box, longest side 1, centred on
+       (0.5, 0.5, 0.5) - see common/volume_geometry.h. */
+    float    box_extent[3];
 
     uint32_t img_width;
     uint32_t img_height;

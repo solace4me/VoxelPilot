@@ -724,6 +724,13 @@ void apply_render_command(
     st->vparams.cinematic_contrast      = cmd->cinematic_contrast;
     memcpy(st->vparams.clip_min, cmd->clip_min, sizeof(st->vparams.clip_min));
     memcpy(st->vparams.clip_max, cmd->clip_max, sizeof(st->vparams.clip_max));
+    {
+        int axis;
+        for (axis = 0; axis < 3; ++axis) {
+            float e = cmd->box_extent[axis];
+            st->vparams.box_extent[axis] = (e > 0.0f && e <= 1.0f) ? e : 1.0f;
+        }
+    }
     sync_label_overlay(st, cmd);
 
     /* Clamp requested resolution */
@@ -873,6 +880,9 @@ int renderer_state_init(
     st->vparams.clip_max[0]          = 1.0f;
     st->vparams.clip_max[1]          = 1.0f;
     st->vparams.clip_max[2]          = 1.0f;
+    st->vparams.box_extent[0]        = 1.0f;
+    st->vparams.box_extent[1]        = 1.0f;
+    st->vparams.box_extent[2]        = 1.0f;
 
     /* Default camera */
     st->cam.position = f3_make(0.5f, 0.5f, -1.0f);

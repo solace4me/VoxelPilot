@@ -1370,6 +1370,8 @@ int main(int argc, char **argv)
     int           cli_tf_center_set = 0;
     int           cli_tf_width_set = 0;
     int           cli_tf_opacity_set = 0;
+    float         cli_spacing[3] = { 1.0f, 1.0f, 1.0f };
+    int           cli_spacing_set = 0;
     int           cli_cinematic_enabled = 0;
     int           cli_cinematic_rim_set = 0;
     int           cli_cinematic_glow_set = 0;
@@ -1426,6 +1428,16 @@ int main(int argc, char **argv)
                 return -1;
             }
             cli_tf_opacity_set = 1;
+        } else if (strcmp(argv[i], "--spacing") == 0 &&
+                   i+3 < argc) {
+            int axis;
+            for (axis = 0; axis < 3; ++axis) {
+                if (parse_cli_float(argv[++i], 0.0001f, 1000.0f, &cli_spacing[axis]) != 0) {
+                    fprintf(stderr, "Invalid value for --spacing: %s\n", argv[i]);
+                    return -1;
+                }
+            }
+            cli_spacing_set = 1;
         } else if (strcmp(argv[i], "--cinematic-lite") == 0) {
             cli_cinematic_enabled = 1;
         } else if (strcmp(argv[i], "--demo") == 0) {
@@ -1525,7 +1537,7 @@ int main(int argc, char **argv)
         } else {
             fprintf(stderr, "Unknown argument: %s\n", argv[i]);
             fprintf(stderr,
-                    "Usage: %s [--volume file.raw] [--dim N | --width W --height H --depth D] [--type uint8|uint16|float32] [--snapshot path.png] [--review-bundle folder] [--tf-center C --tf-width W --tf-opacity O] [--cinematic-lite --cinematic-rim R --cinematic-glow G --cinematic-contrast C] [--demo] [--semantic-demo] [--demo-auto --demo-duration seconds]\n",
+                    "Usage: %s [--volume file.raw] [--dim N | --width W --height H --depth D] [--type uint8|uint16|float32] [--snapshot path.png] [--review-bundle folder] [--spacing SX SY SZ] [--tf-center C --tf-width W --tf-opacity O] [--cinematic-lite --cinematic-rim R --cinematic-glow G --cinematic-contrast C] [--demo] [--semantic-demo] [--demo-auto --demo-duration seconds]\n",
                     argv[0]);
             return -1;
         }
@@ -1588,6 +1600,11 @@ int main(int argc, char **argv)
     if (cli_tf_center_set) app.tf_center = cli_tf_center;
     if (cli_tf_width_set) app.tf_width = cli_tf_width;
     if (cli_tf_opacity_set) app.tf_opacity_scale = cli_tf_opacity;
+    if (cli_spacing_set) {
+        app.voxel_spacing[0] = cli_spacing[0];
+        app.voxel_spacing[1] = cli_spacing[1];
+        app.voxel_spacing[2] = cli_spacing[2];
+    }
 
     /* The presenter banner is for demos only; an everyday launch opens
        straight into the workstation. release/.../Run_VoxelPilot.bat

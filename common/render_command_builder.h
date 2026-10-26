@@ -31,6 +31,8 @@ typedef struct {
     float cinematic_contrast;
     float clip_min[3];
     float clip_max[3];
+    /* The volume's world-space box (volume_geometry.h). */
+    float box_extent[3];
 
     int   render_width;
     int   render_height;
@@ -92,6 +94,9 @@ static inline void voxelpilot_render_command_config_defaults(
     config->clip_max[0] = 1.0f;
     config->clip_max[1] = 1.0f;
     config->clip_max[2] = 1.0f;
+    config->box_extent[0] = 1.0f;
+    config->box_extent[1] = 1.0f;
+    config->box_extent[2] = 1.0f;
 
     config->render_width = 1024;
     config->render_height = 1024;
@@ -146,6 +151,13 @@ static inline int voxelpilot_build_renderer_input(
     cmd->cinematic_contrast = config->cinematic_contrast;
     cmd->img_width = (uint32_t)config->render_width;
     cmd->img_height = (uint32_t)config->render_height;
+    {
+        int axis;
+        for (axis = 0; axis < 3; ++axis) {
+            float e = config->box_extent[axis];
+            cmd->box_extent[axis] = (e > 0.0f && e <= 1.0f) ? e : 1.0f;
+        }
+    }
     return 1;
 }
 

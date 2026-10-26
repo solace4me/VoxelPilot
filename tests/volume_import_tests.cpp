@@ -16,6 +16,7 @@
 #include "../common/render_command_builder.h"
 #include "../common/ai_review_bundle.h"
 #include "../common/insight_report.h"
+#include "../common/volume_geometry.h"
 
 static int expect_true(int condition, const char *message)
 {
@@ -2801,6 +2802,90 @@ static int test_callout_visibility_respects_top_count_and_selection(void)
         "selected-only callout mode should hide unselected regions");
 }
 
+/* ---- volume_geometry.h: the volume's world-space box ---- */
+
+static int test_volume_box_cube_stays_unit(void)
+{
+    const float spacing[3] = { 1.0f, 1.0f, 1.0f };
+    float extent[3];
+
+    voxelpilot_volume_box_extent(256, 256, 256, spacing, extent);
+    if (!expect_float_close(extent[0], 1.0f, "cube extent x should be 1")) return 0;
+    if (!expect_float_close(extent[1], 1.0f, "cube extent y should be 1")) return 0;
+    if (!expect_float_close(extent[2], 1.0f, "cube extent z should be 1")) return 0;
+    return 1;
+}
+
+static int test_volume_box_uses_dimensions_and_spacing(void)
+{
+    /* The carp sample: 256x256x512 at 0.78125 x 0.390625 x 1. Physical
+       lengths span the voxel centres: (n - 1) * spacing. */
+    const float spacing[3] = { 0.78125f, 0.390625f, 1.0f };
+    float extent[3];
+
+    voxelpilot_volume_box_extent(256, 256, 512, spacing, extent);
+    if (!expect_float_close(extent[0], 255.0f * 0.78125f / 511.0f, "carp extent x")) return 0;
+    if (!expect_float_close(extent[1], 255.0f * 0.390625f / 511.0f, "carp extent y")) return 0;
+    if (!expect_float_close(extent[2], 1.0f, "carp longest axis should be 1")) return 0;
+    return 1;
+}
+
+static int test_volume_box_rejects_bad_spacing(void)
+{
+    const float spacing[3] = { 0.0f, -2.0f, 1.0f };
+    float extent[3];
+
+    /* Non-positive spacing falls back to 1 on that axis. */
+    voxelpilot_volume_box_extent(64, 64, 64, spacing, extent);
+    if (!expect_float_close(extent[0], 1.0f, "zero spacing should fall back to 1")) return 0;
+    if (!expect_float_close(extent[1], 1.0f, "negative spacing should fall back to 1")) return 0;
+    return 1;
+}
+
+static int test_volume_point_world_round_trip(void)
+{
+    const float extent[3] = { 0.4f, 0.2f, 1.0f };
+    const float corner[3] = { 0.0f, 1.0f, 0.25f };
+    const float centre[3] = { 0.5f, 0.5f, 0.5f };
+    float world[3];
+    float back[3];
+
+    /* The box is centred on (0.5, 0.5, 0.5) so camera presets aimed at
+       the old unit cube's centre still frame any volume. */
+    voxelpilot_volume_point_to_world(extent, centre, world);
+    if (!expect_float_close(world[0], 0.5f, "centre maps to 0.5 x")) return 0;
+    if (!expect_float_close(world[2], 0.5f, "centre maps to 0.5 z")) return 0;
+
+    voxelpilot_volume_point_to_world(extent, corner, world);
+    if (!expect_float_close(world[0], 0.3f, "corner x maps to box min")) return 0;
+    if (!expect_float_close(world[1], 0.6f, "corner y maps to box max")) return 0;
+    if (!expect_float_close(world[2], 0.25f, "unit-extent axis is unchanged")) return 0;
+
+    voxelpilot_world_to_volume_point(extent, world, back);
+    if (!expect_float_close(back[0], corner[0], "round trip x")) return 0;
+    if (!expect_float_close(back[1], corner[1], "round trip y")) return 0;
+    if (!expect_float_close(back[2], corner[2], "round trip z")) return 0;
+    return 1;
+}
+
+static int test_render_command_carries_box_extent(void)
+{
+    VoxelPilotRenderCommandConfig config;
+    RendererInput cmd;
+
+    voxelpilot_render_command_config_defaults(&config);
+    if (!expect_true(voxelpilot_build_renderer_input(&config, &cmd) == 1, "default command should build")) return 0;
+    if (!expect_float_close(cmd.box_extent[0], 1.0f, "default box extent is the unit cube")) return 0;
+
+    config.box_extent[0] = 0.4f;
+    config.box_extent[1] = 0.2f;
+    config.box_extent[2] = 1.0f;
+    if (!expect_true(voxelpilot_build_renderer_input(&config, &cmd) == 1, "anisotropic command should build")) return 0;
+    if (!expect_float_close(cmd.box_extent[0], 0.4f, "box extent x reaches the renderer")) return 0;
+    if (!expect_float_close(cmd.box_extent[1], 0.2f, "box extent y reaches the renderer")) return 0;
+    return 1;
+}
+
 int main(void)
 {
     int passed = 1;
@@ -2885,6 +2970,11 @@ int main(void)
     passed &= test_callout_projection_centers_visible_point();
     passed &= test_callout_projection_rejects_point_behind_camera();
     passed &= test_callout_visibility_respects_top_count_and_selection();
+    passed &= test_volume_box_cube_stays_unit();
+    passed &= test_volume_box_uses_dimensions_and_spacing();
+    passed &= test_volume_box_rejects_bad_spacing();
+    passed &= test_volume_point_world_round_trip();
+    passed &= test_render_command_carries_box_extent();
 
     if (!passed) {
         return 1;

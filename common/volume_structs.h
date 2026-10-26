@@ -71,6 +71,8 @@ typedef struct {
     float cinematic_contrast;
     float clip_min[3];
     float clip_max[3];
+    /* World-space size of the volume box (common/volume_geometry.h). */
+    float box_extent[3];
 
 } VolumeParams;
 

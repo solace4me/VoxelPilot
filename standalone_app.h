@@ -19,6 +19,7 @@
 #include "common/default_state.h"
 #include "common/histogram_profile.h"
 #include "common/render_command_builder.h"
+#include "common/volume_geometry.h"
 #include "common/ai_review_bundle.h"
 #include "common/insight_report.h"
 #include "common/ui_state_helpers.h"

@@ -263,9 +263,12 @@ static void scene_draw_dashed_rect(ImDrawList *draw_list, ImVec2 mn, ImVec2 mx, 
 
 static void scene_focus_camera_on_point(StandaloneApp *app, const float point_norm[3])
 {
-    app->orbit_target[0] = point_norm[0];
-    app->orbit_target[1] = point_norm[1];
-    app->orbit_target[2] = point_norm[2];
+    /* orbit_target is a world-space point; the region/annotation seed is
+       in normalized volume coordinates. */
+    float extent[3];
+    voxelpilot_volume_box_extent(app->renderer.W, app->renderer.H, app->renderer.D,
+                                 app->voxel_spacing, extent);
+    voxelpilot_volume_point_to_world(extent, point_norm, app->orbit_target);
     apply_orbit_camera(app);
 }
 

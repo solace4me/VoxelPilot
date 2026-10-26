@@ -76,8 +76,15 @@ __device__ static float sample_volume_tex(
 }
 
 
+/* The gradient texture holds per-voxel-index differences. For the
+   lighting normal it has to be a world-space gradient: by the chain rule
+   each component is scaled by voxels-per-world-unit on its axis
+   ((n - 1) / box extent). On a cube that scale is uniform and the
+   normal is unchanged; on anisotropic data (thin slices, long scans) it
+   is what keeps surfaces shaded at their true angle. */
 __device__ static float3 sample_gradient_tex(
-    float fx, float fy, float fz)
+    float fx, float fy, float fz,
+    float3 index_to_world_scale)
 {
     float3 out;
 
@@ -94,12 +101,69 @@ __device__ static float3 sample_gradient_tex(
         fy + 0.5f,
         fz + 0.5f);
 
-    out.x = g.x;
-    out.y = g.y;
-    out.z = g.z;
+    out.x = g.x * index_to_world_scale.x;
+    out.y = g.y * index_to_world_scale.y;
+    out.z = g.z * index_to_world_scale.z;
 
     return f3_normalize(out);
 }
+
+/* Stable per-pixel offset in [0, 1). Starting each ray a fraction of a
+   step in replaces the "wood-grain" banding of a coarse step with fine
+   noise, so laptops can run larger steps before artefacts show. It is a
+   fixed hash, not random, so a still frame is identical every time. */
+__device__ static float pixel_jitter(int x, int y)
+{
+    unsigned int h = ((unsigned int)x * 73856093u) ^ ((unsigned int)y * 19349663u);
+    h ^= h >> 13;
+    h *= 0x5bd1e995u;
+    h ^= h >> 15;
+    return (float)(h & 0xffffu) / 65536.0f;
+}
+
+/* Slab test of a ray against an axis-aligned box. On a hit, [*t_enter,
+   *t_exit] is the part of the ray inside the box, starting no earlier
+   than the camera. */
+__device__ static int ray_box_interval(
+    float3 origin,
+    float3 dir,
+    float3 box_min,
+    float3 box_max,
+    float *t_enter,
+    float *t_exit)
+{
+    const float o[3]  = { origin.x,  origin.y,  origin.z };
+    const float d[3]  = { dir.x,     dir.y,     dir.z };
+    const float lo[3] = { box_min.x, box_min.y, box_min.z };
+    const float hi[3] = { box_max.x, box_max.y, box_max.z };
+    float t_near = -1e30f;
+    float t_far = 1e30f;
+    int axis;
+
+    for (axis = 0; axis < 3; ++axis) {
+        if (fabsf(d[axis]) < 1e-8f) {
+            if (o[axis] < lo[axis] || o[axis] > hi[axis]) return 0;
+        } else {
+            float inv = 1.0f / d[axis];
+            float a = (lo[axis] - o[axis]) * inv;
+            float b = (hi[axis] - o[axis]) * inv;
+            if (a > b) { float tmp = a; a = b; b = tmp; }
+            t_near = fmaxf(t_near, a);
+            t_far = fminf(t_far, b);
+        }
+    }
+    t_near = fmaxf(t_near, 0.0f);
+    if (t_far <= t_near) return 0;
+    *t_enter = t_near;
+    *t_exit = t_far;
+    return 1;
+}
+
+/* Opacities are authored for this step length (the Balanced preset).
+   Any other step is corrected so a ray through the same material ends
+   with the same opacity - without it, adaptive quality's coarser steps
+   while orbiting made the volume visibly fade and brighten. */
+#define VOXELPILOT_REFERENCE_STEP 0.0020f
 
 __device__ static unsigned char sample_label_mask(
     const unsigned char *label_mask,
@@ -242,8 +306,35 @@ __global__ void volume_render_kernel(
             f3_scale(v_cam, v * tan_fov)))
     );
 
+    /* The volume is a box of size box_extent centred on (0.5, 0.5, 0.5)
+       (common/volume_geometry.h): a cube is the old unit cube, anything
+       else keeps its true proportions. The clip bounds (normalized
+       volume coordinates) shrink that box, and each ray is marched only
+       through the part of it that it actually crosses. */
+    float3 extent = f3_make(
+        vparams.box_extent[0], vparams.box_extent[1], vparams.box_extent[2]);
+    float3 clip_lo = f3_make(
+        0.5f + (fminf(fmaxf(vparams.clip_min[0], 0.0f), 1.0f) - 0.5f) * extent.x,
+        0.5f + (fminf(fmaxf(vparams.clip_min[1], 0.0f), 1.0f) - 0.5f) * extent.y,
+        0.5f + (fminf(fmaxf(vparams.clip_min[2], 0.0f), 1.0f) - 0.5f) * extent.z);
+    float3 clip_hi = f3_make(
+        0.5f + (fminf(fmaxf(vparams.clip_max[0], 0.0f), 1.0f) - 0.5f) * extent.x,
+        0.5f + (fminf(fmaxf(vparams.clip_max[1], 0.0f), 1.0f) - 0.5f) * extent.y,
+        0.5f + (fminf(fmaxf(vparams.clip_max[2], 0.0f), 1.0f) - 0.5f) * extent.z);
+    float3 gradient_scale = f3_make(
+        (float)(vparams.width  > 1 ? vparams.width  - 1 : 1) / extent.x,
+        (float)(vparams.height > 1 ? vparams.height - 1 : 1) / extent.y,
+        (float)(vparams.depth  > 1 ? vparams.depth  - 1 : 1) / extent.z);
+    float step_len = fmaxf(vparams.step_size, 1e-5f);
+    float opacity_exponent = step_len / VOXELPILOT_REFERENCE_STEP;
+
     float t = 0.0f;
-    float t_max = 2.0f;
+    float t_end = 0.0f;
+    int   hits_volume = ray_box_interval(cam.position, ray_dir, clip_lo, clip_hi, &t, &t_end);
+
+    if (hits_volume) {
+        t += step_len * pixel_jitter(x, y);
+    }
 
     float accumulated_alpha = 0.0f;
     float accumulated_r     = 0.0f;
@@ -252,16 +343,21 @@ __global__ void volume_render_kernel(
 
     unsigned int active_mask = __activemask();
 
+    /* The iteration count must be the same for every thread in a warp
+       (the __ballot_sync calls below), so it is bounded by the longest
+       possible chord (the box diagonal, at most sqrt(3)) rather than by
+       each ray's own interval; rays that are done simply go inactive,
+       and the warp leaves the loop as soon as all of its rays are. */
     int step;
-    int max_steps = (int)(t_max / fmaxf(vparams.step_size, 1e-5f)) + 2;
-    if (max_steps < 512) max_steps = 512;
+    int max_steps = (int)(1.7321f / step_len) + 2;
     if (max_steps > 4096) max_steps = 4096;
 
-    for (step = 0; step < max_steps && t < t_max; ++step)
+    for (step = 0; step < max_steps; ++step)
     {
         int still_active =
+            hits_volume &&
             (accumulated_alpha < vparams.threshold) &&
-            (t < t_max);
+            (t < t_end);
 
         unsigned int any_active =
             __ballot_sync(active_mask, still_active);
@@ -270,7 +366,7 @@ __global__ void volume_render_kernel(
             break;
 
         if (!still_active) {
-            t += vparams.step_size;
+            t += step_len;
             continue;
         }
 
@@ -278,27 +374,12 @@ __global__ void volume_render_kernel(
             f3_add(cam.position,
                    f3_scale(ray_dir, t));
 
-        if (pos_world.x < 0.0f || pos_world.x > 1.0f ||
-            pos_world.y < 0.0f || pos_world.y > 1.0f ||
-            pos_world.z < 0.0f || pos_world.z > 1.0f) {
-            t += vparams.step_size;
-            continue;
-        }
-
+        /* World -> normalized volume coordinates (inverse of the box
+           placement above), clamped against float round-off at faces. */
         float3 pos_tex;
-        pos_tex.x = pos_world.x;
-        pos_tex.y = pos_world.y;
-        pos_tex.z = pos_world.z;
-
-        if (pos_tex.x < vparams.clip_min[0] ||
-            pos_tex.y < vparams.clip_min[1] ||
-            pos_tex.z < vparams.clip_min[2] ||
-            pos_tex.x > vparams.clip_max[0] ||
-            pos_tex.y > vparams.clip_max[1] ||
-            pos_tex.z > vparams.clip_max[2]) {
-            t += vparams.step_size;
-            continue;
-        }
+        pos_tex.x = fminf(fmaxf(0.5f + (pos_world.x - 0.5f) / extent.x, 0.0f), 1.0f);
+        pos_tex.y = fminf(fmaxf(0.5f + (pos_world.y - 0.5f) / extent.y, 0.0f), 1.0f);
+        pos_tex.z = fminf(fmaxf(0.5f + (pos_world.z - 0.5f) / extent.z, 0.0f), 1.0f);
 
         const BrickInfo *brick =
             find_brick_for_pos(bricks, grid, pos_tex);
@@ -309,19 +390,24 @@ __global__ void volume_render_kernel(
             __ballot_sync(active_mask, has_brick);
 
         if (any_brick == 0u) {
-            t += vparams.step_size *
+            t += step_len *
                  vparams.empty_space_skip_mult;
             continue;
         }
 
         if (!has_brick) {
-            t += vparams.step_size;
+            t += step_len;
             continue;
         }
 
-        float fx = pos_tex.x * (float)vparams.width;
-        float fy = pos_tex.y * (float)vparams.height;
-        float fz = pos_tex.z * (float)vparams.depth;
+        /* Normalized coordinate 0..1 spans the first to the last voxel
+           centre - the same convention as the slices, the label mask and
+           CPU picking. sample_volume_tex adds the half-texel offset. The
+           old "* width" mapping put the last voxel a texel beyond 1.0 and
+           shifted the render half a voxel against everything else. */
+        float fx = pos_tex.x * (float)(vparams.width  > 1 ? vparams.width  - 1 : 1);
+        float fy = pos_tex.y * (float)(vparams.height > 1 ? vparams.height - 1 : 1);
+        float fz = pos_tex.z * (float)(vparams.depth  > 1 ? vparams.depth  - 1 : 1);
 
         float val = sample_volume_tex(fx, fy, fz);
 
@@ -333,8 +419,11 @@ __global__ void volume_render_kernel(
             label_id = sample_label_mask(label_mask, labels, pos_tex);
             apply_label_overlay(labels, label_id, &r, &g, &b, &a);
 
+            /* Opacity correction for the actual step length. */
+            a = 1.0f - __powf(1.0f - fminf(fmaxf(a, 0.0f), 0.9999f), opacity_exponent);
+
             float3 grad =
-                sample_gradient_tex(fx, fy, fz);
+                sample_gradient_tex(fx, fy, fz, gradient_scale);
 
             float3 L =
                 f3_normalize(f3_sub(lightPos, pos_world));
@@ -374,7 +463,7 @@ __global__ void volume_render_kernel(
                 one_minus_a * a;
         }
 
-        t += vparams.step_size;
+        t += step_len;
     }
 
     if (vparams.cinematic_enabled) {
