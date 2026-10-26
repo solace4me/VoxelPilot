@@ -43,6 +43,22 @@ int volume_import_load(
 
 void volume_import_free(float *data);
 
+/* Box-filter downsampling by an integer factor: each output voxel is the
+   mean of the factor^3 block it covers (partial blocks at odd edges
+   average what they have). Output dimensions are ceil(dim / factor).
+   Used when a scan does not fit the GPU at full resolution. Free the
+   result with volume_import_free. Returns 0 on success. */
+int volume_import_downsample(
+    const float *src,
+    int          width,
+    int          height,
+    int          depth,
+    int          factor,
+    float      **out_data,
+    int         *out_width,
+    int         *out_height,
+    int         *out_depth);
+
 const char *volume_import_data_type_label(VolumeDataType data_type);
 
 #ifdef __cplusplus

@@ -116,60 +116,6 @@ static int renderer_fail_message(RendererState *st, const char *msg)
     return 0;
 }
 
-static void warn_cuda_nonfatal(cudaError_t err, const char *msg)
-{
-    const char *err_name;
-    const char *err_text;
-
-    if (err == cudaSuccess) {
-        return;
-    }
-
-    if (err == cudaErrorInvalidDevice || err == cudaErrorNotSupported) {
-        cudaGetLastError();
-        return;
-    }
-
-    err_name = cudaGetErrorName(err);
-    err_text = cudaGetErrorString(err);
-    if (!err_name) err_name = "unknown";
-    if (!err_text) err_text = "no error string available";
-    fprintf(stderr,
-            "Warning: CUDA optimization skipped at %s: [%d] %s - %s\n",
-            msg, (int)err, err_name, err_text);
-    cudaGetLastError();
-}
-
-static int select_managed_memory_hint_device(int *out_device)
-{
-    int device_count = 0;
-    int active_device = -1;
-    cudaError_t err;
-
-    if (!out_device) {
-        return 0;
-    }
-
-    err = cudaGetDeviceCount(&device_count);
-    if (err != cudaSuccess) {
-        cudaGetLastError();
-        return 0;
-    }
-
-    err = cudaGetDevice(&active_device);
-    if (err != cudaSuccess) {
-        cudaGetLastError();
-        return 0;
-    }
-
-    if (!voxelpilot_cuda_hint_device_is_valid(active_device, device_count)) {
-        return 0;
-    }
-
-    *out_device = active_device;
-    return 1;
-}
-
 static int resize_output_buffers(RendererState *st)
 {
     size_t output_bytes;
@@ -326,49 +272,13 @@ static void sync_label_overlay(RendererState *st, const RendererInput *cmd)
     }
 }
 
-static cudaMemLocation make_device_location(int device)
-{
-    cudaMemLocation location;
-    location.type = cudaMemLocationTypeDevice;
-    location.id = device;
-    return location;
-}
-
-static void apply_managed_memory_hints(
-    float *volume_data,
-    size_t volume_bytes,
-    const char *stage)
-{
-    cudaMemLocation device_location;
-    cudaError_t err;
-    char advise_label[64];
-    char prefetch_label[64];
-    int device;
-
-    if (!volume_data || volume_bytes == 0 || !select_managed_memory_hint_device(&device)) {
-        return;
-    }
-
-    device_location = make_device_location(device);
-
-    snprintf(advise_label, sizeof(advise_label),
-             "cudaMemAdvise(%s)", stage);
-    err = cudaMemAdvise(
-        volume_data, volume_bytes,
-        cudaMemAdviseSetPreferredLocation, device_location);
-    if (err != cudaSuccess) {
-        warn_cuda_nonfatal(err, advise_label);
-        return;
-    }
-
-    snprintf(prefetch_label, sizeof(prefetch_label),
-             "cudaMemPrefetchAsync(%s)", stage);
-    err = cudaMemPrefetchAsync(
-        volume_data, volume_bytes, device_location, 0, NULL);
-    if (err != cudaSuccess) {
-        warn_cuda_nonfatal(err, prefetch_label);
-    }
-}
+/* The renderer keeps its float copy of the volume (st->volume_data) in
+   ordinary host memory. The kernel never reads it - it samples the 3D
+   texture - while the CPU-side features (bricks, histogram, slices,
+   picking, ASD) read it constantly. It used to be cudaMallocManaged
+   with a GPU-preferred location and a prefetch to the device: 4 bytes
+   per voxel of GPU memory spent on a buffer the GPU never used, and CPU
+   reads that could have to migrate pages back. */
 
 
 /* ============================================================
@@ -774,7 +684,7 @@ int reload_volume(
 
     /* Free old volume */
     if (st->volume_data) {
-        cudaFree(st->volume_data);
+        free(st->volume_data);
         st->volume_data = NULL;
     }
 
@@ -792,15 +702,10 @@ int reload_volume(
     st->vparams.height = height;
     st->vparams.depth  = depth;
 
-    /* Allocate new managed memory */
-    if (!renderer_check_cuda(
-            st,
-            cudaMallocManaged(
-                (void **)&st->volume_data,
-                st->vol_bytes,
-                cudaMemAttachGlobal),
-            "cudaMallocManaged(reload)")) {
-        return 0;
+    /* Host copy for the CPU-side features (see the note above). */
+    st->volume_data = (float *)malloc(st->vol_bytes);
+    if (!st->volume_data) {
+        return renderer_fail_message(st, "Not enough system memory for this volume.");
     }
 
     /* Copy uploaded data */
@@ -818,10 +723,6 @@ int reload_volume(
         return renderer_fail_message(st, "Could not bind CUDA texture objects for reloaded volume.");
     }
 
-    /* Unified memory hints are optional on some Windows driver setups. */
-    apply_managed_memory_hints(
-        st->volume_data, st->vol_bytes, "reload");
-
     /* Rebuild bricks */
     if (!build_brick_grid(st)) {
         return 0;
@@ -834,6 +735,20 @@ int reload_volume(
     printf("Volume reloaded from upload: %dx%dx%d\n",
            st->W, st->H, st->D);
 
+    return 1;
+}
+
+int renderer_query_gpu_memory(size_t *free_bytes, size_t *total_bytes)
+{
+    size_t free_b = 0;
+    size_t total_b = 0;
+
+    if (cudaMemGetInfo(&free_b, &total_b) != cudaSuccess) {
+        cudaGetLastError();
+        return 0;
+    }
+    if (free_bytes) *free_bytes = free_b;
+    if (total_bytes) *total_bytes = total_b;
     return 1;
 }
 
@@ -897,14 +812,11 @@ int renderer_state_init(
     st->img_w = 512;
     st->img_h = 512;
 
-    /* Allocate managed memory for volume */
-    if (!renderer_check_cuda(
-            st,
-            cudaMallocManaged(
-                (void **)&st->volume_data,
-                st->vol_bytes,
-                cudaMemAttachGlobal),
-            "cudaMallocManaged(volume_data)")) {
+    /* Host copy for the CPU-side features (see the note above
+       apply_render_command's neighbours). */
+    st->volume_data = (float *)malloc(st->vol_bytes);
+    if (!st->volume_data) {
+        renderer_fail_message(st, "Not enough system memory for this volume.");
         return 0;
     }
 
@@ -934,10 +846,6 @@ int renderer_state_init(
         renderer_fail_message(st, "Could not bind CUDA texture objects.");
         return 0;
     }
-
-    /* Unified memory hints are optional on some Windows driver setups. */
-    apply_managed_memory_hints(
-        st->volume_data, st->vol_bytes, "init");
 
     /* Build bricks */
     if (!build_brick_grid(st)) {
@@ -1021,7 +929,7 @@ void renderer_state_cleanup(RendererState *st)
     release_volume_resources(&st->volRes);
 
     if (st->volume_data) {
-        cudaFree(st->volume_data);
+        free(st->volume_data);
         st->volume_data = NULL;
     }
 

@@ -360,6 +360,69 @@ int volume_import_load(
     return 0;
 }
 
+int volume_import_downsample(
+    const float *src,
+    int          width,
+    int          height,
+    int          depth,
+    int          factor,
+    float      **out_data,
+    int         *out_width,
+    int         *out_height,
+    int         *out_depth)
+{
+    int    w2, h2, d2;
+    int    x, y, z;
+    float *dst;
+
+    if (!src || !out_data || !out_width || !out_height || !out_depth ||
+        width < 1 || height < 1 || depth < 1 || factor < 1) {
+        return -1;
+    }
+
+    w2 = (width + factor - 1) / factor;
+    h2 = (height + factor - 1) / factor;
+    d2 = (depth + factor - 1) / factor;
+    dst = (float *)malloc((size_t)w2 * (size_t)h2 * (size_t)d2 * sizeof(float));
+    if (!dst) {
+        return -1;
+    }
+
+    for (z = 0; z < d2; ++z) {
+        int z0 = z * factor;
+        int z1 = (z0 + factor < depth) ? z0 + factor : depth;
+        for (y = 0; y < h2; ++y) {
+            int y0 = y * factor;
+            int y1 = (y0 + factor < height) ? y0 + factor : height;
+            for (x = 0; x < w2; ++x) {
+                int    x0 = x * factor;
+                int    x1 = (x0 + factor < width) ? x0 + factor : width;
+                double sum = 0.0;
+                int    count = 0;
+                int    zz, yy, xx;
+
+                for (zz = z0; zz < z1; ++zz) {
+                    for (yy = y0; yy < y1; ++yy) {
+                        const float *row = src + ((size_t)zz * (size_t)height + (size_t)yy) * (size_t)width;
+                        for (xx = x0; xx < x1; ++xx) {
+                            sum += row[xx];
+                            ++count;
+                        }
+                    }
+                }
+                dst[((size_t)z * (size_t)h2 + (size_t)y) * (size_t)w2 + (size_t)x] =
+                    count ? (float)(sum / (double)count) : 0.0f;
+            }
+        }
+    }
+
+    *out_data = dst;
+    *out_width = w2;
+    *out_height = h2;
+    *out_depth = d2;
+    return 0;
+}
+
 void volume_import_free(float *data)
 {
     free(data);

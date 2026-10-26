@@ -76,6 +76,9 @@ static int load_selected_volume(StandaloneApp *app)
     size_t voxel_count = 0;
     char error[256];
     size_t expected = 0;
+    char fit_message[320];
+    int fit_factor = 1;
+    int loaded_w = 0, loaded_h = 0, loaded_d = 0;
 
     if (!app) return 0;
     spec.width = (uint32_t)clamp_import_dimension(app->upload_width);
@@ -106,13 +109,33 @@ static int load_selected_volume(StandaloneApp *app)
     }
 
     volume_import_expected_bytes(&spec, &expected);
+
+    /* Fit the GPU first: downsample if full resolution will not fit,
+       refuse with the numbers if nothing will. */
+    {
+        int w = (int)spec.width;
+        int h = (int)spec.height;
+        int d = (int)spec.depth;
+
+        fit_factor = fit_volume_to_gpu_budget(app, &temp, &w, &h, &d, fit_message, sizeof(fit_message));
+        if (fit_factor == 0) {
+            snprintf(app->upload_status, sizeof(app->upload_status), "%s", fit_message);
+            set_ui_toast(app, "Volume too large for this GPU.", VOXELPILOT_LOG_ERROR);
+            volume_import_free(temp);
+            return 0;
+        }
+        loaded_w = w;
+        loaded_h = h;
+        loaded_d = d;
+    }
+
     strcpy(app->upload_status, "Loading to GPU...");
     reload_volume(
         &app->renderer,
         temp,
-        (int)spec.width,
-        (int)spec.height,
-        (int)spec.depth);
+        loaded_w,
+        loaded_h,
+        loaded_d);
     /* New voxels, possibly with an identical render command: force the
        next frame to raymarch (see render_frame_standalone). */
     app->last_render_valid = 0;
@@ -143,8 +166,12 @@ static int load_selected_volume(StandaloneApp *app)
              volume_import_data_type_label(spec.data_type),
              voxel_count,
              (double)expected / (1024.0 * 1024.0));
+    if (fit_factor > 1) {
+        snprintf(app->upload_status, sizeof(app->upload_status), "%s", fit_message);
+    }
     volume_import_free(temp);
-    set_ui_toast(app, "Volume loaded.");
+    set_ui_toast(app, fit_factor > 1 ? "Volume loaded at reduced resolution to fit this GPU."
+                                     : "Volume loaded.");
     return 1;
 }
 

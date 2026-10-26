@@ -1004,6 +1004,108 @@ int apply_auto_enhance_transfer(StandaloneApp *app, const char *reason)
     return 1;
 }
 
+/* voxel_spacing carries the previous load's downsampling factor; swap it
+   for the new one so repeated loads do not compound it. */
+static void set_volume_downsample_factor(StandaloneApp *app, int factor)
+{
+    int   previous = app->volume_downsample_factor > 1 ? app->volume_downsample_factor : 1;
+    float scale = (float)factor / (float)previous;
+
+    app->voxel_spacing[0] *= scale;
+    app->voxel_spacing[1] *= scale;
+    app->voxel_spacing[2] *= scale;
+    app->volume_downsample_factor = factor;
+}
+
+/* Before a volume goes to the GPU: make sure it fits.
+
+   Compares the scan's GPU cost (common/volume_geometry.h) with the free
+   GPU memory - counting the currently loaded volume as free, since the
+   reload replaces it - and, if full resolution does not fit, downsamples
+   by 2 or 4 (box filter) and scales voxel_spacing by the same factor so
+   physical size and measurements stay true. Never silent: the outcome
+   is written to `message`.
+
+   Returns the factor used (1 = full resolution, 2, 4), or 0 if the scan
+   does not fit even at quarter resolution (data left untouched).
+   If the driver cannot report free memory, loads at full resolution. */
+int fit_volume_to_gpu_budget(
+    StandaloneApp *app,
+    float        **data,
+    int           *width,
+    int           *height,
+    int           *depth,
+    char          *message,
+    size_t         message_size)
+{
+    size_t free_bytes = 0;
+    size_t total_bytes = 0;
+    size_t need;
+    int    factor;
+    float *smaller = NULL;
+    int    w2 = 0, h2 = 0, d2 = 0;
+
+    if (message && message_size) message[0] = '\0';
+    if (!app || !data || !*data || !width || !height || !depth) return 0;
+
+    if (!renderer_query_gpu_memory(&free_bytes, &total_bytes)) {
+        set_volume_downsample_factor(app, 1);
+        return 1;
+    }
+    if (app->renderer.volume_data) {
+        free_bytes += voxelpilot_estimate_volume_gpu_bytes(
+            app->renderer.W, app->renderer.H, app->renderer.D);
+    }
+    if (app->gpu_budget_cap_bytes > 0 && free_bytes > app->gpu_budget_cap_bytes) {
+        free_bytes = app->gpu_budget_cap_bytes;
+    }
+
+    need = voxelpilot_estimate_volume_gpu_bytes(*width, *height, *depth);
+    factor = voxelpilot_choose_downsample_factor(*width, *height, *depth, free_bytes);
+    if (factor == 1) {
+        set_volume_downsample_factor(app, 1);
+        return 1;
+    }
+    if (factor == 0) {
+        if (message) {
+            snprintf(message, message_size,
+                     "This scan needs %.0f MB of GPU memory and only %.0f MB is free - too large "
+                     "for this GPU even at quarter resolution. Close other GPU apps or crop the scan.",
+                     (double)need / (1024.0 * 1024.0),
+                     (double)free_bytes / (1024.0 * 1024.0));
+        }
+        return 0;
+    }
+
+    if (volume_import_downsample(*data, *width, *height, *depth, factor,
+                                 &smaller, &w2, &h2, &d2) != 0) {
+        if (message) {
+            snprintf(message, message_size,
+                     "This scan needs %.0f MB of GPU memory (%.0f MB free) and there was not "
+                     "enough system memory to make a smaller copy.",
+                     (double)need / (1024.0 * 1024.0),
+                     (double)free_bytes / (1024.0 * 1024.0));
+        }
+        return 0;
+    }
+
+    if (message) {
+        snprintf(message, message_size,
+                 "Loaded at 1/%d resolution (%dx%dx%d): full resolution needs %.0f MB of GPU "
+                 "memory and %.0f MB is free. Proportions and measurements stay true.",
+                 factor, w2, h2, d2,
+                 (double)need / (1024.0 * 1024.0),
+                 (double)free_bytes / (1024.0 * 1024.0));
+    }
+    volume_import_free(*data);
+    *data = smaller;
+    *width = w2;
+    *height = h2;
+    *depth = d2;
+    set_volume_downsample_factor(app, factor);
+    return factor;
+}
+
 int apply_auto_enhance_on_load_if_safe(StandaloneApp *app, const char *reason)
 {
     if (!app || !app->histogram_ready) {
@@ -1372,6 +1474,12 @@ int main(int argc, char **argv)
     int           cli_tf_opacity_set = 0;
     float         cli_spacing[3] = { 1.0f, 1.0f, 1.0f };
     int           cli_spacing_set = 0;
+    float         cli_gpu_budget_mb = 0.0f;
+    int           startup_fit_factor = 1;
+    int           startup_fit_w = 0;
+    int           startup_fit_h = 0;
+    int           startup_fit_d = 0;
+    char          startup_fit_message[320] = "";
     int           cli_cinematic_enabled = 0;
     int           cli_cinematic_rim_set = 0;
     int           cli_cinematic_glow_set = 0;
@@ -1438,6 +1546,12 @@ int main(int argc, char **argv)
                 }
             }
             cli_spacing_set = 1;
+        } else if (strcmp(argv[i], "--gpu-budget-mb") == 0 &&
+                   i+1 < argc) {
+            if (parse_cli_float(argv[++i], 1.0f, 1048576.0f, &cli_gpu_budget_mb) != 0) {
+                fprintf(stderr, "Invalid value for --gpu-budget-mb: %s\n", argv[i]);
+                return -1;
+            }
         } else if (strcmp(argv[i], "--cinematic-lite") == 0) {
             cli_cinematic_enabled = 1;
         } else if (strcmp(argv[i], "--demo") == 0) {
@@ -1537,7 +1651,7 @@ int main(int argc, char **argv)
         } else {
             fprintf(stderr, "Unknown argument: %s\n", argv[i]);
             fprintf(stderr,
-                    "Usage: %s [--volume file.raw] [--dim N | --width W --height H --depth D] [--type uint8|uint16|float32] [--snapshot path.png] [--review-bundle folder] [--spacing SX SY SZ] [--tf-center C --tf-width W --tf-opacity O] [--cinematic-lite --cinematic-rim R --cinematic-glow G --cinematic-contrast C] [--demo] [--semantic-demo] [--demo-auto --demo-duration seconds]\n",
+                    "Usage: %s [--volume file.raw] [--dim N | --width W --height H --depth D] [--type uint8|uint16|float32] [--snapshot path.png] [--review-bundle folder] [--spacing SX SY SZ] [--gpu-budget-mb MB] [--tf-center C --tf-width W --tf-opacity O] [--cinematic-lite --cinematic-rim R --cinematic-glow G --cinematic-contrast C] [--demo] [--semantic-demo] [--demo-auto --demo-duration seconds]\n",
                     argv[0]);
             return -1;
         }
@@ -1600,6 +1714,9 @@ int main(int argc, char **argv)
     if (cli_tf_center_set) app.tf_center = cli_tf_center;
     if (cli_tf_width_set) app.tf_width = cli_tf_width;
     if (cli_tf_opacity_set) app.tf_opacity_scale = cli_tf_opacity;
+    if (cli_gpu_budget_mb > 0.0f) {
+        app.gpu_budget_cap_bytes = (size_t)((double)cli_gpu_budget_mb * 1024.0 * 1024.0);
+    }
     if (cli_spacing_set) {
         app.voxel_spacing[0] = cli_spacing[0];
         app.voxel_spacing[1] = cli_spacing[1];
@@ -1694,12 +1811,16 @@ int main(int argc, char **argv)
     }
 
     /* Init CUDA renderer directly */
+    /* The renderer starts on a synthetic placeholder volume, replaced by
+       the real scan below. Cap it at 256^3: sizing it to a large
+       --width/--height/--depth would spend the GPU memory the real scan
+       needs before the memory budget check ever runs. */
     if (!renderer_state_init(
             &app.renderer,
             NULL,
-            app.upload_width,
-            app.upload_height,
-            app.upload_depth,
+            app.upload_width < 256 ? app.upload_width : 256,
+            app.upload_height < 256 ? app.upload_height : 256,
+            app.upload_depth < 256 ? app.upload_depth : 256,
             brick_dim)) {
         snprintf(app.upload_status, sizeof(app.upload_status),
                  "Renderer init failed: %s",
@@ -1710,14 +1831,34 @@ int main(int argc, char **argv)
                 app.renderer.last_error_message);
     }
 
+    /* Same GPU fit check as an interactive load: downsample a scan that
+       will not fit, or keep the placeholder and say why. */
+    if (startup_volume_data) {
+        startup_fit_w = (int)startup_spec.width;
+        startup_fit_h = (int)startup_spec.height;
+        startup_fit_d = (int)startup_spec.depth;
+        startup_fit_factor = fit_volume_to_gpu_budget(
+            &app, &startup_volume_data,
+            &startup_fit_w, &startup_fit_h, &startup_fit_d,
+            startup_fit_message, sizeof(startup_fit_message));
+        if (startup_fit_message[0]) {
+            printf("%s\n", startup_fit_message);
+        }
+        if (startup_fit_factor == 0) {
+            volume_import_free(startup_volume_data);
+            startup_volume_data = NULL;
+            snprintf(startup_error, sizeof(startup_error), "%s", startup_fit_message);
+        }
+    }
+
     if (startup_volume_data) {
         strcpy(app.upload_status, "Loading startup volume to GPU...");
         reload_volume(
             &app.renderer,
             startup_volume_data,
-            (int)startup_spec.width,
-            (int)startup_spec.height,
-            (int)startup_spec.depth);
+            startup_fit_w,
+            startup_fit_h,
+            startup_fit_d);
         update_histogram(&app);
         update_dataset_health(&app);
         /* Auto-enhance only when the user did not choose a transfer on the
@@ -1741,6 +1882,9 @@ int main(int argc, char **argv)
                  startup_spec.depth,
                  volume_import_data_type_label(startup_spec.data_type),
                  startup_voxel_count);
+        if (startup_fit_factor > 1) {
+            snprintf(app.upload_status, sizeof(app.upload_status), "%s", startup_fit_message);
+        }
         volume_import_free(startup_volume_data);
         startup_volume_data = NULL;
     } else {

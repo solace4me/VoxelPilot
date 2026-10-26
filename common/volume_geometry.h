@@ -1,6 +1,8 @@
 #ifndef VOXELPILOT_VOLUME_GEOMETRY_H
 #define VOXELPILOT_VOLUME_GEOMETRY_H
 
+#include <stddef.h>
+
 /* Where the volume sits in world space.
 
    The volume is a box whose sides are proportional to its physical size,
@@ -60,6 +62,47 @@ static inline void voxelpilot_world_to_volume_point(
             ? 0.5f + (world[axis] - 0.5f) / extent[axis]
             : 0.5f;
     }
+}
+
+/* ---- GPU memory budget ----
+
+   What a loaded volume costs on the GPU: the 16-bit texture (2 bytes per
+   voxel, renderer/volume_textures.cu) plus the label mask (1 byte per
+   voxel, allocated once regions or annotations exist). The CUDA/GL
+   context and output buffers are a fixed cost on top, covered by the
+   headroom below rather than counted here. */
+
+static inline size_t voxelpilot_estimate_volume_gpu_bytes(int width, int height, int depth)
+{
+    if (width < 1 || height < 1 || depth < 1) return 0;
+    return (size_t)width * (size_t)height * (size_t)depth * 3u;
+}
+
+/* Use at most this share of the free GPU memory for the volume, leaving
+   the rest for output buffers, the driver and other apps. */
+#define VOXELPILOT_GPU_BUDGET_SHARE 0.75
+
+/* The smallest downsampling factor (1 = full resolution, then 2, 4) whose
+   volume fits the budget, or 0 when even quarter resolution does not. */
+static inline int voxelpilot_choose_downsample_factor(
+    int    width,
+    int    height,
+    int    depth,
+    size_t free_gpu_bytes)
+{
+    static const int factors[3] = { 1, 2, 4 };
+    double budget = (double)free_gpu_bytes * VOXELPILOT_GPU_BUDGET_SHARE;
+    int    i;
+
+    for (i = 0; i < 3; ++i) {
+        int f = factors[i];
+        size_t need = voxelpilot_estimate_volume_gpu_bytes(
+            (width + f - 1) / f, (height + f - 1) / f, (depth + f - 1) / f);
+        if ((double)need <= budget) {
+            return f;
+        }
+    }
+    return 0;
 }
 
 #endif /* VOXELPILOT_VOLUME_GEOMETRY_H */

@@ -76,36 +76,42 @@ __device__ static float sample_volume_tex(
 }
 
 
-/* The gradient texture holds per-voxel-index differences. For the
-   lighting normal it has to be a world-space gradient: by the chain rule
-   each component is scaled by voxels-per-world-unit on its axis
-   ((n - 1) / box extent). On a cube that scale is uniform and the
+/* Lighting normal, from central differences of the volume texture taken
+   only where a sample is actually shaded. There is no stored gradient
+   texture (volume_textures.cu): it cost 16 bytes per voxel of GPU
+   memory, which is what kept large scans off laptop GPUs. Six extra
+   texture fetches per shaded sample hit the same cache lines the main
+   sample just loaded.
+
+   The differences are per voxel index; for a world-space normal each
+   component is scaled by voxels-per-world-unit on its axis ((n - 1) /
+   box extent, the chain rule). On a cube that scale is uniform and the
    normal is unchanged; on anisotropic data (thin slices, long scans) it
-   is what keeps surfaces shaded at their true angle. */
+   keeps surfaces shaded at their true angle. */
 __device__ static float3 sample_gradient_tex(
     float fx, float fy, float fz,
     float3 index_to_world_scale)
 {
     float3 out;
+    float  len_sq;
 
-    if (devGradTex == 0) {
+    out.x = (sample_volume_tex(fx + 1.0f, fy, fz) - sample_volume_tex(fx - 1.0f, fy, fz))
+          * index_to_world_scale.x;
+    out.y = (sample_volume_tex(fx, fy + 1.0f, fz) - sample_volume_tex(fx, fy - 1.0f, fz))
+          * index_to_world_scale.y;
+    out.z = (sample_volume_tex(fx, fy, fz + 1.0f) - sample_volume_tex(fx, fy, fz - 1.0f))
+          * index_to_world_scale.z;
+
+    len_sq = out.x * out.x + out.y * out.y + out.z * out.z;
+    if (len_sq < 1e-12f) {
+        /* Flat region: no direction to shade by (the old texture stored
+           a zero vector here too). */
         out.x = 0.0f;
         out.y = 0.0f;
-        out.z = 1.0f;
+        out.z = 0.0f;
         return out;
     }
-
-    float4 g = tex3D<float4>(
-        devGradTex,
-        fx + 0.5f,
-        fy + 0.5f,
-        fz + 0.5f);
-
-    out.x = g.x * index_to_world_scale.x;
-    out.y = g.y * index_to_world_scale.y;
-    out.z = g.z * index_to_world_scale.z;
-
-    return f3_normalize(out);
+    return f3_scale(out, rsqrtf(len_sq));
 }
 
 /* Stable per-pixel offset in [0, 1). Starting each ray a fraction of a

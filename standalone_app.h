@@ -326,6 +326,14 @@ typedef struct {
        that changes the volume itself must clear last_render_valid. */
     RendererInput last_render_cmd;
     int           last_render_valid;
+    /* Factor the loaded volume was downsampled by to fit the GPU (0 or 1
+       = full resolution). voxel_spacing includes it, so the next load
+       divides it back out first (fit_volume_to_gpu_budget). */
+    int           volume_downsample_factor;
+    /* --gpu-budget-mb: cap on the GPU memory VoxelPilot treats as free
+       (0 = no cap). For sharing the GPU with other apps, and for testing
+       the downsampled fallback on a machine with plenty of memory. */
+    size_t        gpu_budget_cap_bytes;
     int           controls_visible;
     int           insights_visible;
     int           scene_visible;
@@ -435,6 +443,16 @@ void refresh_semantic_annotation_overlays(StandaloneApp *app);
 /* confirmed = 1 keeps and remembers the region, 0 hides and remembers
    the rejection; both are saved to semantic_memory_path. */
 int teach_semantic_region(StandaloneApp *app, int index, int confirmed);
+/* Defined in standalone_main.cpp: downsample a scan that would not fit
+   the GPU (returns 1/2/4 = factor used, 0 = does not fit). */
+int fit_volume_to_gpu_budget(
+    StandaloneApp *app,
+    float        **data,
+    int           *width,
+    int           *height,
+    int           *depth,
+    char          *message,
+    size_t         message_size);
 void load_semantic_memory_if_present(StandaloneApp *app);
 void create_annotation_region_at_point(
     StandaloneApp *app,

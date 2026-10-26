@@ -2886,6 +2886,75 @@ static int test_render_command_carries_box_extent(void)
     return 1;
 }
 
+/* ---- GPU memory budget + downsampled fallback ---- */
+
+static int test_gpu_budget_estimate_counts_texture_and_labels(void)
+{
+    /* 16-bit texture (2 B) + label mask (1 B) per voxel. */
+    size_t bytes = voxelpilot_estimate_volume_gpu_bytes(256, 256, 512);
+    return expect_true(bytes == (size_t)256 * 256 * 512 * 3,
+                       "estimate should be 3 bytes per voxel");
+}
+
+static int test_gpu_budget_keeps_full_resolution_when_it_fits(void)
+{
+    /* Carp (~96 MB) with 2 GB free: no downsampling. */
+    int factor = voxelpilot_choose_downsample_factor(256, 256, 512, (size_t)2048 * 1024 * 1024);
+    return expect_true(factor == 1, "a volume that fits should load at full resolution");
+}
+
+static int test_gpu_budget_halves_when_full_resolution_does_not_fit(void)
+{
+    /* 1024^3 needs 3 GB; with 1 GB free, half resolution (384 MB) fits. */
+    int factor = voxelpilot_choose_downsample_factor(1024, 1024, 1024, (size_t)1024 * 1024 * 1024);
+    return expect_true(factor == 2, "should fall back to half resolution");
+}
+
+static int test_gpu_budget_reports_when_nothing_fits(void)
+{
+    int factor = voxelpilot_choose_downsample_factor(1024, 1024, 1024, (size_t)8 * 1024 * 1024);
+    return expect_true(factor == 0, "should report 0 when even quarter resolution does not fit");
+}
+
+static int test_downsample_averages_blocks(void)
+{
+    /* 4x2x2 -> 2x1x1: each output voxel is the mean of a 2x2x2 block. */
+    float src[16];
+    float *dst = NULL;
+    int w = 0, h = 0, d = 0;
+    int i;
+
+    for (i = 0; i < 16; ++i) {
+        int x = i % 4;
+        src[i] = (x < 2) ? 0.2f : 0.6f;
+    }
+    src[0] = 1.0f; /* block 0: seven 0.2 and one 1.0 -> 0.3 */
+
+    if (!expect_true(volume_import_downsample(src, 4, 2, 2, 2, &dst, &w, &h, &d) == 0,
+                     "downsample should succeed")) return 0;
+    if (!expect_true(w == 2 && h == 1 && d == 1, "downsampled dimensions should halve")) return 0;
+    if (!expect_float_close(dst[0], 0.3f, "first block should be averaged")) return 0;
+    if (!expect_float_close(dst[1], 0.6f, "second block should be averaged")) return 0;
+    volume_import_free(dst);
+    return 1;
+}
+
+static int test_downsample_keeps_odd_edges(void)
+{
+    /* 3x1x1 by 2 -> 2x1x1: the last, partial block averages what it has. */
+    const float src[3] = { 0.0f, 1.0f, 0.5f };
+    float *dst = NULL;
+    int w = 0, h = 0, d = 0;
+
+    if (!expect_true(volume_import_downsample(src, 3, 1, 1, 2, &dst, &w, &h, &d) == 0,
+                     "odd downsample should succeed")) return 0;
+    if (!expect_true(w == 2 && h == 1 && d == 1, "odd dimension should round up")) return 0;
+    if (!expect_float_close(dst[0], 0.5f, "full block averaged")) return 0;
+    if (!expect_float_close(dst[1], 0.5f, "partial edge block keeps its own mean")) return 0;
+    volume_import_free(dst);
+    return 1;
+}
+
 int main(void)
 {
     int passed = 1;
@@ -2975,6 +3044,12 @@ int main(void)
     passed &= test_volume_box_rejects_bad_spacing();
     passed &= test_volume_point_world_round_trip();
     passed &= test_render_command_carries_box_extent();
+    passed &= test_gpu_budget_estimate_counts_texture_and_labels();
+    passed &= test_gpu_budget_keeps_full_resolution_when_it_fits();
+    passed &= test_gpu_budget_halves_when_full_resolution_does_not_fit();
+    passed &= test_gpu_budget_reports_when_nothing_fits();
+    passed &= test_downsample_averages_blocks();
+    passed &= test_downsample_keeps_odd_edges();
 
     if (!passed) {
         return 1;

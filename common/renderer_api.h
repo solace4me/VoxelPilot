@@ -109,6 +109,10 @@ typedef struct {
     uint32_t        frame_id;
 } RendererState;
 
+/* Free and total memory on the active CUDA device; returns 0 if the
+   driver could not report it. */
+int renderer_query_gpu_memory(size_t *free_bytes, size_t *total_bytes);
+
 int renderer_state_init(
     RendererState *st,
     const char    *volume_path,
