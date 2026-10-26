@@ -175,7 +175,10 @@ void ensure_default_dock_layout(StandaloneApp *app, ImGuiID dockspace_id)
        the spec's 320 to leave its transfer-function editor a usable
        width. The old Insights panel is retired: its measurement summary
        lives in the Measurement inspector now. */
-    scene_w = 240.0f;
+    /* 280 rather than the spec's 240: ASD region names carry size,
+       material, shape and position ("Large dense branching · top,
+       front") and were clipped at 240. */
+    scene_w = 280.0f;
     inspector_w = (app->dock_layout_variant == 1) ? 360.0f : 340.0f;
     bottom_h = (app->dock_layout_variant == 1) ? 320.0f : 240.0f;
 

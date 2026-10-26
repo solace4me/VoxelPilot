@@ -372,8 +372,8 @@ void draw_ai_assist_panel(StandaloneApp *app)
                 }
                 if (ImGui::IsItemHovered()) {
                     ImGui::SetTooltip(
-                        "Archetype, confidence, and stability come from local shape/intensity heuristics\n"
-                        "(connected components + geometry), not a trained model.");
+                        "Archetype, match score and stability come from local shape/intensity heuristics\n"
+                        "(connected components + geometry), not a trained model. They are not probabilities.");
                 }
             }
             if (app->semantic_selected_region >= 0 && app->semantic_selected_region < app->semantic_region_count) {

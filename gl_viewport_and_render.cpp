@@ -709,7 +709,7 @@ void update_main_render_hover_pick(StandaloneApp *app)
         const char *note = semantic_relationship_note(app, label_id);
         snprintf(app->main_hover_description,
                  sizeof(app->main_hover_description),
-                 "%s | %s | confidence %.0f%% | stability %.0f%% | source ASD-Lite. %s%s%s",
+                 "%s | %s | match %.0f%% | stability %.0f%% | source ASD-Lite heuristic. %s%s%s",
                  semantic->name,
                  semantic->archetype,
                  semantic->confidence * 100.0f,

@@ -511,7 +511,7 @@ void draw_guided_review_overlay(StandaloneApp *app)
     ImGui::TextWrapped("%s", app->guided_review_step.cue);
     ImGui::Spacing();
     ImGui::Text("Archetype: %s", region->archetype[0] ? region->archetype : "unclassified");
-    ImGui::Text("Confidence: %.0f%% | Stability: %.0f%% | Importance: %.0f%%",
+    ImGui::Text("Match score: %.0f%% | Stability: %.0f%% | Importance: %.0f%%",
                 region->confidence * 100.0f,
                 region->stability_score * 100.0f,
                 region->importance_score * 100.0f);
@@ -674,7 +674,7 @@ void draw_cinematic_semantic_callouts(StandaloneApp *app)
             semantic->color[0], semantic->color[1], semantic->color[2], selected ? 1.0f : 0.70f));
 
         snprintf(title, sizeof(title), "%s", semantic->name[0] ? semantic->name : "ASD candidate");
-        snprintf(detail, sizeof(detail), "%s | confidence %.0f%% | stability %.0f%%",
+        snprintf(detail, sizeof(detail), "%s | match %.0f%% | stability %.0f%%",
                  semantic->archetype,
                  semantic->confidence * 100.0f,
                  semantic->stability_score * 100.0f);

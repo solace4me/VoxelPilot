@@ -21,7 +21,7 @@ call "%VS_INSTALL%\Common7\Tools\VsDevCmd.bat" -arch=amd64 >nul
 if errorlevel 1 exit /b 1
 
 echo [asd-build] tools\verify_asd_dataset.cpp
-cl /nologo /EHsc /std:c++17 /Icommon tools\verify_asd_dataset.cpp /Fe:build\verify_asd_dataset.exe
+cl /nologo /EHsc /std:c++17 /O2 /Icommon tools\verify_asd_dataset.cpp /Fe:build\verify_asd_dataset.exe
 if errorlevel 1 exit /b 1
 
 echo [asd-run] Bonsai 256x256x256 uint8

@@ -3065,6 +3065,72 @@ static int test_asd_shape_uses_voxel_spacing(void)
                        "a physically long region should be a rod");
 }
 
+static int test_asd_side_by_side_duplicates_get_position_words(void)
+{
+    /* Three identical blocks in a row, all in the middle third of the
+       scan: their generated names match, so they are told apart by
+       order along x rather than "#2", "#3". */
+    enum { W = 30, H = 9, D = 9 };
+    static float volume[W * H * D];
+    static unsigned char mask[W * H * D];
+    VoxelPilotSemanticRegion regions[VOXELPILOT_ASD_MAX_REGIONS];
+    int count = 0;
+    int i;
+    const char *left = NULL, *middle = NULL, *right = NULL;
+
+    memset(volume, 0, sizeof(volume));
+    asd_fill_block(volume, W, H, 11, 3, 3, 2, 3, 3, 0.9f);
+    asd_fill_block(volume, W, H, 14, 3, 3, 2, 3, 3, 0.9f);
+    asd_fill_block(volume, W, H, 17, 3, 3, 2, 3, 3, 0.9f);
+
+    if (!expect_true(voxelpilot_discover_semantic_regions_ex(
+            volume, W, H, D, NULL, 0, 8, 0.5f, 4, mask, regions, &count) == 1 && count == 3,
+            "ASD should find three blocks")) return 0;
+    for (i = 0; i < count; ++i) {
+        if (strchr(regions[i].name, '#')) {
+            fprintf(stderr, "FAIL: name still numbered: %s\n", regions[i].name);
+            return 0;
+        }
+        if (regions[i].centroid[0] < 13.0f) left = regions[i].name;
+        else if (regions[i].centroid[0] < 16.0f) middle = regions[i].name;
+        else right = regions[i].name;
+    }
+    if (!expect_true(left && strstr(left, "left") != NULL, "leftmost block should say left")) return 0;
+    if (!expect_true(middle && strstr(middle, "middle") != NULL, "middle block should say middle")) return 0;
+    return expect_true(right && strstr(right, "right") != NULL, "rightmost block should say right");
+}
+
+static int test_asd_finds_enclosed_cavity(void)
+{
+    /* A dense hollow cube: the empty inside is enclosed (touches no scan
+       border), so adaptive discovery reports it as a cavity; the empty
+       space outside touches the border and is not a region. */
+    enum { W = 12, H = 12, D = 12 };
+    static float volume[W * H * D];
+    static unsigned char mask[W * H * D];
+    VoxelPilotSemanticRegion regions[VOXELPILOT_ASD_MAX_REGIONS];
+    int count = 0;
+    int i, cavities = 0;
+    const VoxelPilotSemanticRegion *cavity = NULL;
+
+    memset(volume, 0, sizeof(volume));
+    asd_fill_block(volume, W, H, 2, 2, 2, 8, 8, 8, 0.9f);
+    asd_fill_block(volume, W, H, 4, 4, 4, 4, 4, 4, 0.0f);
+
+    if (!expect_true(voxelpilot_discover_semantic_regions_ex(
+            volume, W, H, D, NULL, 1, 8, 0.5f, 8, mask, regions, &count) == 1,
+            "adaptive ASD should find the shell and its cavity")) return 0;
+    for (i = 0; i < count; ++i) {
+        if (regions[i].density_class == VOXELPILOT_ASD_DENSITY_LOW) {
+            cavities++;
+            cavity = &regions[i];
+        }
+    }
+    if (!expect_true(cavities == 1, "exactly one enclosed cavity should be found")) return 0;
+    if (!expect_true(cavity->voxel_count == 64, "the cavity is the 4x4x4 inside")) return 0;
+    return expect_true(strstr(cavity->name, "cavity") != NULL, "cavity should be named as one");
+}
+
 int main(void)
 {
     int passed = 1;
@@ -3164,6 +3230,8 @@ int main(void)
     passed &= test_asd_adaptive_finds_two_material_classes();
     passed &= test_asd_names_are_distinct();
     passed &= test_asd_shape_uses_voxel_spacing();
+    passed &= test_asd_side_by_side_duplicates_get_position_words();
+    passed &= test_asd_finds_enclosed_cavity();
 
     if (!passed) {
         return 1;

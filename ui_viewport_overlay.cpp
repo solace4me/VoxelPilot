@@ -159,7 +159,7 @@ static void slice_thumbnail_tooltip(
             const char *note = semantic_relationship_note(app, label_id);
             snprintf(app->hover_description,
                      sizeof(app->hover_description),
-                     "%s | %s | confidence %.0f%% | stability %.0f%% | source ASD-Lite. %s%s%s",
+                     "%s | %s | match %.0f%% | stability %.0f%% | source ASD-Lite heuristic. %s%s%s",
                      semantic->name,
                      semantic->archetype,
                      semantic->confidence * 100.0f,

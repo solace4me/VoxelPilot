@@ -968,7 +968,7 @@ static void inspector_draw_region(StandaloneApp *app, int index)
         inspector_label("Voxels");
         ImGui::Text("%zu (%.1f%% of volume)", region->voxel_count,
                     total ? 100.0 * (double)region->voxel_count / (double)total : 0.0);
-        inspector_label("Confidence");
+        inspector_label("Match score");
         ImGui::ProgressBar(region->confidence, ImVec2(-FLT_MIN, 0.0f));
         inspector_label("Source");
         ImGui::Text("%s", region->user_confirmed ? "Confirmed by you" : "ASD-Lite suggestion");

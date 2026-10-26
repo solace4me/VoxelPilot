@@ -463,6 +463,20 @@ static inline void voxelpilot_asd_name_region(
 
     shape = strcmp(region->archetype, "unclassified") == 0 ? "region" : region->archetype;
     voxelpilot_asd_location_words(region, width, height, depth, location, sizeof(location));
+
+    if (region->density_class == VOXELPILOT_ASD_DENSITY_LOW) {
+        /* Adaptive discovery only reports low-density components that are
+           sealed off from the scan's edges (see voxelpilot_asd_voxel_class). */
+        snprintf(region->category, sizeof(region->category), "enclosed low-density cavity");
+        snprintf(region->name, sizeof(region->name), "%s enclosed cavity \xC2\xB7 %s", size_word, location);
+        snprintf(region->description, sizeof(region->description),
+            "ASD-Lite candidate: %zu connected voxels below the material limit (%.2f) that do not reach "
+            "the scan's edge - a pocket enclosed by material (for example air or fluid). Not identified "
+            "as anatomy.",
+            region->voxel_count, lower_threshold);
+        return;
+    }
+
     snprintf(region->name, sizeof(region->name), "%s %s %s \xC2\xB7 %s", size_word, material, shape, location);
 
     if (upper_threshold > lower_threshold) {
@@ -481,18 +495,97 @@ static inline void voxelpilot_asd_name_region(
 
 /* Two regions can still match on every part of the name (same size band,
    material, shape and third of the scan): number the repeats. */
+/* Regions whose generated names match (same size band, material, shape and
+   third of the scan - e.g. bones lying side by side) are told apart by
+   their order along the axis where they are most spread out:
+   "left" / "right", "left" / "middle" / "right", or "2nd from left". A
+   location of just "center" is replaced by that word rather than
+   extended. Anything still identical afterwards is numbered. */
 static inline void voxelpilot_asd_make_names_unique(VoxelPilotSemanticRegion *regions, int count)
 {
+    static const char *low_words[3] = { "left", "top", "front" };
+    static const char *high_words[3] = { "right", "bottom", "back" };
+    static const char *ordinals[16] = { "1st", "2nd", "3rd", "4th", "5th", "6th", "7th", "8th",
+                                        "9th", "10th", "11th", "12th", "13th", "14th", "15th", "16th" };
+    static const char center_suffix[] = " \xC2\xB7 center";
     char original[VOXELPILOT_ASD_MAX_REGIONS][VOXELPILOT_ASD_NAME_MAX];
+    int done[VOXELPILOT_ASD_MAX_REGIONS];
     int i, j;
 
     if (!regions || count < 2) return;
     if (count > VOXELPILOT_ASD_MAX_REGIONS) count = VOXELPILOT_ASD_MAX_REGIONS;
     for (i = 0; i < count; ++i) {
         snprintf(original[i], sizeof(original[i]), "%s", regions[i].name);
+        done[i] = 0;
     }
-    /* Compare against the names as generated, so a third repeat becomes
-       "#3" rather than matching the already-renamed "#2". */
+
+    for (i = 0; i < count; ++i) {
+        int group[VOXELPILOT_ASD_MAX_REGIONS];
+        int n = 0;
+        int axis, best_axis = 0;
+        float best_range = -1.0f;
+        int k;
+
+        if (done[i]) continue;
+        for (j = i; j < count; ++j) {
+            if (!done[j] && strcmp(original[i], original[j]) == 0) group[n++] = j;
+        }
+        if (n < 2) { done[i] = 1; continue; }
+
+        for (axis = 0; axis < 3; ++axis) {
+            float lo = regions[group[0]].centroid[axis], hi = lo;
+            for (k = 1; k < n; ++k) {
+                float c = regions[group[k]].centroid[axis];
+                if (c < lo) lo = c;
+                if (c > hi) hi = c;
+            }
+            if (hi - lo > best_range) { best_range = hi - lo; best_axis = axis; }
+        }
+        for (k = 1; k < n; ++k) {  /* insertion sort along best_axis */
+            int v = group[k], m = k - 1;
+            while (m >= 0 && regions[group[m]].centroid[best_axis] > regions[v].centroid[best_axis]) {
+                group[m + 1] = group[m];
+                --m;
+            }
+            group[m + 1] = v;
+        }
+
+        for (k = 0; k < n; ++k) {
+            char word[32];
+            char base[VOXELPILOT_ASD_NAME_MAX];
+            size_t base_len;
+            size_t suffix_len = sizeof(center_suffix) - 1;
+            int replace_center;
+
+            if (n == 2) {
+                snprintf(word, sizeof(word), "%s", k == 0 ? low_words[best_axis] : high_words[best_axis]);
+            } else if (n == 3) {
+                snprintf(word, sizeof(word), "%s", k == 0 ? low_words[best_axis]
+                                                   : k == 1 ? "middle" : high_words[best_axis]);
+            } else {
+                snprintf(word, sizeof(word), "%s from %s", ordinals[k < 16 ? k : 15], low_words[best_axis]);
+            }
+
+            snprintf(base, sizeof(base), "%s", original[group[k]]);
+            base_len = strlen(base);
+            replace_center = base_len >= suffix_len &&
+                             strcmp(base + base_len - suffix_len, center_suffix) == 0;
+            if (replace_center) {
+                base[base_len - strlen("center")] = '\0';
+                base[VOXELPILOT_ASD_NAME_MAX - 1 - strlen(word)] = '\0';
+                snprintf(regions[group[k]].name, sizeof(regions[group[k]].name), "%s%s", base, word);
+            } else {
+                base[VOXELPILOT_ASD_NAME_MAX - 3 - strlen(word)] = '\0';
+                snprintf(regions[group[k]].name, sizeof(regions[group[k]].name), "%s, %s", base, word);
+            }
+            done[group[k]] = 1;
+        }
+    }
+
+    /* Safety net: number anything still identical (e.g. same centroid). */
+    for (i = 0; i < count; ++i) {
+        snprintf(original[i], sizeof(original[i]), "%s", regions[i].name);
+    }
     for (i = 1; i < count; ++i) {
         int same = 0;
         for (j = 0; j < i; ++j) {
@@ -1040,10 +1133,16 @@ static inline int voxelpilot_asd_material_thresholds(
     return 1;
 }
 
-/* 0 = background; legacy mode: 1 = material; adaptive: 1 = mid, 2 = dense. */
+/* Legacy mode: 0 = background (skipped), 1 = material.
+   Adaptive: 1 = mid, 2 = dense, 3 = below the material limit. Class 3
+   components are kept only when they touch no scan border - enclosed
+   low-density pockets (cavities) - never the open space around the
+   object. */
+#define VOXELPILOT_ASD_CLASS_CAVITY 3
+
 static inline int voxelpilot_asd_voxel_class(float value, float lower, float upper, int adaptive)
 {
-    if (value < lower) return 0;
+    if (value < lower) return adaptive ? VOXELPILOT_ASD_CLASS_CAVITY : 0;
     if (!adaptive) return 1;
     return value >= upper ? 2 : 1;
 }
@@ -1063,7 +1162,7 @@ static inline int voxelpilot_discover_semantic_regions_ex(
     int *out_region_count)
 {
     size_t voxel_count;
-    size_t class_voxels[3] = { 0, 0, 0 };
+    size_t class_voxels[4] = { 0, 0, 0, 0 };
     double sp[3];
     int clamped_max_regions;
     int *queue;
@@ -1134,6 +1233,7 @@ static inline int voxelpilot_discover_semantic_regions_ex(
         float max_intensity = -1e30f;
         int bbox_min[3] = { width, height, depth };
         int bbox_max[3] = { 0, 0, 0 };
+        int touches_border = 0;
 
         if (visited[start]) continue;
         voxel_class = voxelpilot_asd_voxel_class(volume_data[start], lower, upper, adaptive);
@@ -1153,26 +1253,36 @@ static inline int voxelpilot_discover_semantic_regions_ex(
             int neighbor_count = 0;
             int n;
 
-            sum_intensity += (double)value;
-            sum_x += (double)x;
-            sum_y += (double)y;
-            sum_z += (double)z;
-            {
-                const double p[3] = { (double)x * sp[0], (double)y * sp[1], (double)z * sp[2] };
-                int a, b;
-                for (a = 0; a < 3; ++a) {
-                    phys_sum[a] += p[a];
-                    for (b = a; b < 3; ++b) phys_sq[a][b] += p[a] * p[b];
-                }
+            if (x == 0 || y == 0 || z == 0 || x == width - 1 || y == height - 1 || z == depth - 1) {
+                touches_border = 1;
             }
-            if (value < min_intensity) min_intensity = value;
-            if (value > max_intensity) max_intensity = value;
-            if (x < bbox_min[0]) bbox_min[0] = x;
-            if (y < bbox_min[1]) bbox_min[1] = y;
-            if (z < bbox_min[2]) bbox_min[2] = z;
-            if (x > bbox_max[0]) bbox_max[0] = x;
-            if (y > bbox_max[1]) bbox_max[1] = y;
-            if (z > bbox_max[2]) bbox_max[2] = z;
+
+            /* Background that reaches the scan's edge is open space, never
+               a region: once that is known, finish the flood (so it is not
+               restarted) without the per-voxel statistics. Usually most of
+               the scan, so this keeps cavity detection cheap. */
+            if (!(voxel_class == VOXELPILOT_ASD_CLASS_CAVITY && touches_border)) {
+                sum_intensity += (double)value;
+                sum_x += (double)x;
+                sum_y += (double)y;
+                sum_z += (double)z;
+                {
+                    const double p[3] = { (double)x * sp[0], (double)y * sp[1], (double)z * sp[2] };
+                    int a, b;
+                    for (a = 0; a < 3; ++a) {
+                        phys_sum[a] += p[a];
+                        for (b = a; b < 3; ++b) phys_sq[a][b] += p[a] * p[b];
+                    }
+                }
+                if (value < min_intensity) min_intensity = value;
+                if (value > max_intensity) max_intensity = value;
+                if (x < bbox_min[0]) bbox_min[0] = x;
+                if (y < bbox_min[1]) bbox_min[1] = y;
+                if (z < bbox_min[2]) bbox_min[2] = z;
+                if (x > bbox_max[0]) bbox_max[0] = x;
+                if (y > bbox_max[1]) bbox_max[1] = y;
+                if (z > bbox_max[2]) bbox_max[2] = z;
+            }
 
             if (x > 0) neighbors[neighbor_count++] = index - 1;
             if (x + 1 < width) neighbors[neighbor_count++] = index + 1;
@@ -1191,6 +1301,9 @@ static inline int voxelpilot_discover_semantic_regions_ex(
             }
         }
 
+        if (voxel_class == VOXELPILOT_ASD_CLASS_CAVITY && touches_border) {
+            continue; /* open space around the object, not a cavity */
+        }
         class_voxels[voxel_class] += (size_t)tail;
         if ((size_t)tail < min_region_voxels) continue;
 
@@ -1210,7 +1323,9 @@ static inline int voxelpilot_discover_semantic_regions_ex(
             r.mean_intensity = (float)(sum_intensity / (double)tail);
             voxelpilot_asd_compute_scores(&r, voxel_count, spacing);
             if (adaptive) {
-                r.density_class = voxel_class == 2 ? VOXELPILOT_ASD_DENSITY_HIGH : VOXELPILOT_ASD_DENSITY_MID;
+                r.density_class = voxel_class == 2 ? VOXELPILOT_ASD_DENSITY_HIGH
+                                : voxel_class == VOXELPILOT_ASD_CLASS_CAVITY ? VOXELPILOT_ASD_DENSITY_LOW
+                                : VOXELPILOT_ASD_DENSITY_MID;
             }
             {
                 /* Upper triangle accumulated; mirror it for the solver. */
