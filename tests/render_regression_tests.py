@@ -101,7 +101,10 @@ class RenderRegressionTests(unittest.TestCase):
         self.assertNotIn('ImGui::Button("Auto enhance")', controls_panel)
         self.assertIn('ImGui::Button("Auto enhance")', ai_assist_panel)
 
-    def test_workspace_uses_collapsible_top_ribbon_left_controls_and_right_panels(self):
+    def test_workspace_uses_spec_layout_scene_left_inspector_right_dock_below(self):
+        # UI/UX spec "Layout": Scene on the left, the Inspector (Controls,
+        # with Insights as a tab) on the right, and the slice strip and
+        # bottom dock under the viewport only.
         source = STANDALONE_MAIN.read_text(encoding="utf-8")
         ribbon_source = RIBBON_AND_LAYOUT.read_text(encoding="utf-8")
         gui = extract_static_function(source, "draw_gui")
@@ -111,9 +114,13 @@ class RenderRegressionTests(unittest.TestCase):
         self.assertLess(gui.index("draw_top_ribbon(app);"), gui.index("draw_controls_panel(app);"))
         self.assertIn("ImGuiDir_Left", dock_layout)
         self.assertIn("ImGuiDir_Right", dock_layout)
+        self.assertIn("ImGuiDir_Down", dock_layout)
+        self.assertIn('DockBuilderDockWindow("Scene", dock_scene_id)', dock_layout)
         self.assertIn('DockBuilderDockWindow("Controls", dock_left_id)', dock_layout)
         self.assertIn('DockBuilderDockWindow("Insights", dock_right_id)', dock_layout)
-        self.assertIn('DockBuilderDockWindow("Bottom Panels", dock_right_id)', dock_layout)
+        self.assertIn('DockBuilderDockWindow("Slices", dock_slices_id)', dock_layout)
+        self.assertIn('DockBuilderDockWindow("Bottom Panels", dock_bottom_id)', dock_layout)
+        self.assertNotIn('DockBuilderDockWindow("Status"', dock_layout)
 
     def test_left_controls_panel_retains_import_and_export_actions(self):
         controls_source = CONTROLS_PANEL.read_text(encoding="utf-8")

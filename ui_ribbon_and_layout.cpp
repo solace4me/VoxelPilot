@@ -64,7 +64,8 @@ void draw_dockspace(StandaloneApp *app)
     const ImGuiViewport *viewport = ImGui::GetMainViewport();
     float ribbon_height = voxelpilot_ribbon_height(app);
     ImVec2 dock_pos = ImVec2(viewport->Pos.x, viewport->Pos.y + ribbon_height);
-    ImVec2 dock_size = ImVec2(viewport->Size.x, fmaxf(120.0f, viewport->Size.y - ribbon_height));
+    ImVec2 dock_size = ImVec2(viewport->Size.x,
+                              fmaxf(120.0f, viewport->Size.y - ribbon_height - STATUS_BAR_HEIGHT));
 
     if (dockspace_flags & ImGuiDockNodeFlags_PassthruCentralNode) {
         window_flags |= ImGuiWindowFlags_NoBackground;
@@ -102,6 +103,19 @@ void draw_dockspace(StandaloneApp *app)
         app->main_dockspace_id = dockspace_id;
         ensure_default_dock_layout(app, dockspace_id);
         ImGui::DockSpace(dockspace_id, ImVec2(0.0f, 0.0f), dockspace_flags);
+        {
+            /* Record the viewport (central node) rect for the renderer:
+               the CUDA image is sized to and drawn into this rect only. */
+            ImGuiDockNode *central = ImGui::DockBuilderGetCentralNode(dockspace_id);
+            app->viewport_rect_valid = 0;
+            if (central && central->Size.x > 1.0f && central->Size.y > 1.0f) {
+                app->viewport_rect[0] = central->Pos.x - viewport->Pos.x;
+                app->viewport_rect[1] = central->Pos.y - viewport->Pos.y;
+                app->viewport_rect[2] = central->Size.x;
+                app->viewport_rect[3] = central->Size.y;
+                app->viewport_rect_valid = 1;
+            }
+        }
     }
     ImGui::End();
 #endif
@@ -115,9 +129,14 @@ void ensure_default_dock_layout(StandaloneApp *app, ImGuiID dockspace_id)
     ImGuiID dock_left_id;
     ImGuiID dock_right_id;
     ImGuiID dock_bottom_id;
+    ImGuiID dock_slices_id;
     const ImGuiViewport *viewport = ImGui::GetMainViewport();
     float ribbon_height = voxelpilot_ribbon_height(app);
-    ImVec2 dock_size = ImVec2(viewport->Size.x, fmaxf(120.0f, viewport->Size.y - ribbon_height));
+    ImVec2 dock_size = ImVec2(viewport->Size.x,
+                              fmaxf(120.0f, viewport->Size.y - ribbon_height - STATUS_BAR_HEIGHT));
+    float scene_w;
+    float inspector_w;
+    float bottom_h;
 
     /* dockspace_id is passed in by draw_dockspace, computed inside
        DockSpaceRoot's Begin/End (see the comment there) - it must NOT be
@@ -144,43 +163,54 @@ void ensure_default_dock_layout(StandaloneApp *app, ImGuiID dockspace_id)
         ImGuiDockNodeFlags_PassthruCentralNode);
     ImGui::DockBuilderSetNodeSize(dockspace_id, dock_size);
 
+    /* Spec "Layout" table, in pixels at 100% scale: Scene 240 px on the
+       left and the Inspector on the right, both full height (as in
+       Unity); the bottom dock (AI Assist / Histogram / Metadata / Log)
+       240 px tall under the viewport only. "Deep review" (variant 1)
+       widens the Inspector to 360 px and the dock to 320 px. The status
+       bar is no longer docked - draw_status_bar pins it below the
+       dockspace at STATUS_BAR_HEIGHT.
+
+       Controls is the Inspector stand-in until step 10 turns it into the
+       selection-driven Inspector; it is 340 px rather than the spec's 320
+       because its current ImGui labels sit to the right of each widget
+       and clip any narrower. Insights rides as a second tab behind it. */
+    scene_w = 240.0f;
+    inspector_w = (app->dock_layout_variant == 1) ? 360.0f : 340.0f;
+    bottom_h = (app->dock_layout_variant == 1) ? 320.0f : 240.0f;
+
     dock_main_id = dockspace_id;
-    dock_bottom_id = ImGui::DockBuilderSplitNode(dock_main_id, ImGuiDir_Down, 0.12f, NULL, &dock_main_id);
-    /* Scene panel (step 5 of the spec) - a narrow strip carved off the far
-       left, ahead of Controls. 0.167 of dock_main_id approximates the
-       spec default_widths of the spec's Scene panel (240px of 1440px)
-       since this dock split works in fractions, not pixels; Controls
-       keeps its existing position/width untouched. Controls itself
-       moves to the right and becomes the spec Inspector in step 10/11 -
-       not attempted here, per the plan doc's smallest-blast-radius
-       ordering. */
-    dock_scene_id = ImGui::DockBuilderSplitNode(dock_main_id, ImGuiDir_Left, 0.167f, NULL, &dock_main_id);
-    /* Controls' split fraction is taken against what's left AFTER Scene's
-       cut, not against the full width, so leaving this at the pre-Scene
-       0.26f silently shrank Controls from 26% of the window to ~0.26 *
-       (1 - 0.167) = ~21.7% - narrow enough that several of its labels
-       ("GPU Quality Preset", "Render Resolution", "Opacity Threshold")
-       started getting clipped (reported after the step-5 docking fixes,
-       commit 5e47cd4). Bumped to 0.26 / (1 - 0.167) = 0.312 so Controls'
-       actual on-screen width is restored to the same ~26% of the window
-       it had before step 5 added Scene; Scene's own 0.167f is unchanged.
-       This is a stopgap - step 10 replaces Controls with the spec's
-       selection-driven Inspector, which gets its own sizing then. */
-    dock_left_id = ImGui::DockBuilderSplitNode(dock_main_id, ImGuiDir_Left, 0.312f, NULL, &dock_main_id);
-    dock_right_id = ImGui::DockBuilderSplitNode(dock_main_id, ImGuiDir_Right, 0.30f, NULL, &dock_main_id);
+    dock_scene_id = ImGui::DockBuilderSplitNode(
+        dock_main_id, ImGuiDir_Left,
+        fminf(scene_w / dock_size.x, 0.3f), NULL, &dock_main_id);
+    dock_right_id = ImGui::DockBuilderSplitNode(
+        dock_main_id, ImGuiDir_Right,
+        fminf(inspector_w / fmaxf(dock_size.x - scene_w, 1.0f), 0.45f), NULL, &dock_main_id);
+    dock_bottom_id = ImGui::DockBuilderSplitNode(
+        dock_main_id, ImGuiDir_Down,
+        fminf(bottom_h / dock_size.y, 0.45f), NULL, &dock_main_id);
+    /* Spec slice strip: 132 px between the viewport and the bottom dock. */
+    dock_slices_id = ImGui::DockBuilderSplitNode(
+        dock_main_id, ImGuiDir_Down,
+        fminf(132.0f / fmaxf(dock_size.y - bottom_h, 1.0f), 0.4f), NULL, &dock_main_id);
+    dock_left_id = dock_right_id;
 
     ImGui::DockBuilderDockWindow("Scene", dock_scene_id);
     ImGui::DockBuilderDockWindow("Controls", dock_left_id);
-    ImGui::DockBuilderDockWindow("Status", dock_bottom_id);
+    ImGui::DockBuilderDockWindow("Insights", dock_right_id);
+    ImGui::DockBuilderDockWindow("Slices", dock_slices_id);
+    ImGui::DockBuilderDockWindow("Bottom Panels", dock_bottom_id);
 
-    if (app->dock_layout_variant == 1) {
-        ImGuiID dock_right_bottom_id =
-            ImGui::DockBuilderSplitNode(dock_right_id, ImGuiDir_Down, 0.45f, NULL, &dock_right_id);
-        ImGui::DockBuilderDockWindow("Insights", dock_right_id);
-        ImGui::DockBuilderDockWindow("Bottom Panels", dock_right_bottom_id);
-    } else {
-        ImGui::DockBuilderDockWindow("Insights", dock_right_id);
-        ImGui::DockBuilderDockWindow("Bottom Panels", dock_right_id);
+    /* Scene draws its own "SCENE" header, each slice card is labelled and
+       Bottom Panels has its own inner tab row, so their dock tab bars
+       only duplicated those. */
+    {
+        ImGuiDockNode *scene_node = ImGui::DockBuilderGetNode(dock_scene_id);
+        ImGuiDockNode *slices_node = ImGui::DockBuilderGetNode(dock_slices_id);
+        ImGuiDockNode *bottom_node = ImGui::DockBuilderGetNode(dock_bottom_id);
+        if (scene_node) scene_node->LocalFlags |= ImGuiDockNodeFlags_NoTabBar;
+        if (slices_node) slices_node->LocalFlags |= ImGuiDockNodeFlags_NoTabBar;
+        if (bottom_node) bottom_node->LocalFlags |= ImGuiDockNodeFlags_NoTabBar;
     }
 
     ImGui::DockBuilderFinish(dockspace_id);

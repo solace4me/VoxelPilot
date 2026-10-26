@@ -40,6 +40,8 @@
 #define BRAND_TITLE      "VoxelPilot v2"
 #define BRAND_SUBTITLE   "Cinematic AI Preview | NVIDIA Volume Explorer"
 #define HISTOGRAM_BINS   128
+/* Spec "Layout" table: a fixed 28 px status bar, outside the dockspace. */
+#define STATUS_BAR_HEIGHT 28.0f
 #define MAX_ANNOTATIONS  VOXELPILOT_DEFAULT_MAX_ANNOTATIONS
 #define ANNOTATION_NAME_MAX 64
 #define LOG_HISTORY_MAX  64
@@ -308,6 +310,21 @@ typedef struct {
        mismatch bug this avoided a repeat of, docs/superpowers/plans/
        2026-10-24-unity-style-redesign.md. */
     ImGuiID       main_dockspace_id;
+    /* The dockspace central node's rect (x, y, w, h) in ImGui/window
+       coordinates, captured by draw_dockspace each frame. The CUDA render
+       is sized to and drawn into this rect only - before this it filled
+       the whole window behind every panel, so most of it was hidden and
+       the volume sat off-centre in the visible gap. 0 until the first
+       docked frame; callers fall back to the full framebuffer then. */
+    float         viewport_rect[4];
+    int           viewport_rect_valid;
+    /* The last render command actually sent to the GPU. render_frame_
+       standalone skips the ~30 ms raymarch when the new command is
+       byte-identical (camera, transfer, clip, labels, size all unchanged),
+       so an idle UI is not throttled to the render's frame rate. Anything
+       that changes the volume itself must clear last_render_valid. */
+    RendererInput last_render_cmd;
+    int           last_render_valid;
     int           controls_visible;
     int           insights_visible;
     int           scene_visible;
@@ -556,6 +573,14 @@ void sync_render_target_to_framebuffer(
     StandaloneApp *app,
     int            framebuffer_width,
     int            framebuffer_height);
+/* The 3D viewport (dockspace central node) in framebuffer pixels, GL
+   convention: out[0..3] = x, y from the bottom, width, height. Falls back
+   to the whole framebuffer before the first docked frame. */
+void viewport_framebuffer_rect(
+    const StandaloneApp *app,
+    int                  framebuffer_width,
+    int                  framebuffer_height,
+    int                  out_rect[4]);
 void update_slice_previews(StandaloneApp *app);
 void render_frame_gpu_snapshot(StandaloneApp *app);
 void render_frame_standalone(StandaloneApp *app);

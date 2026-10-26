@@ -79,9 +79,21 @@ void draw_demo_banner(StandaloneApp *app)
     }
 
     ImGui::SetNextWindowBgAlpha(0.92f);
-    ImGui::SetNextWindowPos(
-        ImVec2(viewport->Pos.x + 16.0f, viewport->Pos.y + 16.0f),
-        ImGuiCond_Always);
+    /* Anchored inside the 3D viewport's top-right corner. It used to sit
+       at the window's top-left, on top of the app title and ribbon. */
+    if (app->viewport_rect_valid) {
+        ImGui::SetNextWindowPos(
+            ImVec2(viewport->Pos.x + app->viewport_rect[0] + app->viewport_rect[2] - 16.0f,
+                   viewport->Pos.y + app->viewport_rect[1] + 16.0f),
+            ImGuiCond_Always,
+            ImVec2(1.0f, 0.0f));
+    } else {
+        ImGui::SetNextWindowPos(
+            ImVec2(viewport->Pos.x + viewport->Size.x - 16.0f, viewport->Pos.y + 136.0f),
+            ImGuiCond_Always,
+            ImVec2(1.0f, 0.0f));
+    }
+    ImGui::SetNextWindowSizeConstraints(ImVec2(0.0f, 0.0f), ImVec2(380.0f, FLT_MAX));
     ImGui::Begin("DemoBanner", NULL, flags);
     ImGui::TextColored(
         ImVec4(0.96f, 0.85f, 0.36f, 1.0f),
@@ -409,35 +421,50 @@ void draw_startup_splash(StandaloneApp *app)
 
 void draw_status_bar(StandaloneApp *app)
 {
+    /* Spec "Status bar": a fixed 28 px strip under the dockspace (which
+       draw_dockspace shortens by STATUS_BAR_HEIGHT), not a docked window.
+       Safety lives in the top bar and measurements in the Scene tree, so
+       neither is repeated here; toasts never appear here. */
+    const ImGuiViewport *viewport = ImGui::GetMainViewport();
     ImGuiWindowFlags flags =
-        ImGuiWindowFlags_NoTitleBar |
-        ImGuiWindowFlags_NoCollapse |
-        ImGuiWindowFlags_NoResize;
+        ImGuiWindowFlags_NoDecoration |
+        ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoSavedSettings |
+        ImGuiWindowFlags_NoFocusOnAppearing |
+        ImGuiWindowFlags_NoNav;
+#ifdef IMGUI_HAS_DOCK
+    flags |= ImGuiWindowFlags_NoDocking;
+#endif
 
-    set_default_window_layout(app, "Status");
+    ImGui::SetNextWindowPos(
+        ImVec2(viewport->Pos.x, viewport->Pos.y + viewport->Size.y - STATUS_BAR_HEIGHT),
+        ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(viewport->Size.x, STATUS_BAR_HEIGHT), ImGuiCond_Always);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(16.0f, 5.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(18.0f, 0.0f));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.039f, 0.051f, 0.063f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.62f, 0.69f, 0.74f, 1.0f));
     ImGui::Begin("Status", NULL, flags);
-    ImGui::Text("Volume: %dx%dx%d", app->renderer.W, app->renderer.H, app->renderer.D);
+    ImGui::Text("%dx%dx%d", app->renderer.W, app->renderer.H, app->renderer.D);
     ImGui::SameLine();
-    ImGui::Text("| Render: %.2f ms", app->last_render_ms);
+    ImGui::Text("GPU %.1f ms", app->last_render_ms);
     ImGui::SameLine();
-    ImGui::Text("| FPS: %.1f", app->gui_fps);
+    ImGui::Text("%.0f FPS", app->gui_fps);
     ImGui::SameLine();
-    ImGui::Text("| Clip: %s", clipping_is_active(app) ? "On" : "Off");
+    ImGui::Text("Clip %s", clipping_is_active(app) ? "on" : "off");
     ImGui::SameLine();
-    ImGui::Text("| Cinematic: %s", app->cinematic_enabled ? "On" : "Off");
-    ImGui::SameLine();
-    ImGui::Text("| Safety: %s", app->performance_result.status_label);
-    ImGui::SameLine();
-    ImGui::Text("| Measure: %.3f vox / %.3f u",
-                measurement_distance(app),
-                measurement_distance_world(app));
-    ImGui::SameLine();
-    ImGui::Text("| Preset: %s", app->preset_status);
-    if (app->ui_toast[0]) {
+    ImGui::Text("Cinematic %s", app->cinematic_enabled ? "on" : "off");
+    {
+        float preset_w = ImGui::CalcTextSize(app->preset_status).x;
         ImGui::SameLine();
-        ImGui::Text("| %s", app->ui_toast);
+        ImGui::SetCursorPosX(fmaxf(ImGui::GetCursorPosX(),
+                                   ImGui::GetWindowWidth() - preset_w - 16.0f));
+        ImGui::TextUnformatted(app->preset_status);
     }
     ImGui::End();
+    ImGui::PopStyleColor(2);
+    ImGui::PopStyleVar(3);
 }
 
 
@@ -521,6 +548,8 @@ void draw_cinematic_semantic_callouts(StandaloneApp *app)
 {
     ImGuiViewport *viewport;
     ImDrawList *draw_list;
+    float origin_x;
+    float origin_y;
     float viewport_w;
     float viewport_h;
     int drawn = 0;
@@ -536,9 +565,26 @@ void draw_cinematic_semantic_callouts(StandaloneApp *app)
         return;
     }
 
+    /* Project into the 3D viewport (dockspace central node), which is
+       where the render is drawn now - not the whole window. Callouts go
+       on the background draw list, clipped to that rect, so panels such
+       as the AI Assist dock always sit on top of them instead of a
+       callout whose anchor projects off the viewport landing on a panel. */
+    origin_x = viewport->Pos.x;
+    origin_y = viewport->Pos.y;
     viewport_w = viewport->Size.x;
     viewport_h = viewport->Size.y;
-    draw_list = ImGui::GetForegroundDrawList();
+    if (app->viewport_rect_valid) {
+        origin_x += app->viewport_rect[0];
+        origin_y += app->viewport_rect[1];
+        viewport_w = app->viewport_rect[2];
+        viewport_h = app->viewport_rect[3];
+    }
+    draw_list = ImGui::GetBackgroundDrawList();
+    draw_list->PushClipRect(
+        ImVec2(origin_x, origin_y),
+        ImVec2(origin_x + viewport_w, origin_y + viewport_h),
+        true);
 
     if (app->semantic_callout_top_regions < 1) app->semantic_callout_top_regions = 1;
     if (app->semantic_callout_top_regions > MAX_ANNOTATIONS) app->semantic_callout_top_regions = MAX_ANNOTATIONS;
@@ -594,8 +640,15 @@ void draw_cinematic_semantic_callouts(StandaloneApp *app)
             continue;
         }
 
-        anchor_x = viewport->Pos.x + local_x;
-        anchor_y = viewport->Pos.y + local_y;
+        /* Anchor off-screen (centroid outside the visible viewport): no
+           callout, rather than a card clamped to the edge pointing at
+           nothing. */
+        if (local_x < 0.0f || local_y < 0.0f ||
+            local_x > viewport_w || local_y > viewport_h) {
+            continue;
+        }
+        anchor_x = origin_x + local_x;
+        anchor_y = origin_y + local_y;
 
         region_color = ImGui::ColorConvertFloat4ToU32(ImVec4(
             semantic->color[0], semantic->color[1], semantic->color[2], alpha));
@@ -634,8 +687,8 @@ void draw_cinematic_semantic_callouts(StandaloneApp *app)
 
         card_x = anchor_x + ((local_x > viewport_w * 0.62f) ? -(card_w + 34.0f) : 34.0f);
         card_y = anchor_y - card_h * 0.5f + (float)(drawn % 3) * 12.0f;
-        card_x = fmaxf(viewport->Pos.x + 12.0f, fminf(card_x, viewport->Pos.x + viewport_w - card_w - 12.0f));
-        card_y = fmaxf(viewport->Pos.y + 36.0f, fminf(card_y, viewport->Pos.y + viewport_h - card_h - 44.0f));
+        card_x = fmaxf(origin_x + 12.0f, fminf(card_x, origin_x + viewport_w - card_w - 12.0f));
+        card_y = fmaxf(origin_y + 12.0f, fminf(card_y, origin_y + viewport_h - card_h - 12.0f));
 
         draw_list->AddCircleFilled(ImVec2(anchor_x, anchor_y), selected ? 8.0f : 6.0f, region_color, 24);
         draw_list->AddCircle(ImVec2(anchor_x, anchor_y), selected ? 15.0f : 12.0f, line_color, 32, selected ? 2.4f : 1.8f);
@@ -677,4 +730,5 @@ void draw_cinematic_semantic_callouts(StandaloneApp *app)
                            available_text_width);
         drawn++;
     }
+    draw_list->PopClipRect();
 }

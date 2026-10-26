@@ -294,46 +294,60 @@ static ImGuiWindowFlags slice_overlay_base_flags()
     return flags;
 }
 
-static void draw_slice_strip_row(
-    StandaloneApp *app,
-    ImVec2         central_pos,
-    ImVec2         central_size)
+/* The strip is a docked window ("Slices") between the viewport and the
+   bottom dock - see ensure_default_dock_layout - rather than an overlay
+   floating on top of the render, where it hid the lower part of the
+   volume. Each plane gets a third of the strip's width; its thumbnail is
+   fitted inside that cell at the plane's true aspect ratio and centred. */
+static void draw_slice_strip_row(StandaloneApp *app)
 {
-    const float kThumbW = 160.0f;
     const float kGap = 10.0f;
-    const float kMargin = 16.0f;
     const float kLabelRow = 22.0f;
-    float thumb_h[3];
-    float row_h;
-    float total_w;
-    ImVec2 pos;
+    ImVec2 avail;
+    float cell_w;
+    float cell_h;
     int plane;
 
-    thumb_h[0] = (app->renderer.W > 0) ? kThumbW * (float)app->renderer.H / (float)app->renderer.W : kThumbW;
-    thumb_h[1] = (app->renderer.W > 0) ? kThumbW * (float)app->renderer.D / (float)app->renderer.W : kThumbW;
-    thumb_h[2] = (app->renderer.H > 0) ? kThumbW * (float)app->renderer.D / (float)app->renderer.H : kThumbW;
-    row_h = fmaxf(fmaxf(thumb_h[0], thumb_h[1]), thumb_h[2]) + kLabelRow;
-
-    total_w = kThumbW * 3.0f + kGap * 2.0f;
-    pos = ImVec2(
-        central_pos.x + fmaxf((central_size.x - total_w) * 0.5f, 0.0f),
-        central_pos.y + central_size.y - row_h - kMargin - 16.0f /* window padding */);
-
-    ImGui::SetNextWindowPos(pos, ImGuiCond_Always);
-    ImGui::SetNextWindowBgAlpha(0.72f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f, 8.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12.0f, 8.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(kGap, 4.0f));
-    ImGui::Begin("ViewportSliceStrip", NULL,
-                  slice_overlay_base_flags() | ImGuiWindowFlags_AlwaysAutoResize);
+    ImGui::Begin("Slices", NULL,
+                 ImGuiWindowFlags_NoCollapse |
+                 ImGuiWindowFlags_NoScrollbar |
+                 ImGuiWindowFlags_NoScrollWithMouse |
+                 ImGuiWindowFlags_NoNav);
     ImGui::PopStyleVar(2);
 
+    avail = ImGui::GetContentRegionAvail();
+    cell_w = fmaxf((avail.x - kGap * 2.0f) / 3.0f, 32.0f);
+    cell_h = fmaxf(avail.y - kLabelRow, 24.0f);
+
     for (plane = 0; plane < 3; ++plane) {
+        GLuint tex = 0;
+        int    tex_w = 0;
+        int    tex_h = 0;
+        float  scale, disp_w, disp_h;
+        float  cell_x = ImGui::GetCursorPosX();
+
         if (plane > 0) {
             ImGui::SameLine();
+            cell_x = ImGui::GetCursorPosX();
         }
-        if (draw_interactive_slice_thumbnail(app, plane, kThumbW, thumb_h[plane])) {
+        slice_plane_texture_and_extent(app, plane, &tex, &tex_w, &tex_h);
+        if (tex_w < 1 || tex_h < 1) {
+            continue;
+        }
+        scale = fminf(cell_w / (float)tex_w, cell_h / (float)tex_h);
+        disp_w = (float)tex_w * scale;
+        disp_h = (float)tex_h * scale;
+
+        /* Centre the thumbnail in its cell, then reserve the full cell
+           width so the next plane starts at the same column every time. */
+        ImGui::SetCursorPosX(cell_x + (cell_w - disp_w) * 0.5f);
+        if (draw_interactive_slice_thumbnail(app, plane, disp_w, disp_h)) {
             app->slice_strip_enlarged_plane = plane;
         }
+        ImGui::SameLine(0.0f, 0.0f);
+        ImGui::Dummy(ImVec2(fmaxf(cell_x + cell_w - ImGui::GetCursorPosX(), 0.0f), 1.0f));
     }
 
     ImGui::End();
@@ -419,9 +433,11 @@ void draw_viewport_slice_strip(StandaloneApp *app)
         app->slice_strip_enlarged_plane = -1;
     }
 
+    /* The docked strip is always submitted - if it vanished while a slice
+       was enlarged, its dock node would hand its height back to the
+       viewport and the layout would jump. */
+    draw_slice_strip_row(app);
     if (app->slice_strip_enlarged_plane >= 0) {
         draw_enlarged_slice(app, central_pos, central_size, app->slice_strip_enlarged_plane);
-    } else {
-        draw_slice_strip_row(app, central_pos, central_size);
     }
 }

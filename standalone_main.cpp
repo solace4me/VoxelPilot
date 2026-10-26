@@ -1862,6 +1862,20 @@ int main(int argc, char **argv)
         ImGuiIO *io = &ImGui::GetIO();
         io->IniFilename = NULL;
         io->FontGlobalScale = 1.06f;
+        /* The spec's UI typeface is a proportional sans; ImGui's built-in
+           ProggyClean is a bitmap monospace font, which is most of why the
+           app looked like a terminal. Use Segoe UI (on every Windows
+           install) when present, otherwise keep the built-in font. */
+        {
+            const char *ui_font_path = "C:\\Windows\\Fonts\\segoeui.ttf";
+            FILE *font_probe = fopen(ui_font_path, "rb");
+            if (font_probe) {
+                fclose(font_probe);
+                if (io->Fonts->AddFontFromFileTTF(ui_font_path, 16.0f)) {
+                    io->FontGlobalScale = 1.0f;
+                }
+            }
+        }
 #ifdef IMGUI_HAS_DOCK
         io->ConfigFlags |= ImGuiConfigFlags_DockingEnable;
 #endif
@@ -1939,7 +1953,15 @@ int main(int argc, char **argv)
         glViewport(0, 0, fb_w, fb_h);
         glClearColor(0.055f, 0.075f, 0.095f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
-        draw_fullscreen_quad(&app);
+        {
+            /* Draw the render into the 3D viewport only, not the whole
+               window behind the panels. */
+            int vp[4];
+            viewport_framebuffer_rect(&app, fb_w, fb_h, vp);
+            glViewport(vp[0], vp[1], vp[2], vp[3]);
+            draw_fullscreen_quad(&app);
+            glViewport(0, 0, fb_w, fb_h);
+        }
 
         ImGui::Render();
         ImGui_ImplOpenGL3_RenderDrawData(

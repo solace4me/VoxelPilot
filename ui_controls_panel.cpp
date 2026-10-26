@@ -107,6 +107,9 @@ static int load_selected_volume(StandaloneApp *app)
         (int)spec.width,
         (int)spec.height,
         (int)spec.depth);
+    /* New voxels, possibly with an identical render command: force the
+       next frame to raymarch (see render_frame_standalone). */
+    app->last_render_valid = 0;
     update_histogram(app);
     update_dataset_health(app);
     apply_auto_enhance_on_load_if_safe(app, "Loaded volume");
@@ -173,6 +176,13 @@ void draw_controls_panel(StandaloneApp *app)
     bool controls_open = app->controls_visible != 0;
     if (ImGui::Begin("Controls", &controls_open)) {
         float measurement_voxels = measurement_distance(app);
+
+    /* ImGui puts each label to the right of its widget, and the default
+       item width (65% of the panel) left too little room in the 340 px
+       right-hand panel - "GPU Quality Preset", "Opacity Threshold" and
+       "Render Resolution" were clipped. Size widgets to the panel minus a
+       fixed label column instead. */
+    ImGui::PushItemWidth(-ImGui::GetFontSize() * 8.5f);
 
     /* Status */
     ImGui::TextColored(
@@ -543,6 +553,7 @@ ImGui::Separator();
     ImGui::TextWrapped("Snapshot status: %s",
                        app->screenshot_status);
 
+    ImGui::PopItemWidth();
     }
     app->controls_visible = controls_open ? 1 : 0;
     ImGui::End();

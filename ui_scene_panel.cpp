@@ -497,6 +497,17 @@ static void scene_draw_region_or_annotation_row(StandaloneApp *app, int kind, in
         scene_draw_searchable_label(name, app->scene_search_query);
     }
 
+    /* Spec tree row: a short meta tag on the right. ASD often gives
+       several regions the same archetype name ("dense shell-like
+       structure"), so R1..Rn / A1..An is what tells the rows apart. The
+       eye and "..." controls take this spot while hovered or selected. */
+    if (!show_affordances && !renaming) {
+        char meta[16];
+        snprintf(meta, sizeof(meta), "%s%d", is_region ? "R" : "A", index + 1);
+        ImGui::SameLine(right_edge_x - ImGui::CalcTextSize(meta).x);
+        ImGui::TextDisabled("%s", meta);
+    }
+
     if (show_affordances) {
         ImGui::SameLine(right_edge_x - 40.0f);
         if (scene_draw_eye_icon("##eye", *hidden_flag == 0)) {

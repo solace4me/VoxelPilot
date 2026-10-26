@@ -161,10 +161,10 @@ void draw_ai_assist_panel(StandaloneApp *app)
             &transfer_advisor);
     }
 
-    ImGui::Text("AI Assist");
-    draw_help_marker("Local tools only: transfer suggestions, health checks, semantic discovery, and export helpers.");
-    ImGui::Separator();
-
+    /* The prompt row comes first. The volume/range/ASD readout that used
+       to sit above it duplicated the Metadata tab and pushed the prompt
+       and Last action card to the bottom of the 240 px dock; the ASD
+       counts now live in the Discovery section below. */
     if (!has_volume) {
         ImGui::TextWrapped(
             "AI Assist needs a loaded volume first: use Browse... in Controls to set "
@@ -173,18 +173,8 @@ void draw_ai_assist_panel(StandaloneApp *app)
             app->walkthrough_visible = 1;
             app->walkthrough_step = 1;
         }
-    } else {
-        ImGui::Text("Volume: %d x %d x %d", app->renderer.W, app->renderer.H, app->renderer.D);
-        ImGui::Text("Range: %.4f to %.4f", app->hist_min_value, app->hist_max_value);
-        ImGui::Text("ASD: %d region(s), %d relation(s)", app->semantic_region_count, app->semantic_relation_count);
-        ImGui::Text("ASD memory: %d correction(s)", app->semantic_correction_count);
-        ImGui::Text("ASD safety: %s", app->performance_result.safe_to_run_asd ? "Ready" : "Blocked");
-        if (app->performance_result.status != VOXELPILOT_GOVERNOR_HEALTHY) {
-            draw_performance_safety_block(app);
-        }
+        ImGui::Separator();
     }
-
-    ImGui::Separator();
 
     /* Primary surface, per docs/superpowers/specs/2026-10-24-ui-ux-
        interaction-and-flow-spec.md's "Bottom dock > AI Assist": a
@@ -204,10 +194,15 @@ void draw_ai_assist_panel(StandaloneApp *app)
         bool prompt_submitted;
 
         ImGui::TableSetupColumn("Main", ImGuiTableColumnFlags_WidthStretch);
-        ImGui::TableSetupColumn("LastAction", ImGuiTableColumnFlags_WidthFixed, 220.0f);
+        ImGui::TableSetupColumn("LastAction", ImGuiTableColumnFlags_WidthFixed, 300.0f);
         ImGui::TableNextRow();
         ImGui::TableSetColumnIndex(0);
 
+        /* Prompt fills the column, leaving room for the Apply button. */
+        ImGui::SetNextItemWidth(
+            -(ImGui::CalcTextSize("Apply").x +
+              ImGui::GetStyle().FramePadding.x * 2.0f +
+              ImGui::GetStyle().ItemSpacing.x));
         prompt_submitted = ImGui::InputTextWithHint(
             "##ai_prompt",
             "Ask VoxelPilot",
@@ -292,8 +287,18 @@ void draw_ai_assist_panel(StandaloneApp *app)
         ImGui::EndTable();
     }
 
+    if (has_volume && app->performance_result.status != VOXELPILOT_GOVERNOR_HEALTHY) {
+        draw_performance_safety_block(app);
+    }
+
         if (ImGui::CollapsingHeader("Discovery")) {
         draw_help_marker("Adaptive Semantic Discovery finds candidate regions and labels them cautiously.");
+        if (has_volume) {
+            ImGui::Text("ASD: %d region(s), %d relation(s), %d correction(s) in memory",
+                        app->semantic_region_count,
+                        app->semantic_relation_count,
+                        app->semantic_correction_count);
+        }
         if (ImGui::Button("Discover Regions")) {
             if (performance_allows_optional_action(app, "ASD discovery", 1, 0)) {
                 run_adaptive_semantic_discovery(app);

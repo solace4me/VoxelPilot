@@ -160,6 +160,13 @@ static void upload_gray_texture(
         GL_TEXTURE_2D, 0, GL_R8,
         width, height,
         0, GL_RED, GL_UNSIGNED_BYTE, pixels);
+    {
+        /* A one-channel GL_R8 texture samples as (r, 0, 0, 1), which is
+           why the slice thumbnails drew in pure red. Swizzle the single
+           channel into all three so they show as grayscale. */
+        GLint swizzle[4] = { GL_RED, GL_RED, GL_RED, GL_ONE };
+        glTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_RGBA, swizzle);
+    }
     glBindTexture(GL_TEXTURE_2D, 0);
 }
 
@@ -211,22 +218,65 @@ void process_mouse_camera_controls(StandaloneApp *app)
     app->last_mouse_y = mouse_y;
 }
 
+void viewport_framebuffer_rect(
+    const StandaloneApp *app,
+    int                  framebuffer_width,
+    int                  framebuffer_height,
+    int                  out_rect[4])
+{
+    const ImGuiIO *io = &ImGui::GetIO();
+    float scale_x = 1.0f;
+    float scale_y = 1.0f;
+    int x, y, w, h;
+
+    out_rect[0] = 0;
+    out_rect[1] = 0;
+    out_rect[2] = framebuffer_width;
+    out_rect[3] = framebuffer_height;
+    if (!app || !app->viewport_rect_valid ||
+        io->DisplaySize.x <= 0.0f || io->DisplaySize.y <= 0.0f) {
+        return;
+    }
+
+    scale_x = (float)framebuffer_width / io->DisplaySize.x;
+    scale_y = (float)framebuffer_height / io->DisplaySize.y;
+    x = (int)(app->viewport_rect[0] * scale_x + 0.5f);
+    w = (int)(app->viewport_rect[2] * scale_x + 0.5f);
+    h = (int)(app->viewport_rect[3] * scale_y + 0.5f);
+    /* GL's origin is bottom-left; ImGui's is top-left. */
+    y = framebuffer_height - (int)((app->viewport_rect[1] + app->viewport_rect[3]) * scale_y + 0.5f);
+    if (w < 1 || h < 1) {
+        return;
+    }
+
+    out_rect[0] = x;
+    out_rect[1] = y;
+    out_rect[2] = w;
+    out_rect[3] = h;
+}
+
 void sync_render_target_to_framebuffer(
     StandaloneApp *app,
     int            framebuffer_width,
     int            framebuffer_height)
 {
+    int rect[4];
+
+    /* "Match Window Size" now means match the 3D viewport, not the whole
+       window: rendering the full window behind the side panels wasted
+       most of the GPU time on pixels nobody could see. */
+    viewport_framebuffer_rect(app, framebuffer_width, framebuffer_height, rect);
     if (!voxelpilot_should_sync_render_target(
             app->render_match_window,
             app->render_w,
             app->render_h,
-            framebuffer_width,
-            framebuffer_height)) {
+            rect[2],
+            rect[3])) {
         return;
     }
 
-    app->render_w = voxelpilot_clamp_render_extent(framebuffer_width);
-    app->render_h = voxelpilot_clamp_render_extent(framebuffer_height);
+    app->render_w = voxelpilot_clamp_render_extent(rect[2]);
+    app->render_h = voxelpilot_clamp_render_extent(rect[3]);
     sync_resolution_selection(app);
 }
 
@@ -471,6 +521,16 @@ void render_frame_standalone(StandaloneApp *app)
         return;
     }
 
+    /* Nothing changed since the last frame: the texture already holds
+       this exact image. voxelpilot_build_renderer_input memsets the
+       command first, so a byte compare is reliable. */
+    if (app->last_render_valid &&
+        memcmp(&cmd, &app->last_render_cmd, sizeof(cmd)) == 0) {
+        return;
+    }
+    app->last_render_cmd = cmd;
+    app->last_render_valid = 1;
+
     /* Apply directly to renderer - NO NETWORK */
     apply_render_command(&app->renderer, &cmd);
 
@@ -550,17 +610,34 @@ void update_main_render_hover_pick(StandaloneApp *app)
         return;
     }
 
-    glfwGetFramebufferSize(app->window, &fb_w, &fb_h);
-    glfwGetCursorPos(app->window, &mouse_x, &mouse_y);
-    if (fb_w <= 0 || fb_h <= 0 ||
-        mouse_x < 0.0 || mouse_y < 0.0 ||
-        mouse_x >= (double)fb_w || mouse_y >= (double)fb_h) {
-        return;
-    }
+    /* The render now fills only the viewport (dockspace central node), so
+       the pick ray is built from the cursor's position inside that rect.
+       Both the cursor and viewport_rect are in window coordinates. */
+    {
+        float vx = 0.0f, vy = 0.0f, vw, vh;
 
-    ndc_x = ((float)mouse_x / (float)fb_w) * 2.0f - 1.0f;
-    ndc_y = 1.0f - ((float)mouse_y / (float)fb_h) * 2.0f;
-    aspect = (float)fb_w / (float)fb_h;
+        glfwGetWindowSize(app->window, &fb_w, &fb_h);
+        vw = (float)fb_w;
+        vh = (float)fb_h;
+        if (app->viewport_rect_valid) {
+            vx = app->viewport_rect[0];
+            vy = app->viewport_rect[1];
+            vw = app->viewport_rect[2];
+            vh = app->viewport_rect[3];
+        }
+        glfwGetCursorPos(app->window, &mouse_x, &mouse_y);
+        mouse_x -= vx;
+        mouse_y -= vy;
+        if (vw <= 0.0f || vh <= 0.0f ||
+            mouse_x < 0.0 || mouse_y < 0.0 ||
+            mouse_x >= (double)vw || mouse_y >= (double)vh) {
+            return;
+        }
+
+        ndc_x = ((float)mouse_x / vw) * 2.0f - 1.0f;
+        ndc_y = 1.0f - ((float)mouse_y / vh) * 2.0f;
+        aspect = vw / vh;
+    }
     tan_fov = tanf(0.5f * app->fov_y_deg * 3.14159265f / 180.0f);
 
     view_dir = f3_normalize(f3_make(

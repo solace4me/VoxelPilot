@@ -85,7 +85,9 @@ static inline void voxelpilot_default_state_init(VoxelPilotDefaultState *state)
     state->layout_refit_next_frame = 1;
     state->window_was_maximized = 0;
     state->selected_resolution = VOXELPILOT_DEFAULT_SELECTED_RESOLUTION;
-    state->ribbon_expanded = 1;
+    /* Collapsed by default: the expanded row only repeated GPU/FPS (status
+       bar) and panel toggles, and cost ~84 px of viewport height. */
+    state->ribbon_expanded = 0;
     state->ribbon_active_tab = VOXELPILOT_DEFAULT_RIBBON_TAB;
     state->adaptive_quality_enabled = 1;
     state->paused = 0;
