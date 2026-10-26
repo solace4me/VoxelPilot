@@ -169,7 +169,7 @@ __device__ static int ray_box_interval(
    Any other step is corrected so a ray through the same material ends
    with the same opacity - without it, adaptive quality's coarser steps
    while orbiting made the volume visibly fade and brighten. */
-#define VOXELPILOT_REFERENCE_STEP 0.0020f
+#define VOXELPILOT_REFERENCE_STEP VOXELPILOT_OPACITY_REFERENCE_STEP
 
 __device__ static unsigned char sample_label_mask(
     const unsigned char *label_mask,

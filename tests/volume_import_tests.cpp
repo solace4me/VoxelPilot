@@ -3131,6 +3131,71 @@ static int test_asd_finds_enclosed_cavity(void)
     return expect_true(strstr(cavity->name, "cavity") != NULL, "cavity should be named as one");
 }
 
+/* ---- Hover pick: what the user actually sees ---- */
+
+static int test_pick_visible_passes_faint_haze_to_visible_surface(void)
+{
+    /* A one-voxel layer barely inside the transfer window (nearly
+       transparent) in front of dense material. The threshold pick stops
+       at the haze; the visible pick must land on the dense material the
+       render actually shows. */
+    enum { W = 4, H = 4, D = 32 };
+    static float volume[W * H * D];
+    VoxelPilotRayPickResult hit;
+    VolumeParams tf;
+    const float origin[3] = { 0.5f, 0.5f, -0.5f };
+    const float direction[3] = { 0.0f, 0.0f, 1.0f };
+    const float clip_min[3] = { 0.0f, 0.0f, 0.0f };
+    const float clip_max[3] = { 1.0f, 1.0f, 1.0f };
+    int x, y, z;
+
+    memset(volume, 0, sizeof(volume));
+    for (y = 0; y < H; ++y) {
+        for (x = 0; x < W; ++x) {
+            volume[(4 * H + y) * W + x] = 0.405f;
+            for (z = 20; z < D; ++z) volume[(z * H + y) * W + x] = 0.9f;
+        }
+    }
+    memset(&tf, 0, sizeof(tf));
+    tf.tf_center = 0.55f;
+    tf.tf_width = 0.30f;
+    tf.tf_opacity_scale = 2.0f;
+
+    if (!expect_true(voxelpilot_pick_volume_along_ray(
+            volume, W, H, D, origin, direction, 0.002f, 0.40f, clip_min, clip_max, &hit) == 1,
+            "threshold pick should hit something")) return 0;
+    if (!expect_true(hit.z <= 5, "threshold pick stops at the faint haze (the old behaviour)")) return 0;
+
+    if (!expect_true(voxelpilot_pick_visible_along_ray(
+            volume, W, H, D, origin, direction, 0.002f, tf, 0.002f, 0.5f,
+            clip_min, clip_max, &hit) == 1,
+            "visible pick should hit the dense material")) return 0;
+    return expect_true(hit.z >= 19 && hit.z <= 21,
+                       "visible pick should land on the surface the render shows");
+}
+
+static int test_pick_visible_misses_fully_transparent_volume(void)
+{
+    enum { W = 4, H = 4, D = 8 };
+    static float volume[W * H * D];
+    VoxelPilotRayPickResult hit;
+    VolumeParams tf;
+    const float origin[3] = { 0.5f, 0.5f, -0.5f };
+    const float direction[3] = { 0.0f, 0.0f, 1.0f };
+    int i;
+
+    for (i = 0; i < W * H * D; ++i) volume[i] = 0.2f; /* below the window */
+    memset(&tf, 0, sizeof(tf));
+    tf.tf_center = 0.55f;
+    tf.tf_width = 0.30f;
+    tf.tf_opacity_scale = 2.0f;
+
+    return expect_true(voxelpilot_pick_visible_along_ray(
+            volume, W, H, D, origin, direction, 0.002f, tf, 0.002f, 0.5f,
+            NULL, NULL, &hit) == 0,
+            "nothing visible should mean no pick");
+}
+
 int main(void)
 {
     int passed = 1;
@@ -3232,6 +3297,8 @@ int main(void)
     passed &= test_asd_shape_uses_voxel_spacing();
     passed &= test_asd_side_by_side_duplicates_get_position_words();
     passed &= test_asd_finds_enclosed_cavity();
+    passed &= test_pick_visible_passes_faint_haze_to_visible_surface();
+    passed &= test_pick_visible_misses_fully_transparent_volume();
 
     if (!passed) {
         return 1;

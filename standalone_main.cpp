@@ -642,13 +642,22 @@ void refresh_upload_file_details(StandaloneApp *app)
     }
 }
 
+/* The render buffer's first row is the bottom of the image (the kernel's
+   y = 0 is the camera's "down" edge, and the viewport quad maps it to the
+   bottom of the screen); PNG's first row is the top. Writing it unflipped
+   saved every snapshot and review-bundle image upside down. */
 int write_png_file(
     const unsigned char *pixels,
     int                  width,
     int                  height,
     const char          *path)
 {
-    return stbi_write_png(path, width, height, 4, pixels, width * 4) ? 0 : -1;
+    int ok;
+
+    stbi_flip_vertically_on_write(1);
+    ok = stbi_write_png(path, width, height, 4, pixels, width * 4);
+    stbi_flip_vertically_on_write(0);
+    return ok ? 0 : -1;
 }
 
 

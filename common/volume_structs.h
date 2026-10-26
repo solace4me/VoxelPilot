@@ -47,6 +47,11 @@ typedef void* cudaStream_t;
 #endif
 
 
+/* Opacities are authored for this ray step (the Balanced preset); any
+   other step is corrected to it. Shared by the CUDA kernel and the CPU
+   hover pick so both see the same accumulated opacity. */
+#define VOXELPILOT_OPACITY_REFERENCE_STEP 0.0020f
+
 /* ============================================================
    Volume Rendering Parameters
    ============================================================ */

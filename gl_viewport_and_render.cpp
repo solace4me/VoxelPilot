@@ -674,24 +674,40 @@ void update_main_render_hover_pick(StandaloneApp *app)
         ray_direction[1] = ray.y / extent[1];
         ray_direction[2] = ray.z / extent[2];
     }
-    pick_threshold = fmaxf(0.03f, app->tf_center - app->tf_width * 0.5f);
+    /* Pick what the render shows: accumulate opacity with the same
+       transfer function and step correction as the kernel, stop half way
+       into the visible surface. The old fixed threshold (the transfer
+       window's lower edge) stopped at nearly transparent haze in front of
+       it, so the hover could name a region the user was not looking at. */
+    (void)pick_threshold;
+    {
+        VolumeParams tf;
+        memset(&tf, 0, sizeof(tf));
+        tf.tf_center = app->tf_center;
+        tf.tf_width = app->tf_width;
+        tf.tf_opacity_scale = app->tf_opacity_scale;
+        tf.tf_palette = app->tf_palette;
+        tf.tf_invert = app->tf_invert;
 
-    if (!voxelpilot_pick_volume_along_ray(
-            app->renderer.volume_data,
-            app->renderer.W,
-            app->renderer.H,
-            app->renderer.D,
-            ray_origin,
-            ray_direction,
-            fmaxf(app->step_size * 2.0f, 0.003f),
-            pick_threshold,
-            app->clip_min,
-            app->clip_max,
-            &app->main_hover_pick)) {
+        if (!voxelpilot_pick_visible_along_ray(
+                app->renderer.volume_data,
+                app->renderer.W,
+                app->renderer.H,
+                app->renderer.D,
+                ray_origin,
+                ray_direction,
+                fmaxf(app->step_size, 0.0015f),
+                tf,
+                VOXELPILOT_OPACITY_REFERENCE_STEP,
+                0.5f,
+                app->clip_min,
+                app->clip_max,
+                &app->main_hover_pick)) {
         snprintf(app->main_hover_description,
                  sizeof(app->main_hover_description),
                  "3D hover: no visible material under cursor.");
         return;
+    }
     }
 
     if (app->label_mask &&

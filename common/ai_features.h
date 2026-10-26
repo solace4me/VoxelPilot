@@ -9,6 +9,7 @@
 #include <string.h>
 
 #include "volume_structs.h"
+#include "math_utils.h"
 #include "ai_prompt.h"
 #include "dataset_health.h"
 
@@ -251,6 +252,98 @@ static inline int voxelpilot_pick_volume_along_ray(
         return 1;
     }
 
+    return 0;
+}
+
+/* Pick the point the renderer actually shows under a ray.
+
+   voxelpilot_pick_volume_along_ray stops at the first voxel above a fixed
+   threshold. With the transfer window's lower edge as that threshold, it
+   stops at material that is nearly transparent on screen (opacity ramps
+   up from zero there), so the hover could name something in front of
+   what the user is looking at. This marches the same ray, accumulates
+   opacity exactly as the CUDA kernel does - the same transfer function
+   (tf_lookup), the same skip below 0.01 and the same step-length
+   correction against reference_step - and stops where accumulated
+   opacity reaches visible_alpha (0.5 = half way into what is seen).
+
+   The ray parameter t must be in world units (direction = world ray /
+   box extent per axis), so step_size is a world step like the kernel's.
+   Coordinates are normalized volume coordinates; clip bounds may be NULL. */
+static inline int voxelpilot_pick_visible_along_ray(
+    const float             *volume_data,
+    int                      width,
+    int                      height,
+    int                      depth,
+    const float              origin[3],
+    const float              direction[3],
+    float                    step_size,
+    VolumeParams             tf,
+    float                    reference_step,
+    float                    visible_alpha,
+    const float              clip_min[3],
+    const float              clip_max[3],
+    VoxelPilotRayPickResult *result)
+{
+    float t_min;
+    float t_max;
+    float t;
+    float accumulated = 0.0f;
+    float exponent;
+
+    if (result) {
+        memset(result, 0, sizeof(*result));
+    }
+    if (!volume_data || !origin || !direction || !result ||
+        width < 1 || height < 1 || depth < 1 ||
+        !voxelpilot_ray_box_intersection(origin, direction, &t_min, &t_max)) {
+        return 0;
+    }
+    if (step_size <= 0.0f) step_size = 0.002f;
+    if (reference_step <= 0.0f) reference_step = step_size;
+    if (t_min < 0.0f) t_min = 0.0f;
+    exponent = step_size / reference_step;
+
+    for (t = t_min; t <= t_max; t += step_size) {
+        float point[3];
+        int x, y, z, axis, clipped = 0;
+        size_t index;
+        float value, r, g, b, a;
+
+        point[0] = origin[0] + direction[0] * t;
+        point[1] = origin[1] + direction[1] * t;
+        point[2] = origin[2] + direction[2] * t;
+        for (axis = 0; axis < 3; ++axis) {
+            float lo = clip_min ? clip_min[axis] : 0.0f;
+            float hi = clip_max ? clip_max[axis] : 1.0f;
+            if (point[axis] < lo || point[axis] > hi) { clipped = 1; break; }
+        }
+        if (clipped) continue;
+
+        x = (int)(voxelpilot_ai_clampf(point[0], 0.0f, 1.0f) * (float)(width - 1) + 0.5f);
+        y = (int)(voxelpilot_ai_clampf(point[1], 0.0f, 1.0f) * (float)(height - 1) + 0.5f);
+        z = (int)(voxelpilot_ai_clampf(point[2], 0.0f, 1.0f) * (float)(depth - 1) + 0.5f);
+        index = (size_t)z * (size_t)width * (size_t)height + (size_t)y * (size_t)width + (size_t)x;
+        value = volume_data[index];
+        if (value <= 0.01f) continue;
+
+        tf_lookup(tf, value, &r, &g, &b, &a);
+        a = 1.0f - powf(1.0f - voxelpilot_ai_clampf(a, 0.0f, 0.9999f), exponent);
+        accumulated += (1.0f - accumulated) * a;
+        if (accumulated >= visible_alpha) {
+            result->hit = 1;
+            result->x = x;
+            result->y = y;
+            result->z = z;
+            result->index = index;
+            result->point[0] = point[0];
+            result->point[1] = point[1];
+            result->point[2] = point[2];
+            result->intensity = value;
+            result->t = t;
+            return 1;
+        }
+    }
     return 0;
 }
 
