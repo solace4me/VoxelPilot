@@ -91,6 +91,31 @@ static void slice_plane_texture_and_extent(
     }
 }
 
+/* A plane's display size in physical units: voxel count times voxel
+   spacing on each of its two axes, so a slice keeps the same proportions
+   as the 3D render (common/volume_geometry.h). Sizing by voxel count
+   alone stretched anisotropic scans - the carp's side views (0.39 vs
+   1.0 spacing) were drawn 2.6x too tall for their width. */
+static void slice_plane_physical_size(
+    const StandaloneApp *app,
+    int                  plane,
+    float               *out_w,
+    float               *out_h)
+{
+    /* Axes per plane, matching slice_plane_texture_and_extent:
+       axial = x by y, coronal = x by z, sagittal = y by z. */
+    static const int u_axis[3] = { 0, 0, 1 };
+    static const int v_axis[3] = { 1, 2, 2 };
+    const int dims[3] = { app->renderer.W, app->renderer.H, app->renderer.D };
+    int u = u_axis[plane < 0 || plane > 2 ? 0 : plane];
+    int v = v_axis[plane < 0 || plane > 2 ? 0 : plane];
+    float su = app->voxel_spacing[u] > 0.0f ? app->voxel_spacing[u] : 1.0f;
+    float sv = app->voxel_spacing[v] > 0.0f ? app->voxel_spacing[v] : 1.0f;
+
+    *out_w = (float)(dims[u] > 0 ? dims[u] : 1) * su;
+    *out_h = (float)(dims[v] > 0 ? dims[v] : 1) * sv;
+}
+
 /* The depth step (in normalized 0..1 units) one "notch" of mouse wheel
    moves along a plane's own depth axis - one voxel per notch. */
 static float slice_plane_depth_step(const StandaloneApp *app, int plane)
@@ -336,9 +361,13 @@ static void draw_slice_strip_row(StandaloneApp *app)
         if (tex_w < 1 || tex_h < 1) {
             continue;
         }
-        scale = fminf(cell_w / (float)tex_w, cell_h / (float)tex_h);
-        disp_w = (float)tex_w * scale;
-        disp_h = (float)tex_h * scale;
+        {
+            float phys_w, phys_h;
+            slice_plane_physical_size(app, plane, &phys_w, &phys_h);
+            scale = fminf(cell_w / phys_w, cell_h / phys_h);
+            disp_w = phys_w * scale;
+            disp_h = phys_h * scale;
+        }
 
         /* Centre the thumbnail in its cell, then reserve the full cell
            width so the next plane starts at the same column every time. */
@@ -374,9 +403,13 @@ static void draw_enlarged_slice(
 
     avail_w = fmaxf(central_size.x - kMargin * 2.0f, 40.0f);
     avail_h = fmaxf(central_size.y - kMargin * 2.0f - kHeaderH, 40.0f);
-    scale = fminf(avail_w / (float)tex_w, avail_h / (float)tex_h);
-    disp_w = (float)tex_w * scale;
-    disp_h = (float)tex_h * scale;
+    {
+        float phys_w, phys_h;
+        slice_plane_physical_size(app, plane, &phys_w, &phys_h);
+        scale = fminf(avail_w / phys_w, avail_h / phys_h);
+        disp_w = phys_w * scale;
+        disp_h = phys_h * scale;
+    }
 
     ImGui::SetNextWindowPos(central_pos, ImGuiCond_Always);
     ImGui::SetNextWindowSize(central_size, ImGuiCond_Always);
