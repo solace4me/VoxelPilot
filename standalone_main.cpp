@@ -1453,6 +1453,7 @@ static void draw_gui(StandaloneApp *app)
     /* Step 7: tool overlays (behind panels) and the toolbar. */
     draw_viewport_tool_overlays(app);
     draw_viewport_toolbar(app);
+    draw_viewport_axis_gizmo(app);
     draw_demo_banner(app);
     draw_scene_panel(app);
     draw_controls_panel(app);

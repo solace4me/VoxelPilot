@@ -657,3 +657,89 @@ void draw_viewport_tool_overlays(StandaloneApp *app)
 
     dl->PopClipRect();
 }
+
+/* ============================================================
+   Axis gizmo (step 8)
+
+   Bottom-left of the viewport: the world X / Y / Z axes as the camera
+   currently sees them (X red, Y green, Z blue, each labelled, so colour
+   is never the only cue). Axes pointing away from the viewer are drawn
+   first and dimmer. Clicking an axis letter looks straight down that
+   axis; the small dot at the other end of each axis looks from the
+   opposite side. Both use the eased camera transition.
+   ============================================================ */
+
+void draw_viewport_axis_gizmo(StandaloneApp *app)
+{
+    static const char *names[3] = { "X", "Y", "Z" };
+    static const ImU32 colors[3] = {
+        IM_COL32(240, 113, 103, 255), IM_COL32(123, 216, 143, 255), IM_COL32(110, 168, 254, 255)
+    };
+    const float size = 96.0f;
+    const float arm = 32.0f;
+    ImVec2 origin, vsize, centre;
+    float3 forward, up, right, view_up;
+    float sx[3], sy[3], depth[3];
+    int order[3] = { 0, 1, 2 };
+    int i, j;
+    ImDrawList *dl;
+
+    if (!app || app->splash_visible || !viewport_origin(app, &origin, &vsize)) return;
+    if (app->slice_strip_enlarged_plane >= 0) return;
+
+    forward = f3_normalize(f3_make(app->cam_dir[0], app->cam_dir[1], app->cam_dir[2]));
+    up = f3_normalize(f3_make(app->cam_up[0], app->cam_up[1], app->cam_up[2]));
+    right = f3_normalize(f3_cross(forward, up));
+    view_up = f3_cross(right, forward);
+
+    for (i = 0; i < 3; ++i) {
+        float3 e = f3_make(i == 0 ? 1.0f : 0.0f, i == 1 ? 1.0f : 0.0f, i == 2 ? 1.0f : 0.0f);
+        sx[i] = f3_dot(e, right);
+        sy[i] = -f3_dot(e, view_up);
+        depth[i] = f3_dot(e, forward);   /* > 0: pointing away from the viewer */
+    }
+    /* Far axes first so the nearest is drawn on top. */
+    for (i = 0; i < 2; ++i)
+        for (j = i + 1; j < 3; ++j)
+            if (depth[order[j]] > depth[order[i]]) { int t = order[i]; order[i] = order[j]; order[j] = t; }
+
+    ImGui::SetNextWindowPos(ImVec2(origin.x + 10.0f, origin.y + vsize.y - size - 10.0f), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(size, size), ImGuiCond_Always);
+    ImGui::SetNextWindowBgAlpha(0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+    ImGui::Begin("##axis_gizmo", NULL, slice_overlay_base_flags() | ImGuiWindowFlags_NoBackground);
+    ImGui::PopStyleVar();
+
+    dl = ImGui::GetWindowDrawList();
+    centre = ImVec2(ImGui::GetWindowPos().x + size * 0.5f, ImGui::GetWindowPos().y + size * 0.5f);
+    dl->AddCircleFilled(centre, size * 0.5f - 2.0f, IM_COL32(10, 13, 16, 150));
+
+    for (j = 0; j < 3; ++j) {
+        int a = order[j];
+        ImVec2 tip = ImVec2(centre.x + sx[a] * arm, centre.y + sy[a] * arm);
+        ImVec2 tail = ImVec2(centre.x - sx[a] * arm, centre.y - sy[a] * arm);
+        ImU32 col = colors[a];
+        ImU32 dim = (col & 0x00FFFFFFu) | (depth[a] > 0.0f ? 0x80000000u : 0xFF000000u);
+        char id[16];
+        int hovered;
+
+        /* Opposite end: a small dot that looks from the other side. */
+        snprintf(id, sizeof(id), "##neg%d", a);
+        ImGui::SetCursorScreenPos(ImVec2(tail.x - 6.0f, tail.y - 6.0f));
+        if (ImGui::InvisibleButton(id, ImVec2(12.0f, 12.0f))) start_camera_axis_transition(app, a, -1);
+        hovered = ImGui::IsItemHovered();
+        dl->AddCircleFilled(tail, hovered ? 6.0f : 4.0f, (col & 0x00FFFFFFu) | 0x70000000u);
+        if (hovered) ImGui::SetTooltip("Look from -%s", names[a]);
+
+        dl->AddLine(centre, tip, dim, 2.0f);
+        snprintf(id, sizeof(id), "##pos%d", a);
+        ImGui::SetCursorScreenPos(ImVec2(tip.x - 9.0f, tip.y - 9.0f));
+        if (ImGui::InvisibleButton(id, ImVec2(18.0f, 18.0f))) start_camera_axis_transition(app, a, 1);
+        hovered = ImGui::IsItemHovered();
+        dl->AddCircleFilled(tip, hovered ? 10.0f : 8.0f, dim);
+        dl->AddText(ImVec2(tip.x - ImGui::CalcTextSize(names[a]).x * 0.5f, tip.y - ImGui::GetFontSize() * 0.5f),
+                    IM_COL32(10, 13, 16, 255), names[a]);
+        if (hovered) ImGui::SetTooltip("Look from +%s", names[a]);
+    }
+    ImGui::End();
+}

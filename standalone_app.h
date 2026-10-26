@@ -634,6 +634,9 @@ int pick_visible_under_cursor(StandaloneApp *app, VoxelPilotRayPickResult *out);
 /* Viewport tools and camera (gl_viewport_and_render.cpp). */
 void set_active_tool(StandaloneApp *app, int tool);
 void start_camera_preset_transition(StandaloneApp *app, int preset);
+void start_camera_transition_to(StandaloneApp *app, const float pos[3], const float dir[3], const float up[3]);
+void start_camera_axis_transition(StandaloneApp *app, int axis_index, int sign);
+void draw_viewport_axis_gizmo(StandaloneApp *app);
 void frame_volume(StandaloneApp *app);
 /* Toolbar and in-viewport tool overlays (ui_viewport_overlay.cpp). */
 void draw_viewport_toolbar(StandaloneApp *app);

@@ -191,9 +191,36 @@ void set_active_tool(StandaloneApp *app, int tool)
 void start_camera_preset_transition(StandaloneApp *app, int preset)
 {
     float pos[3], dir[3], up[3];
-    int axis;
 
     if (!app || !voxelpilot_camera_preset(preset, pos, dir, up)) return;
+    start_camera_transition_to(app, pos, dir, up);
+}
+
+/* Look straight down a world axis at the volume centre (axis gizmo):
+   axis 0/1/2 = x/y/z, sign +1 = camera on the positive side. */
+void start_camera_axis_transition(StandaloneApp *app, int axis_index, int sign)
+{
+    float pos[3] = { 0.5f, 0.5f, 0.5f };
+    float dir[3] = { 0.0f, 0.0f, 0.0f };
+    float up[3] = { 0.0f, 1.0f, 0.0f };
+
+    if (!app || axis_index < 0 || axis_index > 2) return;
+    sign = sign < 0 ? -1 : 1;
+    pos[axis_index] += (float)sign * VOXELPILOT_CAMERA_PRESET_DISTANCE;
+    dir[axis_index] = (float)-sign;
+    if (axis_index == 1) {
+        /* Looking along y: "up" on screen is +z. */
+        up[1] = 0.0f;
+        up[2] = 1.0f;
+    }
+    start_camera_transition_to(app, pos, dir, up);
+}
+
+void start_camera_transition_to(StandaloneApp *app, const float pos[3], const float dir[3], const float up[3])
+{
+    int axis;
+
+    if (!app || !pos || !dir || !up) return;
     for (axis = 0; axis < 3; ++axis) {
         app->camera_anim_from[axis] = app->cam_pos[axis];
         app->camera_anim_from[3 + axis] = app->cam_dir[axis];
