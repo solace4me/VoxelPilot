@@ -678,13 +678,15 @@ void run_adaptive_semantic_discovery(StandaloneApp *app)
         return;
     }
 
-    discovered = voxelpilot_discover_semantic_regions(
+    /* ASD-Lite v2: material classes from this scan's own values, shape
+       measured with the real voxel spacing (common/semantic_discovery.h). */
+    discovered = voxelpilot_discover_semantic_regions_ex(
         app->renderer.volume_data,
         app->renderer.W,
         app->renderer.H,
         app->renderer.D,
-        app->histogram,
-        HISTOGRAM_BINS,
+        app->voxel_spacing,
+        1,
         app->semantic_max_regions,
         app->semantic_sensitivity,
         (size_t)app->semantic_min_region_voxels,

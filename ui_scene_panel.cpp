@@ -514,7 +514,21 @@ static void scene_draw_region_or_annotation_row(StandaloneApp *app, int kind, in
             scene_commit_rename(app);
         }
     } else {
+        /* Clip the label short of the right-hand tag / eye / "..." column
+           (44 px), so long region names fade under nothing instead of
+           running into "R4". The full name is in the Inspector header. */
+        ImVec2 label_min = ImGui::GetCursorScreenPos();
+        float  window_x = ImGui::GetWindowPos().x;
+        float  clip_right = window_x + right_edge_x - 44.0f - ImGui::GetScrollX();
+        ImGui::PushClipRect(label_min,
+                            ImVec2(fmaxf(clip_right, label_min.x + 8.0f),
+                                   label_min.y + ImGui::GetTextLineHeightWithSpacing()),
+                            true);
         scene_draw_searchable_label(name, app->scene_search_query);
+        ImGui::PopClipRect();
+        if (hovered && ImGui::CalcTextSize(name).x > clip_right - label_min.x) {
+            ImGui::SetTooltip("%s", name);
+        }
     }
 
     /* Spec tree row: a short meta tag on the right. ASD often gives

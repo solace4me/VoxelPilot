@@ -553,6 +553,8 @@ void draw_cinematic_semantic_callouts(StandaloneApp *app)
     float viewport_w;
     float viewport_h;
     int drawn = 0;
+    ImVec4 placed[MAX_ANNOTATIONS];   /* cards drawn so far: x0, y0, x1, y1 */
+    int placed_count = 0;
     int i;
 
     if (!app || !app->semantic_callouts_enabled || app->semantic_region_count < 1 ||
@@ -702,6 +704,40 @@ void draw_cinematic_semantic_callouts(StandaloneApp *app)
         card_y = anchor_y - card_h * 0.5f + (float)(drawn % 3) * 12.0f;
         card_x = fmaxf(origin_x + 12.0f, fminf(card_x, origin_x + viewport_w - card_w - 12.0f));
         card_y = fmaxf(origin_y + 12.0f, fminf(card_y, origin_y + viewport_h - card_h - 12.0f));
+
+        /* Keep cards from stacking on each other when several regions
+           project close together (a small or distant volume): move the
+           card down past any card already placed; if it no longer fits
+           in the viewport, draw only the region's marker. */
+        {
+            const float gap = 8.0f;
+            int moved = 1;
+            int guard = 0;
+            int fits = 1;
+
+            while (moved && guard++ < MAX_ANNOTATIONS + 1) {
+                int k;
+                moved = 0;
+                for (k = 0; k < placed_count; ++k) {
+                    if (card_x < placed[k].z + gap && card_x + card_w + gap > placed[k].x &&
+                        card_y < placed[k].w + gap && card_y + card_h + gap > placed[k].y) {
+                        card_y = placed[k].w + gap;
+                        moved = 1;
+                    }
+                }
+            }
+            if (card_y + card_h > origin_y + viewport_h - 12.0f) {
+                fits = 0;
+            }
+            if (!fits) {
+                draw_list->AddCircleFilled(ImVec2(anchor_x, anchor_y), selected ? 8.0f : 6.0f, region_color, 24);
+                drawn++;
+                continue;
+            }
+            if (placed_count < MAX_ANNOTATIONS) {
+                placed[placed_count++] = ImVec4(card_x, card_y, card_x + card_w, card_y + card_h);
+            }
+        }
 
         draw_list->AddCircleFilled(ImVec2(anchor_x, anchor_y), selected ? 8.0f : 6.0f, region_color, 24);
         draw_list->AddCircle(ImVec2(anchor_x, anchor_y), selected ? 15.0f : 12.0f, line_color, 32, selected ? 2.4f : 1.8f);

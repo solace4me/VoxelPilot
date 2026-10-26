@@ -2955,6 +2955,116 @@ static int test_downsample_keeps_odd_edges(void)
     return 1;
 }
 
+/* ---- ASD v2 ---- */
+
+static void asd_fill_block(float *v, int w, int h, int x0, int y0, int z0, int sx, int sy, int sz, float value)
+{
+    int x, y, z;
+    for (z = z0; z < z0 + sz; ++z)
+        for (y = y0; y < y0 + sy; ++y)
+            for (x = x0; x < x0 + sx; ++x)
+                v[((size_t)z * h + y) * w + x] = value;
+}
+
+static int test_asd_keeps_most_important_not_first_found(void)
+{
+    /* Three small components early in scan order, one large one late.
+       With room for one region, the large one must win. */
+    enum { W = 16, H = 16, D = 16 };
+    static float volume[W * H * D];
+    static unsigned char mask[W * H * D];
+    VoxelPilotSemanticRegion regions[VOXELPILOT_ASD_MAX_REGIONS];
+    int count = 0;
+
+    memset(volume, 0, sizeof(volume));
+    asd_fill_block(volume, W, H, 0, 0, 0, 2, 2, 2, 0.9f);
+    asd_fill_block(volume, W, H, 4, 0, 0, 2, 2, 2, 0.9f);
+    asd_fill_block(volume, W, H, 8, 0, 0, 2, 2, 2, 0.9f);
+    asd_fill_block(volume, W, H, 6, 8, 8, 6, 6, 6, 0.9f);
+
+    if (!expect_true(voxelpilot_discover_semantic_regions_ex(
+            volume, W, H, D, NULL, 0, 1, 0.5f, 4, mask, regions, &count) == 1,
+            "ASD v2 should find regions")) return 0;
+    if (!expect_true(count == 1, "ASD v2 should keep exactly max_regions")) return 0;
+    return expect_true(regions[0].voxel_count == 216,
+                       "ASD v2 should keep the largest region, not the first found");
+}
+
+static int test_asd_adaptive_finds_two_material_classes(void)
+{
+    /* Background, a mid-density block and a dense block: the thresholds
+       come from the data (Otsu), giving one region per material. */
+    enum { W = 12, H = 12, D = 12 };
+    static float volume[W * H * D];
+    static unsigned char mask[W * H * D];
+    VoxelPilotSemanticRegion regions[VOXELPILOT_ASD_MAX_REGIONS];
+    int count = 0;
+    int i, found_mid = 0, found_dense = 0;
+
+    memset(volume, 0, sizeof(volume));
+    asd_fill_block(volume, W, H, 1, 1, 1, 3, 3, 3, 0.40f);
+    asd_fill_block(volume, W, H, 7, 7, 7, 3, 3, 3, 0.95f);
+
+    if (!expect_true(voxelpilot_discover_semantic_regions_ex(
+            volume, W, H, D, NULL, 1, 8, 0.5f, 4, mask, regions, &count) == 1,
+            "adaptive ASD should find regions")) return 0;
+    if (!expect_true(count == 2, "adaptive ASD should find one region per material")) return 0;
+    for (i = 0; i < count; ++i) {
+        if (regions[i].density_class == VOXELPILOT_ASD_DENSITY_MID) found_mid = 1;
+        if (regions[i].density_class == VOXELPILOT_ASD_DENSITY_HIGH) found_dense = 1;
+    }
+    return expect_true(found_mid && found_dense,
+                       "adaptive ASD should separate the mid and dense materials");
+}
+
+static int test_asd_names_are_distinct(void)
+{
+    /* Two identical dense blocks at opposite ends must not share a name. */
+    enum { W = 16, H = 8, D = 8 };
+    static float volume[W * H * D];
+    static unsigned char mask[W * H * D];
+    VoxelPilotSemanticRegion regions[VOXELPILOT_ASD_MAX_REGIONS];
+    int count = 0;
+
+    memset(volume, 0, sizeof(volume));
+    asd_fill_block(volume, W, H, 0, 2, 2, 3, 3, 3, 0.9f);
+    asd_fill_block(volume, W, H, 13, 2, 2, 3, 3, 3, 0.9f);
+
+    if (!expect_true(voxelpilot_discover_semantic_regions_ex(
+            volume, W, H, D, NULL, 0, 8, 0.5f, 4, mask, regions, &count) == 1,
+            "ASD should find both blocks")) return 0;
+    if (!expect_true(count == 2, "ASD should report two blocks")) return 0;
+    return expect_true(strcmp(regions[0].name, regions[1].name) != 0,
+                       "ASD region names should be distinct");
+}
+
+static int test_asd_shape_uses_voxel_spacing(void)
+{
+    /* A 4x4x4-voxel cube is a cube on isotropic data, but with 4x spacing
+       on z it is physically four times as long: a rod. */
+    enum { W = 8, H = 8, D = 8 };
+    static float volume[W * H * D];
+    static unsigned char mask[W * H * D];
+    VoxelPilotSemanticRegion regions[VOXELPILOT_ASD_MAX_REGIONS];
+    const float spacing[3] = { 1.0f, 1.0f, 4.0f };
+    int count = 0;
+
+    memset(volume, 0, sizeof(volume));
+    asd_fill_block(volume, W, H, 2, 2, 2, 4, 4, 4, 0.9f);
+
+    if (!expect_true(voxelpilot_discover_semantic_regions_ex(
+            volume, W, H, D, NULL, 0, 8, 0.5f, 4, mask, regions, &count) == 1 && count == 1,
+            "isotropic cube should be found")) return 0;
+    if (!expect_true(regions[0].elongation < 1.5f, "isotropic cube should not be elongated")) return 0;
+
+    if (!expect_true(voxelpilot_discover_semantic_regions_ex(
+            volume, W, H, D, spacing, 0, 8, 0.5f, 4, mask, regions, &count) == 1 && count == 1,
+            "anisotropic cube should be found")) return 0;
+    if (!expect_float_close(regions[0].elongation, 4.0f, "spacing should make it 4x elongated")) return 0;
+    return expect_true(strcmp(regions[0].archetype, "rod") == 0,
+                       "a physically long region should be a rod");
+}
+
 int main(void)
 {
     int passed = 1;
@@ -3050,6 +3160,10 @@ int main(void)
     passed &= test_gpu_budget_reports_when_nothing_fits();
     passed &= test_downsample_averages_blocks();
     passed &= test_downsample_keeps_odd_edges();
+    passed &= test_asd_keeps_most_important_not_first_found();
+    passed &= test_asd_adaptive_finds_two_material_classes();
+    passed &= test_asd_names_are_distinct();
+    passed &= test_asd_shape_uses_voxel_spacing();
 
     if (!passed) {
         return 1;

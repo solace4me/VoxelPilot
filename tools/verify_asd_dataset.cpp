@@ -98,6 +98,8 @@ static int write_report(
         out << "      \"rank\": " << region.importance_rank << ",\n";
         out << "      \"name\": \""; json_escape(out, region.name); out << "\",\n";
         out << "      \"archetype\": \""; json_escape(out, region.archetype); out << "\",\n";
+        out << "      \"category\": \""; json_escape(out, region.category); out << "\",\n";
+        out << "      \"elongation\": " << region.elongation << ",\n";
         out << "      \"voxel_count\": " << region.voxel_count << ",\n";
         out << "      \"mean_intensity\": " << region.mean_intensity << ",\n";
         out << "      \"confidence\": " << region.confidence << ",\n";
@@ -132,6 +134,7 @@ int main(int argc, char **argv) {
     int min_regions = 1;
     float sensitivity = 0.55f;
     size_t min_region_voxels = 128;
+    float spacing[3] = { 1.0f, 1.0f, 1.0f };
 
     for (int i = 1; i < argc; ++i) {
         const char *arg = argv[i];
@@ -144,8 +147,11 @@ int main(int argc, char **argv) {
         else if (std::strcmp(arg, "--min-region-voxels") == 0 && i + 1 < argc && parse_size(argv[++i], &min_region_voxels)) {}
         else if (std::strcmp(arg, "--min-regions") == 0 && i + 1 < argc && parse_int(argv[++i], &min_regions)) {}
         else if (std::strcmp(arg, "--report") == 0 && i + 1 < argc) report_path = argv[++i];
+        else if (std::strcmp(arg, "--spacing") == 0 && i + 3 < argc &&
+                 parse_float(argv[i + 1], &spacing[0]) && parse_float(argv[i + 2], &spacing[1]) &&
+                 parse_float(argv[i + 3], &spacing[2])) { i += 3; }
         else {
-            std::cerr << "Usage: " << argv[0] << " --volume file.raw --width W --height H --depth D --type uint8|uint16|float32 [--sensitivity S] [--min-region-voxels N] [--min-regions N] [--report file.json]\n";
+            std::cerr << "Usage: " << argv[0] << " --volume file.raw --width W --height H --depth D --type uint8|uint16|float32 [--spacing SX SY SZ] [--sensitivity S] [--min-region-voxels N] [--min-regions N] [--report file.json]\n";
             return 2;
         }
     }
@@ -175,12 +181,23 @@ int main(int argc, char **argv) {
 
     std::vector<float> volume(voxel_count);
     std::vector<float> histogram((size_t)histogram_bins, 0.0f);
+    /* uint16 is scaled by the data's own range, exactly as the app's
+       importer does (common/volume_import.cpp) - so this tool measures
+       what the app actually discovers. */
+    uint16_t u16_lo = 65535, u16_hi = 0;
+    if (type == "uint16") {
+        for (size_t i = 0; i < voxel_count; ++i) {
+            uint16_t sample = (uint16_t)raw[i * 2] | ((uint16_t)raw[i * 2 + 1] << 8);
+            if (sample < u16_lo) u16_lo = sample;
+            if (sample > u16_hi) u16_hi = sample;
+        }
+    }
     for (size_t i = 0; i < voxel_count; ++i) {
         float value = 0.0f;
         if (type == "uint8") value = (float)raw[i] / 255.0f;
         else if (type == "uint16") {
             uint16_t sample = (uint16_t)raw[i * 2] | ((uint16_t)raw[i * 2 + 1] << 8);
-            value = (float)sample / 65535.0f;
+            value = u16_hi > u16_lo ? (float)(sample - u16_lo) / (float)(u16_hi - u16_lo) : 0.0f;
         } else {
             std::memcpy(&value, &raw[i * 4], sizeof(float));
             if (value < 0.0f) value = 0.0f;
@@ -199,7 +216,8 @@ int main(int argc, char **argv) {
     int region_count = 0;
     int relation_count = 0;
 
-    int ok = voxelpilot_discover_semantic_regions(volume.data(), width, height, depth, histogram.data(), histogram_bins, VOXELPILOT_ASD_MAX_REGIONS, sensitivity, min_region_voxels, label_mask.data(), regions, &region_count);
+    /* Same call the app makes: adaptive material classes, real spacing. */
+    int ok = voxelpilot_discover_semantic_regions_ex(volume.data(), width, height, depth, spacing, 1, VOXELPILOT_ASD_MAX_REGIONS, sensitivity, min_region_voxels, label_mask.data(), regions, &region_count);
     if (!ok || region_count < min_regions) {
         std::cerr << "ASD verification failed: discovered " << region_count << " regions, expected at least " << min_regions << "\n";
         return 1;
