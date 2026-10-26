@@ -27,8 +27,8 @@ soft tissue) for the transfer function and region discovery to work on.
 ## Load it
 
 ```powershell
-.\launch_voxelpilot_windows.bat --volume .\sample-data\carp\carp_256x256x512_uint16.raw --width 256 --height 256 --depth 512 --type uint16
+.\launch_voxelpilot_windows.bat --volume .\sample-data\carp\carp_256x256x512_uint16.raw --width 256 --height 256 --depth 512 --type uint16 --spacing 0.78125 0.390625 1
 ```
 
-Then set Voxel spacing in Inspector > Volume file to 0.78125 / 0.390625 / 1
-for true-to-scale measurements.
+`--spacing` gives true-to-scale proportions and measurements (or set it in
+Inspector > Volume file).

@@ -1,229 +1,124 @@
-# VoxelPilot v2 — Cinematic AI Preview
+# VoxelPilot v2
 
-`VoxelPilot v2` is a standalone CUDA volume exploration workstation for local NVIDIA hardware. It combines real-time 3D rendering, orthogonal slice review, measurement tools, workspace presets, and demo-ready presentation flow in one desktop app.
+VoxelPilot is a laptop-first workbench for exploring 3D scans: CT and micro-CT of specimens, industrial parts, packed objects, and teaching datasets. It renders volumes in real time with CUDA, finds and names regions on its own, and lets you measure, clip, annotate and export, all locally on a laptop with an NVIDIA GPU.
 
-## Highlights
+It is built for research, non-destructive inspection and teaching. **It is not a medical device** and makes no diagnostic claims: discovered regions get cautious, descriptive names ("small dense rod · center"), never anatomy or pathology.
 
-- Real-time CUDA volume rendering
-- V2 Cinematic Lite rendering track with GPU rim, glow, and contrast styling
-- Headerless raw volume import with arbitrary `width x height x depth`
-- Import support for `uint8`, `uint16`, and `float32` voxel data
-- Axial, coronal, and sagittal slice review
-- Transfer mapping, clipping, histogram, and metadata panels
-- Mouse orbit/zoom, preset camera views, and measurements
-- PNG snapshot export, AI review bundles, lightweight HTML insight reports, and `.vpilot` workspace save/load
-- AI Assist prompts, Adaptive Semantic Discovery, local object identification, slice annotations, cinematic callouts, 3D label overlays, hover explanations, and brick-cache telemetry
-- Local Performance Safety Governor that watches render time, estimated GPU memory pressure, labels, callouts, and optional AI workload before recommending user-approved safe actions
-- Demo splash, guided walkthrough, and in-app help cues
+## Why it exists
 
-## Quick Start
+Volume tools usually assume a workstation GPU. VoxelPilot is designed around the opposite constraint:
 
-Build on Windows with the native PowerShell script:
+- **Fits the GPU it has.** A scan is checked against free GPU memory before upload. If it does not fit, it is shown at 1/2 or 1/4 resolution with proportions and measurements kept true, and the app says so; nothing is reduced silently.
+- **Full detail where it matters.** Clip to the part you care about and load just that box from the file at native resolution.
+- **Lean memory.** About 3 bytes per voxel on the GPU (16-bit texture + label mask; gradients computed on the fly).
+- **Finds structure for you.** Adaptive Semantic Discovery (ASD) splits materials, finds enclosed cavities, classifies shapes, and names regions by size, material, shape and position, with a human-in-the-loop "Is this right?" memory.
+- **Never blocks.** Region discovery runs in the background; the viewport keeps rendering.
 
-```powershell
-.\build_windows.ps1
-```
+Measured on one laptop GPU with the 512 x 512 x 373 backpack CT scan (see `sample-data/backpack/README.md`):
 
-Launch the app:
+| | Before (89da61c) | Now |
+|---|---|---|
+| Load, render and save (`--snapshot`) | 25.9 s | 5.6 s |
+| Render, 1024 x 1024 | 140.7 ms | 15.9 ms |
+| GPU memory | +2,474 MB | +388 MB |
+| App RAM | 2,352 MB | 877 MB |
 
-```powershell
-.\launch_voxelpilot_windows.bat
-```
+## Quick start
 
-Launch the app and preload a raw dataset at startup:
+Requirements: Windows, an NVIDIA GPU with a current driver, and (to build) Visual Studio C++ tools plus the CUDA toolkit. See `BUILD_WINDOWS.md`.
 
 ```powershell
-.\launch_voxelpilot_windows.bat --volume .\sample-data\foot_256x256x256_uint8.raw
+.\build_windows.ps1                 # build
+.\launch_voxelpilot_windows.bat     # run (opens on a synthetic volume)
 ```
 
-Build with GNU `make` if your environment already provides it:
+Open a scan from **File > Open volume** (Ctrl+O). Raw files have no header, so set width, height, depth, data type and voxel spacing; names like `carp_256x256x512_uint16.raw` fill in the size and type automatically.
+
+Or load one at startup:
 
 ```powershell
-make standalone
+.\launch_voxelpilot_windows.bat --volume .\sample-data\carp\carp_256x256x512_uint16.raw --spacing 0.78125 0.390625 1
 ```
 
-Clean local build output:
+## Using the app
+
+- **Viewport toolbar**: Orbit (O), Pan (P), Measure (M), Clip (C), Annotate (A); Front / Side / Top / Iso views (1–4) and Frame (F). Right-drag pans and middle-drag orbits with any tool. The axis gizmo turns the camera to look down an axis.
+- **Scene** (left): the volume, discovered regions (R1, R2...), annotations, measurement, clip box, camera, light. Click a row to inspect it.
+- **Inspector** (right): volume file, rendering quality and cinematic look, transfer function with histogram, clipping, workspace.
+- **Slices** (under the viewport): axial, coronal and sagittal, kept to physical proportions.
+- **Bottom dock**: AI Assist (prompts like `show high-density shell`, Discover regions, Guided review, Export bundle), Histogram, Metadata, Log.
+- **Status bar**: size, GPU time, FPS, clip state, and the resolution being shown ("1/2 resolution" or "Full-detail region").
+
+Press `?` in the app for all keyboard shortcuts.
+
+### Large scans: full detail where it matters
+
+1. Open the scan. If it does not fit, it loads at 1/2 or 1/4 resolution and the status bar says so.
+2. Use the Clip tool (C) or **Inspector > Clipping** to box the part you care about.
+3. Click **Load full detail** (also under the Volume menu). The box is re-read from the file at native resolution, or at least sharper than the overview, using the same transfer function. If the box is still too big, the app says how much memory it needs and asks for a smaller box.
+4. **Back to whole scan** returns to the overview.
+
+Measurements and spacing stay physical throughout.
+
+### Region discovery
+
+**Discover regions** (AI Assist, or the AI menu) runs ASD in the background and lists regions in the Scene tree with callouts in the viewport. Each region has a shape (rod, plate, blob, branching), a match score and a stability score. Use **Is this right?** in the Inspector to confirm, rename or reject; corrections are remembered in `voxelpilot_asd_memory.json` and reapplied to similar regions later. **Guided review** (`[` / `]`) walks the regions in order of importance.
+
+Discovery and the 3D hover use the same idea of "what you see": hover reports the first surface that is actually visible under the cursor, not faint haze in front of it.
+
+## Command line
+
+| Flag | Meaning |
+|---|---|
+| `--volume PATH` | Raw volume to load at startup |
+| `--width W --height H --depth D` or `--dim N` | Dimensions (inferred from the file name when possible) |
+| `--type uint8\|uint16\|float32` | Voxel data type |
+| `--spacing X Y Z` | Physical voxel spacing (e.g. mm) |
+| `--gpu-budget-mb N` | Pretend only N MB of GPU memory is free (test laptop limits) |
+| `--detail-box x0 y0 z0 x1 y1 z1` | Clip to a box (0–1 per axis); on a downsampled scan, load it at full detail |
+| `--discover` | Start region discovery at launch (in the background) |
+| `--demo`, `--demo-auto`, `--demo-duration S` | Guided demo mode |
+| `--semantic-demo` | One-click discovery + callouts workflow |
+| `--tf-center C --tf-width W --tf-opacity O` | Transfer function (overrides auto-enhance) |
+| `--cinematic-lite` | Start with the cinematic look on |
+| `--snapshot PATH.png` | Render one 1024² frame, save it, exit |
+| `--review-bundle FOLDER` | Export snapshot, regions, label mask and report, exit |
+
+## Sample data
+
+| Dataset | Size | Notes |
+|---|---|---|
+| `sample-data/foot_256x256x256_uint8.raw` | 16 MB | Render regression baseline |
+| `sample-data/bonsai_256x256x256_uint8.raw` | 16 MB | Render + ASD verification |
+| `sample-data/vtk-headsq/` | 64 x 64 x 93 | Tiny CT check, spacing 3.2 x 3.2 x 1.5 |
+| `sample-data/carp/` | 256 x 256 x 512 uint16, 64 MB | Fish CT: skeleton, swim bladder, soft tissue |
+| `sample-data/backpack/` | 512 x 512 x 373 uint16, 187 MB | Large-scan benchmark |
+| `sample-data/nibabel-anatomical/` | 33 x 41 x 25 | Small anatomical sample |
+
+The carp and backpack `.raw` files are not in git; their READMEs say where to download them.
+
+## Tests
 
 ```powershell
-make clean
+.\run_all_tests_windows.bat
 ```
 
-Run the packaged Windows demo build:
+Runs unit and structural tests, the foot render regression, the VTK headsq and Bonsai render checks, and the Bonsai ASD check. Each writes its snapshot or report to `build\`. `run_tests_windows.bat` runs just the fast unit tests.
 
-- `release/voxelpilot-windows-nvidia/Run_VoxelPilot.bat`
+## Repo layout
 
-Run fast unit/regression tests:
+- `standalone_main.cpp`: app entry, startup, loading, GPU budget, background discovery
+- `ui_*.cpp`: menu bar and dock layout, Scene, Inspector, viewport overlays, AI Assist, bottom panels, status bar
+- `gl_viewport_and_render.cpp`: viewport, picking, tools, camera
+- `renderer/`: CUDA ray marcher and volume textures
+- `common/`: geometry, import, ASD (`semantic_discovery.h`), picking, camera motion and other testable headers
+- `tests/`, `tools/`: unit tests and dataset verifiers
+- `docs/`: design plans
+- `release/voxelpilot-windows-nvidia/`: packaged build
 
-```powershell
-.\run_tests_windows.bat
-```
+## Limitations
 
-Run the Phase 0 GPU render safety baseline with the canonical foot volume:
-
-```powershell
-.\build_windows.ps1
-.\run_render_regression_windows.bat
-```
-
-The render baseline writes `build\foot_render_regression.png` and `build\foot_render_regression_metrics.json`, then fails if the snapshot is black, tiny, badly cropped, or unexpectedly slow.
-
-Run the tiny VTK headsq CT verification sample:
-
-```powershell
-.\run_headsq_verification_windows.bat
-```
-
-This writes `build\vtk_headsq_bone_snapshot.png` and checks CT-appropriate visibility thresholds for the `64 x 64 x 93` dataset.
-
-Run the larger 16 MB Bonsai CT verification sample:
-
-```powershell
-.\run_bonsai_verification_windows.bat
-```
-
-This checks another `256 x 256 x 256 uint8` public dataset without changing the canonical foot baseline.
-
-Run the Bonsai ASD discovery verifier:
-
-```powershell
-.\run_bonsai_asd_verification_windows.bat
-```
-
-This writes `build\bonsai_asd_report.json` using the same ASD-Lite region discovery code used by the app, so the 16 MB Bonsai dataset has both render and AI-interpretation checks.
-
-Launch Bonsai directly into the one-click semantic demo workflow:
-
-```powershell
-.\volume_renderer_standalone.exe --volume .\sample-data\bonsai_256x256x256_uint8.raw --width 256 --height 256 --depth 256 --type uint8 --semantic-demo
-```
-
-Generate an opt-in Cinematic Lite snapshot without changing the default renderer:
-
-```powershell
-.\volume_renderer_standalone.exe --volume .\sample-data\foot_256x256x256_uint8.raw --width 256 --height 256 --depth 256 --type uint8 --snapshot .\build\foot_cinematic_lite.png --cinematic-lite
-```
-
-## Demo Launch Guide
-
-- Use a Windows laptop with an NVIDIA GPU and a working display driver.
-- Confirm `nvidia-smi` responds before launch.
-- Start the packaged demo with `release/voxelpilot-windows-nvidia/Run_VoxelPilot.bat`.
-- Confirm `Controls`, `Insights`, `AI Assist`, `Metadata`, and `Status` are visible.
-- If no dataset is loaded yet, the app should still open on the synthetic fallback volume.
-
-## Quick Demo Flow
-
-- Use `Browse...`, confirm `Width`, `Height`, `Depth`, and `Data Type`, then click `Load Volume`.
-- Try `Front` and `Isometric`, then orbit and zoom in the main viewport.
-- Adjust `Sagittal X`, `Coronal Y`, and `Axial Z` in `Insights` for slice review.
-- Click `Run Semantic Demo` in `AI Assist` for a one-click local AI review: auto-enhanced transfer, object summary, ASD-Lite discovery, cinematic mode, label overlay, and callouts.
-- Check `Dataset Health Check` in `AI Assist`; it explains whether the import is healthy, tiny, flat, background-dominant, low-contrast, or large enough to need caution.
-- Check `Performance Safety` in `AI Assist`; it explains whether the current dataset is healthy, watch-level, pressure-level, or critical without silently changing render quality.
-- Review `AI Transfer Advisor`; it explains whether the current histogram needs brighter opacity, a high-density focus window, or no transfer change, then applies settings only when clicked.
-- Click `Analyze Loaded Volume` in `AI Assist` to generate a local material/object summary if you want to run the steps manually.
-- Click `Refresh Quant Metrics`, then `Export Insight Report` to save a lightweight HTML review report. Use `Export AI Review Bundle` to save a PNG snapshot, ASD regions JSON, relationships JSON, label mask, and linked HTML report together.
-- For scripted review, run `volume_renderer_standalone.exe --volume sample-data\bonsai_256x256x256_uint8.raw --width 256 --height 256 --depth 256 --type uint8 --semantic-demo --review-bundle build` to export the same bundle without opening the folder dialog.
-- Use `AI Assist` prompts such as `show high-density shell` or `hide below 0.3 intensity`.
-- Click `Discover Regions` in `AI Assist` to run ASD-Lite, then use `Start Guided Review` to step through the top reviewable regions with focused slices, selected-region glow, and selected-only cinematic callouts. Hover over slices or the 3D render for cautious region descriptions, stability, importance, and relationship notes. Select a discovered region to confirm, rename, reject, save, or reload correction memory.
-- Enable `Slice Click Labels`, keep `Show Labels in 3D Render` on, click a slice, then export the label mask for downstream analysis.
-- Use `Set A From Slices` and `Set B From Slices` for a quick measurement pass.
-- Click `Save Snapshot` to export a PNG still.
-- Save a workspace session if you want to revisit the same setup later.
-
-## Troubleshooting
-
-- If VoxelPilot fails to start on an NVIDIA laptop, check the NVIDIA driver, confirm the app is using the discrete GPU, and verify OpenGL is available on the active display path.
-
-## Repo Layout
-
-- `standalone_main.cpp` - main application entry point and UI
-- `renderer/` - CUDA renderer implementation
-- `common/` - shared structs, math helpers, and renderer API
-- `imgui/` and `glfw/` - UI dependencies
-- `third_party/` - bundled helpers such as tinyfiledialogs and GLEW
-- `build_windows.ps1` - PowerShell build entry point with GPU arch detection
-- `build_windows.bat` - native Windows build entry point
-- `BUILD_WINDOWS.md` - Windows prerequisites and step-by-step setup
-- `release/voxelpilot-windows-nvidia/` - packaged NVIDIA laptop demo bundle
-
-## Demo Package
-
-The main handoff folder is:
-
-- `release/voxelpilot-windows-nvidia`
-
-Useful docs inside it:
-
-- `FINAL_RELEASE_CHECKLIST.md`
-- `FIRST_RUN_CHECKLIST.md`
-- `SAMPLE_WORKFLOW.md`
-- `JUDGE_SUMMARY.md`
-
-## Pitch
-
-`VoxelPilot v2 is a presentation-ready CUDA volume exploration workstation with a cinematic AI-assisted interpretation track, not just a renderer.`
-
-
-## Laptop-Safe Performance Guardrails
-
-- Current AI features are local heuristics and histogram summaries, not large neural-network inference.
-- Quantitative metrics reuse the existing histogram and annotation metadata, so they avoid extra volume-wide GPU passes.
-- `GPU Quality Preset` keeps the core CUDA renderer intact: `Balanced GPU` is the default, `Quality GPU` uses finer ray steps, and `Interactive GPU` is available for very heavy laptops/datasets.
-- `Auto Enhance View` only changes transfer-window and opacity parameters; it does not downsample the viewport or replace the CUDA renderer.
-- `Dataset Health Check` reuses the active histogram and dimensions to explain import/readability risks; it does not scan the volume again or change renderer settings.
-- `AI Transfer Advisor` previews histogram-derived transfer recommendations and waits for a user click before changing center, width, or opacity.
-- `Cinematic Mode` is off by default; when enabled, it uses a single CUDA raymarch styling branch with bounded rim, glow, and contrast controls.
-- `Cinematic Callouts` are an ImGui foreground overlay fed by ASD metadata; they add no CUDA kernels, model inference, or extra volume scan.
-- `Selected Region Glow` reuses the existing CUDA label-mask overlay and only brightens the currently selected label id in the same raymarch pass.
-- `Guided Review Mode` is an ImGui review layer over existing ASD metadata; it changes selected region, slice focus, and callout focus without adding neural inference or another CUDA render pass.
-- Report export writes a small HTML file and does not block rendering except during the save operation.
-- Sample datasets should stay modest for demo laptops; prefer `uint8` raw volumes around `64^3` to `256^3` unless true out-of-core paging is enabled.
-
-## Adaptive Semantic Discovery
-
-VoxelPilot v2 can run ASD-Lite from `AI Assist` to discover candidate regions in arbitrary imported volumes. ASD-Lite is local and explainable: it groups connected intensity regions, computes shape archetypes such as `rod`, `plate`, `shell`, `blob`, and `cluster`, estimates stability and importance, detects simple region relationships, and exports the provenance beside the label mask.
-
-ASD-Lite deliberately uses cautious names such as `dense rod-like structure` instead of claiming exact anatomy or diagnosis. This keeps the laptop demo honest for unknown medical, industrial, or synthetic datasets while creating a clean bridge to future model-backed recognition. The CUDA renderer remains the main visual engine; ASD reuses the existing label-mask overlay path rather than adding a heavy render pass.
-
-Phase 2C adds human-in-the-loop correction memory. Users can select a discovered region, rename or confirm it, reject false positives, and save/load `voxelpilot_asd_memory.json`. Future ASD passes cautiously reapply those corrections by matching archetype, density class, intensity profile, compactness, elongation, and size ratio, with provenance shown as user-confirmed or rejected rather than hidden model output.
-
-Phase 2D adds cinematic ASD callouts. The overlay projects selected/top region centroids into screen space and draws glow points, leader lines, and compact cards with cautious names, archetype, confidence, stability, and provenance. Guided Review Mode builds on those callouts by walking through reviewable regions in importance-rank order, focusing the orthogonal slices at each centroid, and keeping labels cautious rather than diagnostic. This improves interpretability for demos without changing the core CUDA renderer.
-
-## AI Concept Note
-
-VoxelPilot currently uses local, explainable heuristic AI rather than a cloud model or trained neural network. The AI Assist workflow combines a flexible local intent parser, histogram/material heuristics, dataset health diagnostics, GPU transfer-function tuning, ray-based 3D hover picking, Adaptive Semantic Discovery, flood-fill segmentation, and human-confirmed annotations. Prompts are not limited to one hardcoded list: users can type intent-style requests such as `make it brighter`, `show bone`, `hide below 0.3`, `switch to quality GPU rendering`, or `reset view`, and VoxelPilot maps them to safe local actions. The AI Transfer Advisor adds an explainable recommendation layer: it says why a volume appears background-dominant, high-density, or already balanced before the user applies any settings. This makes the demo transparent and offline-friendly while leaving a clean path for future model-backed 3D segmentation with ONNX, MONAI, or SAM-style medical models.
-
-
-## Additional Test Dataset
-
-A small public NiBabel anatomical NIfTI sample is included as an app-ready raw volume for testing the AI Assist, quantitative metrics, report export, and hover explanation workflow.
-
-```powershell
-.\launch_voxelpilot_windows.bat --volume .\sample-data\nibabel-anatomical\nibabel_anatomical_33x41x25_uint8.raw --width 33 --height 41 --depth 25 --type uint8
-```
-
-For non-interactive verification, the app can render one CUDA frame and write the renderer output directly:
-
-```powershell
-.\volume_renderer_standalone.exe --volume .\sample-data\nibabel-anatomical\nibabel_anatomical_33x41x25_uint8.raw --width 33 --height 41 --depth 25 --type uint8 --snapshot .\build\nibabel_snapshot.png
-```
-
-See `sample-data/nibabel-anatomical/README.md` for conversion notes and source details.
-
-## Supported Volume Files
-
-- Headerless raw voxel files such as `.raw`, `.bin`, or `.dat`
-- Arbitrary dimensions, as long as the imported size matches `width x height x depth x bytes_per_voxel`
-- Voxel data types: `uint8`, `uint16`, and `float32`
-
-You can import a dataset in two ways:
-
-- In the app: click `Browse...`, then set `Width`, `Height`, `Depth`, and `Data Type` before clicking `Load Volume`
-- At startup: pass `--volume` and optionally `--dim` or `--width` / `--height` / `--depth` plus `--type`
-
-If the filename contains a pattern such as `foot_256x256x256_uint8.raw`, VoxelPilot auto-detects the dimensions and data type.
-
-## Notes
-
-- An NVIDIA GPU and working CUDA driver are required to run the app.
-- The release folder intentionally keeps the packaged demo binary for MVP/demo use.
+- Raw volumes only (no DICOM or NIfTI reader yet).
+- Windows + NVIDIA CUDA only.
+- A scan must fit in system RAM once while loading; GPU memory is what the app manages.
+- ASD is explainable heuristics, not a trained model; treat its names as hints to review.
